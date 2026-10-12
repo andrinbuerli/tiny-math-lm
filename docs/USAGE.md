@@ -45,6 +45,8 @@ uv run python scripts/log_qualitative.py model=1m experiment=03_main seed=18 \
 
 Use `trainer=continued_sft` for the continued-SFT run. For GRPO, use `trainer=sft` plus the corresponding `init_checkpoint=...` override used to launch that GRPO run.
 
+To compare examples over time, open a run's W&B History and select `qualitative/examples`; use `optimizer_step` as the x-axis and open the table at each 5,000-step point. The selected question, target, split and module rows are fixed across those tables, while `prediction`, `correct` and `format_valid` show how the model changes.
+
 `run_all.py experiment=02_pilot` prepares data once and runs SFT, GRPO, continued-SFT and their evaluations for the configured model list. Override `orchestration.models=[1m]` to run one size. The default `01_smoke` preset is data-only for orchestration; direct stage commands can still run short optimization checks by setting `trainer.max_steps` or `rlvr.updates`.
 
 The 100k-step restart presets use the same prepared bundle and can start from fresh random initialization:
