@@ -22,6 +22,31 @@ def _read_jsonl(path: Path) -> list[dict[str, str]]:
         return [json.loads(line) for line in handle if line.strip()]
 
 
+def _balanced_limit(examples: list[dict[str, str]], limit: int | None) -> list[dict[str, str]]:
+    """Select a deterministic module-balanced subset for bounded smoke evaluations."""
+    if limit is None or len(examples) <= limit:
+        return examples
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for example in examples:
+        grouped.setdefault(example["module"], []).append(example)
+    selected: list[dict[str, str]] = []
+    offsets = {module: 0 for module in grouped}
+    modules = sorted(grouped)
+    while len(selected) < limit:
+        made_progress = False
+        for module in modules:
+            index = offsets[module]
+            if index < len(grouped[module]):
+                selected.append(grouped[module][index])
+                offsets[module] += 1
+                made_progress = True
+                if len(selected) == limit:
+                    break
+        if not made_progress:
+            break
+    return selected
+
+
 @torch.no_grad()
 def evaluate_checkpoint(
     *,
@@ -51,8 +76,7 @@ def evaluate_checkpoint(
         if not source.is_file():
             raise FileNotFoundError(f"Evaluation split not found: {source}")
         examples = _read_jsonl(source)
-        if max_examples_per_split is not None:
-            examples = examples[:max_examples_per_split]
+        examples = _balanced_limit(examples, max_examples_per_split)
         module_counts: dict[str, dict[str, int]] = defaultdict(
             lambda: {"examples": 0, "correct": 0, "format_valid": 0}
         )

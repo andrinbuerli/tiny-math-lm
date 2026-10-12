@@ -5,7 +5,7 @@ import json
 from tinymath.checkpoint import save_checkpoint
 from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.data.prompts import format_prompt
-from tinymath.eval.evaluate import evaluate_checkpoint
+from tinymath.eval.evaluate import _balanced_limit, evaluate_checkpoint
 from tinymath.model.gpt import GPTConfig, TinyMathGPT
 
 
@@ -53,3 +53,14 @@ def test_greedy_evaluation_writes_linked_predictions_and_metrics(workspace_tmpdi
     assert result["splits"]["test"]["examples"] == 1
     assert (output / "test_predictions.csv").is_file()
     assert json.loads((output / "results.json").read_text())["tokenizer_sha256"] == tokenizer.sha256
+
+
+def test_bounded_evaluation_subsets_round_robin_across_modules():
+    examples = [
+        {"module": module, "question": f"{module}-{index}"}
+        for module in ("a", "b", "c")
+        for index in range(5)
+    ]
+    selected = _balanced_limit(examples, 8)
+    counts = {module: sum(row["module"] == module for row in selected) for module in ("a", "b", "c")}
+    assert counts == {"a": 3, "b": 3, "c": 2}
