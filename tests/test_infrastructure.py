@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import types
+from pathlib import Path
 
 import pytest
 import torch
@@ -31,6 +33,22 @@ def test_hydra_composes_all_experiment_groups_and_overrides():
     assert config.experiment.data_budget == 20000
     assert config.tracking.project == "unit-test"
     assert config.tracking.name == "pilot-10m-seed23"
+
+
+def test_experiment_presets_are_contiguously_numbered_and_documented():
+    experiment_dir = Path(__file__).parents[1] / "configs" / "experiment"
+    header_pattern = re.compile(
+        r"^# Experiment (?P<number>\d{2}) — .+\n# Origin: .+$", re.MULTILINE
+    )
+    numbered_presets = []
+
+    for path in experiment_dir.glob("*.yaml"):
+        match = header_pattern.search(path.read_text())
+        assert match is not None, f"{path.name} needs an experiment purpose and origin header"
+        numbered_presets.append((int(match.group("number")), path.name))
+
+    numbers = [number for number, _ in sorted(numbered_presets)]
+    assert numbers == list(range(1, len(numbered_presets) + 1))
 
 
 def test_resolved_config_is_sanitized_and_saved(workspace_tmpdir):
