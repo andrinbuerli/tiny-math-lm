@@ -97,8 +97,6 @@ def train_sft(
     model_values["vocab_size"] = tokenizer.vocab_size
     model_config = GPTConfig.from_mapping(model_values)
     model = TinyMathGPT(model_config).to(device)
-    if config.trainer.bf16 and device.type == "cuda":
-        model = model.to(dtype=torch.bfloat16)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(config.trainer.learning_rate),

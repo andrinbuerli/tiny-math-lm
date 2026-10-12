@@ -42,8 +42,7 @@ def evaluate_checkpoint(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = TinyMathGPT(model_config).to(device)
     model.load_state_dict(checkpoint["model"])
-    if device.type == "cuda" and torch.cuda.is_bf16_supported():
-        model.to(dtype=torch.bfloat16)
+    use_bf16 = device.type == "cuda" and torch.cuda.is_bf16_supported()
     model.eval()
     output_dir.mkdir(parents=True, exist_ok=True)
     results: dict[str, Any] = {}
@@ -79,12 +78,13 @@ def evaluate_checkpoint(
                 available = model_config.context_length - prompt.shape[1]
                 if available < 1:
                     raise ValueError("Evaluation prompt leaves no room for generated output")
-                generated = model.generate(
-                    prompt,
-                    max_new_tokens=min(max_new_tokens, available),
-                    temperature=0.0,
-                    eos_id=tokenizer.eos_id,
-                )[0, prompt.shape[1] :].tolist()
+                with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_bf16):
+                    generated = model.generate(
+                        prompt,
+                        max_new_tokens=min(max_new_tokens, available),
+                        temperature=0.0,
+                        eos_id=tokenizer.eos_id,
+                    )[0, prompt.shape[1] :].tolist()
                 if tokenizer.eos_id in generated:
                     generated = generated[: generated.index(tokenizer.eos_id) + 1]
                 prediction = tokenizer.decode(generated, skip_special=True).strip()

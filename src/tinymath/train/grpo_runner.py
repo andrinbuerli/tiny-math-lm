@@ -52,14 +52,10 @@ def train_grpo(
     model = TinyMathGPT(model_config).to(device)
     model.load_state_dict(initial["model"])
     use_bf16 = bool(config.trainer.bf16 and device.type == "cuda")
-    if use_bf16:
-        model.to(dtype=torch.bfloat16)
     reference: TinyMathGPT | None = None
     if float(config.rlvr.kl_coefficient) > 0:
         reference = TinyMathGPT(model_config).to(device)
         reference.load_state_dict(initial["model"])
-        if use_bf16:
-            reference.to(dtype=torch.bfloat16)
         reference.eval()
         reference.requires_grad_(False)
 
@@ -123,15 +119,16 @@ def train_grpo(
                 room = model_config.context_length - prompt_ids.shape[1]
                 if room < 1:
                     raise ValueError("Prepared RLVR prompt leaves no room for a completion")
-                rollouts = sample_group_rollouts(
-                    model,
-                    prompt_ids,
-                    group_size=group_size,
-                    max_completion_tokens=min(max_completion, room),
-                    temperature=temperature,
-                    eos_id=tokenizer.eos_id,
-                    pad_id=tokenizer.pad_id,
-                )
+                with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_bf16):
+                    rollouts = sample_group_rollouts(
+                        model,
+                        prompt_ids,
+                        group_size=group_size,
+                        max_completion_tokens=min(max_completion, room),
+                        temperature=temperature,
+                        eos_id=tokenizer.eos_id,
+                        pad_id=tokenizer.pad_id,
+                    )
                 completions = rollouts.completion_ids[0]
                 decoded = [
                     tokenizer.decode(
@@ -150,14 +147,15 @@ def train_grpo(
                 token_total += int(rollouts.completion_mask.sum().item())
                 advantages = group_relative_advantages(rewards.unsqueeze(0))
                 metric_groups.append(group_outcome_rates(rewards.unsqueeze(0)))
-                current = completion_log_probs(
-                    model, prompt_ids, rollouts.completion_ids, temperature=temperature
-                )
-                reference_logs = (
-                    completion_log_probs(reference, prompt_ids, rollouts.completion_ids,
-                                         temperature=temperature)
-                    if reference is not None else None
-                )
+                with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_bf16):
+                    current = completion_log_probs(
+                        model, prompt_ids, rollouts.completion_ids, temperature=temperature
+                    )
+                    reference_logs = (
+                        completion_log_probs(reference, prompt_ids, rollouts.completion_ids,
+                                             temperature=temperature)
+                        if reference is not None else None
+                    )
                 metrics = grpo_objective(
                     current,
                     rollouts.old_log_probs,
