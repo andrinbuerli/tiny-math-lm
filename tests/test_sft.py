@@ -108,3 +108,7 @@ def test_sft_loop_trains_and_saves_reloadable_checkpoint(workspace_tmpdir):
     assert checkpoint["model"]
     assert len(run.logged) == 2
     assert Path(result["metrics_path"]).exists()
+    config.trainer.max_steps = 3
+    resumed = train_sft(config=config, bundle_dir=bundle, run_dir=run_dir, run=run)
+    resumed_checkpoint = torch.load(resumed["checkpoint"], map_location="cpu", weights_only=False)
+    assert resumed["step"] == resumed_checkpoint["step"] == 3
