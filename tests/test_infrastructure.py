@@ -8,6 +8,7 @@ import types
 import pytest
 import torch
 from hydra import compose, initialize_config_dir
+from omegaconf import OmegaConf
 
 from tinymath.checkpoint import load_checkpoint, save_checkpoint
 from tinymath.config import (
@@ -116,6 +117,39 @@ def test_wandb_offline_initialization_reuses_id(workspace_tmpdir, monkeypatch):
     config.tracking.name = "changed-config"
     with pytest.raises(tracking.TrackingError, match="different resolved Hydra config"):
         tracking.initialize_wandb(config, workspace_tmpdir, job_type="unit")
+
+
+def test_wandb_resume_accepts_only_new_runtime_config_group(workspace_tmpdir, monkeypatch):
+    captured = []
+
+    class FakeRun:
+        def __init__(self, run_id, mode):
+            self.id = run_id
+            self.settings = types.SimpleNamespace(mode=mode)
+            self.summary = {}
+
+        def finish(self):
+            pass
+
+    fake_wandb = types.SimpleNamespace(
+        Settings=lambda **kwargs: kwargs,
+        init=lambda **kwargs: captured.append(kwargs) or FakeRun(kwargs["id"], kwargs["mode"]),
+    )
+    monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
+    monkeypatch.setattr(tracking, "_load_workspace_credentials", lambda: None)
+    with initialize_config_dir(version_base="1.3", config_dir="/workspace/configs"):
+        current = compose(config_name="config", overrides=["tracking.mode=offline"])
+    saved = OmegaConf.create(current)
+    del saved.runtime
+    persist_resolved_config(saved, workspace_tmpdir)
+    (workspace_tmpdir / "wandb_run.json").write_text(
+        json.dumps({"id": "legacy-run", "mode": "offline", "sync_status": "unsynced"})
+    )
+
+    run = tracking.initialize_wandb(current, workspace_tmpdir, job_type="unit")
+    assert run.id == "legacy-run"
+    assert "runtime" in read_saved_resolved_config(workspace_tmpdir)
+    tracking.finish_wandb(run)
 
 
 def test_online_tracking_fails_clearly_without_credentials(workspace_tmpdir, monkeypatch):

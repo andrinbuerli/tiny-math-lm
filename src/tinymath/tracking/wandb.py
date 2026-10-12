@@ -49,6 +49,17 @@ def _tracking_state(path: Path) -> dict[str, Any]:
     return state
 
 
+def _compatible_with_runtime_extension(
+    saved: dict[str, Any], current: dict[str, Any]
+) -> bool:
+    """Allow adding the runtime thread cap to runs created before that config group."""
+    if "runtime" in saved or "runtime" not in current:
+        return False
+    without_new_group = dict(current)
+    without_new_group.pop("runtime")
+    return saved == without_new_group
+
+
 def initialize_wandb(config: DictConfig, run_dir: str | Path, *, job_type: str) -> Any:
     """Create or resume one W&B run, persisting its ID before initialization."""
     import wandb
@@ -62,7 +73,12 @@ def initialize_wandb(config: DictConfig, run_dir: str | Path, *, job_type: str) 
     state = _tracking_state(state_path)
     saved_config = read_saved_resolved_config(run_path)
     current_config = sanitized_config(config)
-    if state and saved_config is not None and saved_config != current_config:
+    if (
+        state
+        and saved_config is not None
+        and saved_config != current_config
+        and not _compatible_with_runtime_extension(saved_config, current_config)
+    ):
         raise TrackingError(
             "This W&B run already has a different resolved Hydra config; resume it with the "
             "original options or choose a new run directory."
