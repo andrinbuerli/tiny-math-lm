@@ -85,6 +85,21 @@ def _no_data(axis: plt.Axes, title: str) -> None:
     axis.set_axis_off()
 
 
+def _accuracy_label(rows: list[dict[str, Any]]) -> str:
+    strategies = {
+        row.get("decoding_strategy")
+        for row in rows
+        if row.get("split") == "test" and row.get("accuracy") is not None
+    }
+    if strategies == {"greedy"}:
+        return "Greedy exact accuracy"
+    if strategies == {"sampled"}:
+        return "Sampled exact accuracy"
+    if "greedy" in strategies and "sampled" in strategies:
+        return "Exact accuracy (mixed decoding)"
+    return "Exact accuracy"
+
+
 def _figure_scaling(rows: list[dict[str, Any]], output_dir: Path) -> list[Path]:
     fig, axis = plt.subplots(figsize=(7, 4.5))
     available = [row for row in rows if row["split"] == "test" and row["parameters"] and row["accuracy"] is not None]
@@ -95,7 +110,7 @@ def _figure_scaling(rows: list[dict[str, Any]], output_dir: Path) -> list[Path]:
     if available:
         axis.set_xscale("log")
         axis.set_xlabel("Actual trainable parameters")
-        axis.set_ylabel("Greedy exact accuracy")
+        axis.set_ylabel(_accuracy_label(rows))
         axis.set_title("Model scaling on the fixed ID test set")
         axis.legend()
         axis.grid(alpha=0.25)
@@ -120,7 +135,7 @@ def _figure_arm_bars(rows: list[dict[str, Any]], output_dir: Path) -> list[Path]
                 if value is None:
                     axis.text(pos + (index - 1) * width, 0.01, "missing", ha="center", rotation=90, fontsize=7)
         axis.set_xticks(positions, MODELS)
-        axis.set_ylabel("Greedy exact accuracy")
+        axis.set_ylabel(_accuracy_label(rows))
         axis.set_title("SFT, GRPO and continued-SFT controls")
         axis.legend()
         axis.grid(axis="y", alpha=0.25)
@@ -161,7 +176,7 @@ def _figure_modules(
                     axis.bar(present_positions, present_values, width, label=f"{model} {arm}")
                 index += 1
         axis.set_xticks(range(len(names)), labels, rotation=25, ha="right")
-        axis.set_ylabel("Greedy exact accuracy")
+        axis.set_ylabel(_accuracy_label(rows))
         axis.set_title("Per-module ID test accuracy")
         axis.text(0.01, 0.02, "Missing measurements are omitted, not set to zero.",
                   transform=axis.transAxes, fontsize=7)
@@ -191,7 +206,7 @@ def _figure_ood(rows: list[dict[str, Any]], output_dir: Path) -> list[Path]:
                 if value is None:
                     axis.text(pos, 0.015, "missing", ha="center", va="bottom", rotation=90, fontsize=5)
         axis.set_xticks(x, labels, fontsize=7)
-        axis.set_ylabel("Greedy exact accuracy")
+        axis.set_ylabel(_accuracy_label(rows))
         axis.set_title("In-distribution and controlled OOD accuracy")
         axis.text(0.01, 0.02, "Missing measurements are labeled; no bar means no measured accuracy.",
                   transform=axis.transAxes, fontsize=7)
@@ -219,7 +234,7 @@ def _figure_digits(
                       marker="o", label=path.parents[4].name)
     if found:
         axis.set_xlabel("Longest decimal operand width in question")
-        axis.set_ylabel("Greedy exact accuracy")
+        axis.set_ylabel(_accuracy_label([row for row in rows if row.get("arm") == "sft"]))
         axis.set_title("SFT accuracy by operand digit width")
         axis.legend()
         axis.grid(alpha=0.25)
@@ -247,7 +262,7 @@ def _figure_operators(
                       marker="o", label=path.parents[4].name)
     if found:
         axis.set_xlabel("Operator count in question")
-        axis.set_ylabel("Greedy exact accuracy")
+        axis.set_ylabel(_accuracy_label([row for row in rows if row.get("arm") == "sft"]))
         axis.set_title("SFT accuracy by expression length")
         axis.legend()
         axis.grid(alpha=0.25)
@@ -340,7 +355,7 @@ def _figure_compute(
     if points:
         axis.set_xscale("log")
         axis.set_xlabel("Estimated training FLOPs (dense 2N/6N token-position model)")
-        axis.set_ylabel("Greedy ID test accuracy")
+        axis.set_ylabel(_accuracy_label(rows))
         axis.set_title("Accuracy versus estimated training compute")
         axis.legend(fontsize=7)
         axis.grid(alpha=0.25)

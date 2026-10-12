@@ -2,7 +2,16 @@ from __future__ import annotations
 
 import json
 
-from tinymath.reporting import collect_results, make_report
+from tinymath.reporting import _accuracy_label, collect_results, make_report
+
+
+def test_accuracy_label_matches_greedy_sampled_or_mixed_results():
+    greedy = [{"split": "test", "accuracy": 0.5, "decoding_strategy": "greedy"}]
+    sampled = [{"split": "test", "accuracy": 0.5, "decoding_strategy": "sampled"}]
+
+    assert _accuracy_label(greedy) == "Greedy exact accuracy"
+    assert _accuracy_label(sampled) == "Sampled exact accuracy"
+    assert _accuracy_label(greedy + sampled) == "Exact accuracy (mixed decoding)"
 
 
 def test_comparison_report_marks_missing_runs_without_fabricating_values(workspace_tmpdir):
