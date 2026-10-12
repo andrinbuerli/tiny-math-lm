@@ -17,7 +17,7 @@ The default W&B mode is `online`. The tracking helper reads `WANDB_API_KEY` from
 uv run wandb sync /workspace/runs/<experiment>/<model>/<stage>/seed<seed>/wandb/offline-run-<timestamp>-<id>
 ```
 
-The saved `wandb_run.json` records the run ID and whether synchronization is pending, synced or unsynced. Never pass the API key as a command-line override.
+The saved `wandb_run.json` records the run ID and whether synchronization is pending, synced or unsynced. Never pass the API key as a command-line override. The installed W&B SDK warns that `resume` is ignored in offline mode: training checkpoints and RNG state resume locally, but W&B starts another offline history directory with the same configured run ID. Online mode uses W&B's normal resume behavior.
 
 ## Train and evaluate
 
