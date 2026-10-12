@@ -20,6 +20,9 @@ class TrackingError(RuntimeError):
     """Raised when required experiment tracking cannot be initialized."""
 
 
+_ACTIVE_STATE_PATHS: dict[str, Path] = {}
+
+
 def _load_workspace_credentials() -> None:
     # python-dotenv parses standard assignment syntax and never prints the values.
     load_dotenv(dotenv_path="/workspace/.env", override=False, verbose=False)
@@ -82,7 +85,7 @@ def initialize_wandb(config: DictConfig, run_dir: str | Path, *, job_type: str) 
         "resolved_config": sanitized_config(config),
     }
     try:
-        return wandb.init(
+        run = wandb.init(
             project=str(tracking.get("project", "tinymath-rl")),
             entity=tracking.get("entity"),
             group=str(tracking.get("group", "default")),
@@ -96,6 +99,8 @@ def initialize_wandb(config: DictConfig, run_dir: str | Path, *, job_type: str) 
             config=metadata,
             settings=wandb.Settings(code_dir="/workspace"),
         )
+        _ACTIVE_STATE_PATHS[str(getattr(run, "id", run_id))] = state_path
+        return run
     except (wandb.errors.Error, requests.exceptions.RequestException, OSError, ValueError) as exc:
         message = str(exc).replace(os.environ.get("WANDB_API_KEY", "\0"), "<redacted>")
         raise TrackingError(f"W&B initialization failed ({mode} mode): {message}") from None
@@ -106,6 +111,14 @@ def finish_wandb(run: Any) -> None:
     if run is None:
         return
     mode = getattr(getattr(run, "settings", None), "mode", None)
-    if hasattr(run, "summary"):
-        run.summary["tracking/sync_status"] = "unsynced" if str(mode) == "offline" else "synced"
-    run.finish()
+    status = "unsynced" if str(mode) == "offline" else "synced"
+    try:
+        if hasattr(run, "summary"):
+            run.summary["tracking/sync_status"] = status
+        run.finish()
+    finally:
+        state_path = _ACTIVE_STATE_PATHS.pop(str(getattr(run, "id", "")), None)
+        if state_path is not None and state_path.exists():
+            state = _tracking_state(state_path)
+            state["sync_status"] = status
+            state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")

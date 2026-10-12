@@ -43,6 +43,20 @@ def test_resolved_config_is_sanitized_and_saved(workspace_tmpdir):
         workspace_path("..", "outside")
 
 
+def test_sanitizer_preserves_tokenizer_and_completion_settings():
+    values = sanitized_config(
+        {
+            "tokenizer_sha256": "public-hash",
+            "rlvr": {"max_completion_tokens": 128},
+            "tracking": {"wandb_api_key": "secret", "access_token": "secret"},
+        }
+    )
+    assert values["tokenizer_sha256"] == "public-hash"
+    assert values["rlvr"]["max_completion_tokens"] == 128
+    assert values["tracking"]["wandb_api_key"] == "<redacted>"
+    assert values["tracking"]["access_token"] == "<redacted>"
+
+
 def test_seed_everything_repeats_torch_sequence():
     seed_everything(23)
     expected = torch.rand(5)
@@ -60,21 +74,35 @@ def test_checkpoint_round_trip(workspace_tmpdir):
 
 def test_wandb_offline_initialization_reuses_id(workspace_tmpdir, monkeypatch):
     captured = []
+
+    class FakeRun:
+        def __init__(self, run_id, mode):
+            self.id = run_id
+            self.settings = types.SimpleNamespace(mode=mode)
+            self.summary = {}
+            self.finished = False
+
+        def finish(self):
+            self.finished = True
+
     fake_wandb = types.SimpleNamespace(
         Settings=lambda **kwargs: kwargs,
-        init=lambda **kwargs: captured.append(kwargs) or "run",
+        init=lambda **kwargs: captured.append(kwargs) or FakeRun(kwargs["id"], kwargs["mode"]),
     )
     monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
     monkeypatch.setattr(tracking, "_load_workspace_credentials", lambda: None)
     with initialize_config_dir(version_base="1.3", config_dir="/workspace/configs"):
         config = compose(config_name="config", overrides=["tracking.mode=offline"])
-    assert tracking.initialize_wandb(config, workspace_tmpdir, job_type="unit") == "run"
+    tracking.initialize_wandb(config, workspace_tmpdir, job_type="unit")
     first_id = captured[0]["id"]
     state = json.loads((workspace_tmpdir / "wandb_run.json").read_text())
     assert state["sync_status"] == "unsynced"
-    assert tracking.initialize_wandb(config, workspace_tmpdir, job_type="unit") == "run"
+    second_run = tracking.initialize_wandb(config, workspace_tmpdir, job_type="unit")
     assert captured[1]["id"] == first_id
     assert captured[0]["mode"] == "offline"
+    tracking.finish_wandb(second_run)
+    assert second_run.finished
+    assert json.loads((workspace_tmpdir / "wandb_run.json").read_text())["sync_status"] == "unsynced"
     config.tracking.name = "changed-config"
     with pytest.raises(tracking.TrackingError, match="different resolved Hydra config"):
         tracking.initialize_wandb(config, workspace_tmpdir, job_type="unit")

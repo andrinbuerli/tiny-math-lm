@@ -22,8 +22,12 @@ def workspace_path(*parts: str) -> Path:
 
 def _sanitize(value: Any, parent_key: str = "") -> Any:
     """Remove credential-like fields recursively before persistence or logging."""
-    sensitive = ("api_key", "apikey", "secret", "password", "credential", "token")
-    if any(part in parent_key.lower() for part in sensitive):
+    sensitive = {
+        "api_key", "apikey", "secret", "password", "credential", "token",
+        "access_token", "refresh_token", "auth_token", "wandb_token",
+    }
+    normalized_key = parent_key.lower().replace("-", "_")
+    if normalized_key in sensitive or normalized_key.endswith("_api_key"):
         return "<redacted>"
     if isinstance(value, dict):
         return {str(key): _sanitize(item, str(key)) for key, item in value.items()}
