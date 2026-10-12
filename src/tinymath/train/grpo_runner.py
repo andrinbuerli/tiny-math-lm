@@ -272,6 +272,7 @@ def train_grpo(
                         "tokenizer_sha256": tokenizer.sha256,
                         "model_config": model_config.__dict__,
                         "training_arm": "grpo",
+                        "source_sft_checkpoint": str(init_checkpoint.resolve()),
                     },
                 )
             qualitative_due = update % qualitative_every == 0 or update == updates
