@@ -12,6 +12,7 @@ from omegaconf import DictConfig
 from tinymath.config import workspace_path
 from tinymath.data.load import SELECTED_MODULES
 from tinymath.repro import seed_everything
+from tinymath.tracking.provenance import read_wandb_run_id
 from tinymath.tracking.wandb import finish_wandb, initialize_wandb
 from tinymath.train.grpo_runner import train_grpo
 
@@ -59,6 +60,7 @@ def main(config: DictConfig) -> None:
                 "training_arm": "grpo",
                 "source_sft_checkpoint": str(init_checkpoint),
                 "source_sft_step": checkpoint["step"],
+                "source_sft_wandb_run_id": read_wandb_run_id(init_checkpoint.parent),
             },
             allow_val_change=True,
         )

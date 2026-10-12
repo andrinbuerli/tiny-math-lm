@@ -14,6 +14,7 @@ from tinymath.config import workspace_path
 from tinymath.data.load import SELECTED_MODULES
 from tinymath.model.gpt import GPTConfig, TinyMathGPT
 from tinymath.repro import seed_everything
+from tinymath.tracking.provenance import read_wandb_run_id
 from tinymath.tracking.wandb import finish_wandb, initialize_wandb
 from tinymath.train.runner import train_sft
 
@@ -57,6 +58,9 @@ def main(config: DictConfig) -> None:
     )
     run = initialize_wandb(config, run_dir, job_type=str(config.trainer.name))
     try:
+        init_checkpoint = (
+            workspace_path(str(config.init_checkpoint)) if config.init_checkpoint else None
+        )
         model_values = dict(config.model)
         model_values["vocab_size"] = int(manifest["tokenizer"]["vocab_size"])
         parameter_model = TinyMathGPT(GPTConfig.from_mapping(model_values))
@@ -77,11 +81,13 @@ def main(config: DictConfig) -> None:
                 "model_parameters": parameter_model.count_parameters(),
                 "training_arm": "continued_sft" if config.trainer.name == "continued_sft" else "sft",
                 "data_bundle": str(bundle_dir),
+                "source_sft_wandb_run_id": (
+                    read_wandb_run_id(init_checkpoint.parent)
+                    if config.trainer.name == "continued_sft" and init_checkpoint is not None
+                    else None
+                ),
             },
             allow_val_change=True,
-        )
-        init_checkpoint = (
-            workspace_path(str(config.init_checkpoint)) if config.init_checkpoint else None
         )
         result = train_sft(
             config=config,

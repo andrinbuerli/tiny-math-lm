@@ -22,6 +22,7 @@ from tinymath.config import (
 )
 from tinymath.repro import seed_everything
 from tinymath.tracking import wandb as tracking
+from tinymath.tracking.provenance import read_wandb_run_id
 
 
 def test_hydra_composes_all_experiment_groups_and_overrides():
@@ -118,6 +119,18 @@ def test_checkpoint_round_trip(workspace_tmpdir):
     assert torch.equal(restored["weights"], torch.arange(4))
 
 
+def test_read_wandb_run_id_from_local_run_metadata(workspace_tmpdir):
+    run_dir = workspace_tmpdir / "training"
+    run_dir.mkdir()
+    assert read_wandb_run_id(run_dir) is None
+    (run_dir / "wandb_run.json").write_text(
+        json.dumps({"id": "run-123", "mode": "online"}), encoding="utf-8"
+    )
+    assert read_wandb_run_id(run_dir) == "run-123"
+    (run_dir / "wandb_run.json").write_text("not json", encoding="utf-8")
+    assert read_wandb_run_id(run_dir) is None
+
+
 def test_wandb_offline_initialization_reuses_id(workspace_tmpdir, monkeypatch):
     captured = []
 
@@ -158,10 +171,10 @@ def test_online_sync_status_requires_successful_finish(workspace_tmpdir):
     class FakeRun:
         id = "online-run"
         settings = types.SimpleNamespace(mode="online")
-        summary = {}
 
         def __init__(self, *, interrupt=False):
             self.interrupt = interrupt
+            self.summary = {}
 
         def finish(self):
             if self.interrupt:

@@ -13,6 +13,7 @@ from tinymath.config import workspace_path
 from tinymath.data.load import SELECTED_MODULES
 from tinymath.eval.evaluate import evaluate_checkpoint
 from tinymath.repro import seed_everything
+from tinymath.tracking.provenance import read_wandb_run_id
 from tinymath.tracking.wandb import finish_wandb, initialize_wandb
 
 LOGGER = logging.getLogger(__name__)
@@ -59,6 +60,8 @@ def main(config: DictConfig) -> None:
                 "tokenizer_sha256": manifest["tokenizer"]["sha256"],
                 "evaluated_checkpoint": str(checkpoint),
                 "evaluation_splits": list(config.eval.splits),
+                "source_training_run_dir": str(checkpoint.parent),
+                "source_training_wandb_run_id": read_wandb_run_id(checkpoint.parent),
             },
             allow_val_change=True,
         )
@@ -80,7 +83,11 @@ def main(config: DictConfig) -> None:
             {
                 "training_arm": summary["training_arm"],
                 "source_sft_checkpoint": summary["source_sft_checkpoint"],
-                "source_training_run_dir": str(checkpoint.parent),
+                "source_sft_wandb_run_id": (
+                    read_wandb_run_id(Path(summary["source_sft_checkpoint"]).parent)
+                    if summary["source_sft_checkpoint"]
+                    else None
+                ),
                 "checkpoint_step": summary["checkpoint_step"],
                 "model_parameters": summary["model_parameters"],
             },
