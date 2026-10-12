@@ -9,6 +9,7 @@ import torch
 
 from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.data.prompts import format_completion, format_prompt
+from tinymath.model.gpt import GPTConfig, TinyMathGPT
 from tinymath.train.runner import train_sft
 from tinymath.train.sft import build_completion_batch, completion_only_loss
 
@@ -36,6 +37,32 @@ def test_completion_loss_ignores_prompt_and_padding_logits():
     logits[~mask] = 10000
     assert torch.isfinite(loss)
     assert torch.equal(loss, completion_only_loss(logits, targets, mask))
+
+
+def test_small_model_overfits_one_completion_example():
+    torch.manual_seed(23)
+    example = {"prompt": "Q: 1 + 1\nA: ", "completion": "2"}
+    tokenizer = CharacterTokenizer.from_texts([example["prompt"] + example["completion"]])
+    inputs, targets, mask = build_completion_batch([example], tokenizer, context_length=64)
+    model = TinyMathGPT(
+        GPTConfig(
+            vocab_size=tokenizer.vocab_size,
+            context_length=64,
+            n_layers=1,
+            n_heads=2,
+            d_model=16,
+            d_ff=32,
+        )
+    )
+    optimizer = torch.optim.AdamW(model.parameters(), lr=2e-2, weight_decay=0.0)
+    initial_loss = completion_only_loss(model(inputs), targets, mask).item()
+    for _ in range(60):
+        optimizer.zero_grad(set_to_none=True)
+        loss = completion_only_loss(model(inputs), targets, mask)
+        loss.backward()
+        optimizer.step()
+    final_loss = completion_only_loss(model(inputs), targets, mask).item()
+    assert final_loss < initial_loss * 0.25
 
 
 def test_long_example_is_rejected_without_truncation():
