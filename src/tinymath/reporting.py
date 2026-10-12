@@ -274,6 +274,8 @@ def _figure_compute(
         token_key = "tokens_seen"
         if token_key not in curve[-1]:
             continue
+        if path.parent.parent.name == "grpo" and curve[-1].get("flops_estimator_version") != "dense_position_v2":
+            continue
         result = next((row for row in rows if row["model"] == path.parents[2].name and row["arm"] == arm), None)
         if result and result["parameters"]:
             estimate = curve[-1].get("estimated_flops")
@@ -330,7 +332,10 @@ def make_report(
         "available_measurements": rows,
         "coverage": coverage,
         "compute_estimate": "SFT uses 6PN; GRPO counts no-cache rollout prefix positions and policy/reference token positions with dense 2N/6N multipliers",
-        "limitations": ["Compute uses a dense-transformer token-position approximation; it is not hardware-counter FLOPs."],
+        "limitations": [
+            "Compute uses a dense-transformer token-position approximation; it is not hardware-counter FLOPs.",
+            "GRPO compute points are omitted when a run lacks the dense_position_v2 estimator marker.",
+        ],
     }
     (output_dir / "comparison.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
