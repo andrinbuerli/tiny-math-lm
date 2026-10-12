@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import types
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 import pytest
@@ -27,12 +28,24 @@ def test_hydra_composes_all_experiment_groups_and_overrides():
     with initialize_config_dir(version_base="1.3", config_dir="/workspace/configs"):
         config = compose(
             config_name="config",
-            overrides=["model=10m", "experiment=pilot", "tracking.project=unit-test", "seed=23"],
+            overrides=["model=10m", "experiment=02_pilot", "tracking.project=unit-test", "seed=23"],
         )
     assert config.model.name == "10m"
     assert config.experiment.data_budget == 20000
     assert config.tracking.project == "unit-test"
     assert config.tracking.name == "pilot-10m-seed23"
+    script = Path(__file__).parents[1] / "scripts" / "run_all.py"
+    spec = spec_from_file_location("tinymath_run_all", script)
+    assert spec is not None and spec.loader is not None
+    run_all = module_from_spec(spec)
+    spec.loader.exec_module(run_all)
+    overrides = run_all._overrides(
+        config,
+        model="10m",
+        trainer="sft",
+        experiment_choice="02_pilot",
+    )
+    assert "experiment=02_pilot" in overrides
 
 
 def test_experiment_presets_are_contiguously_numbered_and_documented():
@@ -45,6 +58,9 @@ def test_experiment_presets_are_contiguously_numbered_and_documented():
     for path in experiment_dir.glob("*.yaml"):
         match = header_pattern.search(path.read_text())
         assert match is not None, f"{path.name} needs an experiment purpose and origin header"
+        assert path.stem.startswith(f"{match.group('number')}_"), (
+            f"{path.name} must include its documented experiment number"
+        )
         numbered_presets.append((int(match.group("number")), path.name))
 
     numbers = [number for number, _ in sorted(numbered_presets)]

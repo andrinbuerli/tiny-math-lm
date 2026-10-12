@@ -8,7 +8,7 @@ The repository uses `uv`, Hydra and W&B for experiment setup and tracking. Run c
 cd /workspace
 export PATH="/workspace/.tools:$PATH"
 uv sync --locked --extra dev
-uv run python scripts/prepare_data.py experiment=smoke
+uv run python scripts/prepare_data.py experiment=01_smoke
 ```
 
 The default W&B mode is `online`. The tracking helper reads `WANDB_API_KEY` from the environment or `/workspace/.env` at runtime. It also accepts the legacy `WANDBKEY` assignment found in the supplied workspace file. To deliberately create a local, unsynced run when authentication or network access is unavailable, pass `tracking.mode=offline`; every such run records `tracking/sync_status=unsynced`. Its local W&B directory is printed at the end and can later be uploaded with:
@@ -22,12 +22,12 @@ The saved `wandb_run.json` records the run ID and whether synchronization is pen
 ## Train and evaluate
 
 ```bash
-uv run python scripts/train_sft.py model=1m trainer=sft experiment=pilot
-uv run python scripts/train_rlvr.py model=1m rlvr=grpo experiment=pilot \
+uv run python scripts/train_sft.py model=1m trainer=sft experiment=02_pilot
+uv run python scripts/train_rlvr.py model=1m rlvr=grpo experiment=02_pilot \
   'init_checkpoint=runs/pilot/1m/sft/seed17/best.pt'
-uv run python scripts/evaluate.py model=1m eval=default experiment=pilot \
+uv run python scripts/evaluate.py model=1m eval=default experiment=02_pilot \
   'checkpoint=runs/pilot/1m/grpo/seed17/latest.pt'
-uv run python scripts/train_sft.py model=1m trainer=continued_sft experiment=pilot \
+uv run python scripts/train_sft.py model=1m trainer=continued_sft experiment=02_pilot \
   'init_checkpoint=runs/pilot/1m/sft/seed17/best.pt'
 ```
 
@@ -36,18 +36,18 @@ Training and evaluation locate the prepared bundle by experiment and seed. Set `
 SFT, continued-SFT and GRPO training runs log deterministic W&B qualitative tables every 5,000 optimizer steps and at the final step, with generated answers for up to two examples per module from the training, validation and test pools. To attach a final table to a run that began before periodic qualitative logging was added, rerun the Hydra helper with that run's original config overrides; it resumes the matching W&B run ID:
 
 ```bash
-uv run python scripts/log_qualitative.py model=1m experiment=main seed=18 \
+uv run python scripts/log_qualitative.py model=1m experiment=03_main seed=18 \
   tracking.mode=online data_bundle=data/processed/<bundle-name>
 ```
 
 Use `trainer=continued_sft` for the continued-SFT run. For GRPO, use `trainer=sft` plus the corresponding `init_checkpoint=...` override used to launch that GRPO run.
 
-`run_all.py experiment=pilot` prepares data once and runs SFT, GRPO, continued-SFT and their evaluations for the configured model list. Override `orchestration.models=[1m]` to run one size. The default smoke preset is data-only for orchestration; direct stage commands can still run short optimization checks by setting `trainer.max_steps` or `rlvr.updates`.
+`run_all.py experiment=02_pilot` prepares data once and runs SFT, GRPO, continued-SFT and their evaluations for the configured model list. Override `orchestration.models=[1m]` to run one size. The default `01_smoke` preset is data-only for orchestration; direct stage commands can still run short optimization checks by setting `trainer.max_steps` or `rlvr.updates`.
 
 The 100k-step restart presets use the same prepared bundle and can start from fresh random initialization:
 
 ```bash
-uv run python scripts/run_all.py experiment=restarted_100k_scratch \
+uv run python scripts/run_all.py experiment=08_restarted_100k_greedy \
   data_bundle=data/processed/<bundle-name> seed=18
 ```
 
@@ -56,13 +56,13 @@ They save resumable training checkpoints and `latest_inference.pt` under each ru
 ## W&B overrides and local report
 
 ```bash
-uv run python scripts/train_sft.py experiment=pilot model=1m \
+uv run python scripts/train_sft.py experiment=02_pilot model=1m \
   tracking.project=tinymath-rl tracking.group=pilot-1m \
   tracking.name=pilot-1m-seed17 tracking.mode=online
-uv run python scripts/plot.py experiment=pilot tracking.mode=online
+uv run python scripts/plot.py experiment=02_pilot tracking.mode=online
 ```
 
-The comparison report writes `comparison.csv`, `comparison.json`, and PNG/SVG figures under `/workspace/reports/<experiment>/seed<seed>`. It lists missing model/arm/split measurements as missing and includes only measurements from local evaluation files. SFT compute uses `6PN`; GRPO includes rollout prefix recomputation and policy/reference token positions under dense `2N/6N` multipliers. These are approximations, not hardware-counter FLOP measurements.
+The comparison report writes `report.md`, `comparison.csv`, `comparison.json`, and PNG/SVG figures under `/workspace/reports/<experiment>/seed<seed>`. It lists missing model/arm/split measurements as missing and includes only measurements from local evaluation files. The Markdown report summarizes ID and OOD accuracy, gains over SFT, GRPO group diagnostics, and descriptive token/FLOP efficiency. Its limitations distinguish SFT processed input positions from GRPO generated completion tokens. The comparison W&B run logs the figures and publishes these report files as an artifact. SFT compute uses `6PN`; GRPO includes rollout prefix recomputation and policy/reference token positions under dense `2N/6N` multipliers. These are approximations, not hardware-counter FLOP measurements.
 
 ## Data and OOD protocol note
 

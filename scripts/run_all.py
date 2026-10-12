@@ -8,6 +8,7 @@ import subprocess
 from collections.abc import Iterable
 
 import hydra
+from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 
 from tinymath.config import workspace_path
@@ -21,13 +22,19 @@ def _overrides(
     *,
     model: str,
     trainer: str,
+    experiment_choice: str | None = None,
     checkpoint: str | None = None,
     init_checkpoint: str | None = None,
 ) -> list[str]:
     values = OmegaConf.to_container(config, resolve=True)
     assert isinstance(values, dict)
+    if experiment_choice is None:
+        experiment_choice = HydraConfig.get().runtime.choices.get(
+            "experiment", values["experiment"]["name"]
+        )
     result = [
-        f"model={model}", f"trainer={trainer}", f"experiment={values['experiment']['name']}",
+        f"model={model}", f"trainer={trainer}",
+        f"experiment={experiment_choice}",
         f"seed={values['seed']}",
     ]
     for key, value in values["experiment"].items():

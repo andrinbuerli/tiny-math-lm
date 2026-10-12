@@ -1,0 +1,7 @@
+# Experiment 08 — 100k scratch with greedy accuracy: compares model scale and training arms with fixed-set accuracy curves.
+# Origin: restarted from preset 07 after the request to log train, validation and test greedy accuracy during training.
+name: restarted_100k_greedy
+data_budget: 500000
+ood_examples_per_module: 1000
+max_steps: 100000
+run_optimization: true

@@ -8,7 +8,7 @@ defaults:
   - runtime: default
   - reporting: default
   - tracking: wandb
-  - experiment: smoke
+  - experiment: 01_smoke
   - _self_
 
 seed: 17
