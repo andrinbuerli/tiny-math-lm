@@ -17,11 +17,15 @@ ARMS = ("sft", "grpo", "continued_sft")
 SPLITS = ("test", "number_length_ood", "expression_length_ood")
 
 
-def collect_results(runs_dir: Path, experiment: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def collect_results(
+    runs_dir: Path, experiment: str, seed: int | None = None
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     root = runs_dir / experiment
     rows: list[dict[str, Any]] = []
     by_checkpoint: dict[tuple[str, str], dict[str, Any]] = {}
     for path in sorted(root.glob("*/evaluation/*/*/seed*/results.json")):
+        if seed is not None and path.parent.name != f"seed{seed}":
+            continue
         summary = json.loads(path.read_text(encoding="utf-8"))
         model_name = path.parents[4].name
         arm = path.parents[2].name
@@ -107,11 +111,15 @@ def _figure_arm_bars(rows: list[dict[str, Any]], output_dir: Path) -> list[Path]
     return _save(fig, output_dir, "training_arm_accuracy")
 
 
-def _figure_modules(rows: list[dict[str, Any]], output_dir: Path, runs_dir: Path, experiment: str) -> list[Path]:
+def _figure_modules(
+    rows: list[dict[str, Any]], output_dir: Path, runs_dir: Path, experiment: str, seed: int | None
+) -> list[Path]:
     fig, axis = plt.subplots(figsize=(9, 5))
     result_paths = sorted((runs_dir / experiment).glob("*/evaluation/*/*/seed*/results.json"))
     modules = {}
     for path in result_paths:
+        if seed is not None and path.parent.name != f"seed{seed}":
+            continue
         summary = json.loads(path.read_text(encoding="utf-8"))
         model, arm = path.parents[4].name, path.parents[2].name
         for module, metrics in summary.get("splits", {}).get("test", {}).get("module", {}).items():
@@ -159,10 +167,14 @@ def _figure_ood(rows: list[dict[str, Any]], output_dir: Path) -> list[Path]:
     return _save(fig, output_dir, "id_vs_ood")
 
 
-def _figure_digits(rows: list[dict[str, Any]], output_dir: Path, runs_dir: Path, experiment: str) -> list[Path]:
+def _figure_digits(
+    rows: list[dict[str, Any]], output_dir: Path, runs_dir: Path, experiment: str, seed: int | None
+) -> list[Path]:
     fig, axis = plt.subplots(figsize=(7, 4.5))
     found = False
     for path in sorted((runs_dir / experiment).glob("*/evaluation/*/*/seed*/results.json")):
+        if seed is not None and path.parent.name != f"seed{seed}":
+            continue
         if path.parents[2].name != "sft":
             continue
         summary = json.loads(path.read_text(encoding="utf-8"))
@@ -182,7 +194,7 @@ def _figure_digits(rows: list[dict[str, Any]], output_dir: Path, runs_dir: Path,
     return _save(fig, output_dir, "accuracy_by_digit_width")
 
 
-def _figure_curves(runs_dir: Path, experiment: str, output_dir: Path) -> list[Path]:
+def _figure_curves(runs_dir: Path, experiment: str, output_dir: Path, seed: int | None) -> list[Path]:
     outputs: list[Path] = []
     for figure_name, columns, title in (
         ("training_loss", ("train/loss", "val/loss"), "SFT training and validation loss"),
@@ -191,6 +203,8 @@ def _figure_curves(runs_dir: Path, experiment: str, output_dir: Path) -> list[Pa
         fig, axis = plt.subplots(figsize=(7, 4.5))
         found = False
         for path in sorted((runs_dir / experiment).glob("*/*/*/seed*/metrics.csv")):
+            if seed is not None and path.parent.name != f"seed{seed}":
+                continue
             arm = path.parent.parent.name
             if figure_name == "training_loss" and arm not in ("sft", "continued_sft"):
                 continue
@@ -216,10 +230,14 @@ def _figure_curves(runs_dir: Path, experiment: str, output_dir: Path) -> list[Pa
     return outputs
 
 
-def _figure_compute(rows: list[dict[str, Any]], runs_dir: Path, experiment: str, output_dir: Path) -> list[Path]:
+def _figure_compute(
+    rows: list[dict[str, Any]], runs_dir: Path, experiment: str, output_dir: Path, seed: int | None
+) -> list[Path]:
     fig, axis = plt.subplots(figsize=(7, 4.5))
     points: dict[tuple[str, str], tuple[float, float]] = {}
     for path in sorted((runs_dir / experiment).glob("*/*/*/seed*/metrics.csv")):
+        if seed is not None and path.parent.name != f"seed{seed}":
+            continue
         arm = path.parent.parent.name
         with path.open(encoding="utf-8") as handle:
             curve = list(csv.DictReader(handle))
@@ -248,9 +266,11 @@ def _figure_compute(rows: list[dict[str, Any]], runs_dir: Path, experiment: str,
     return _save(fig, output_dir, "accuracy_vs_compute")
 
 
-def make_report(*, runs_dir: Path, experiment: str, output_dir: Path) -> tuple[dict[str, Any], list[Path]]:
+def make_report(
+    *, runs_dir: Path, experiment: str, output_dir: Path, seed: int | None = None
+) -> tuple[dict[str, Any], list[Path]]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    rows, coverage = collect_results(runs_dir, experiment)
+    rows, coverage = collect_results(runs_dir, experiment, seed)
     expected_rows = []
     actual = {(row["model"], row["arm"], row["split"]): row for row in rows}
     for model in MODELS:
@@ -272,6 +292,7 @@ def make_report(*, runs_dir: Path, experiment: str, output_dir: Path) -> tuple[d
         writer.writerows(expected_rows)
     report = {
         "experiment": experiment,
+        "seed": seed,
         "available_measurements": rows,
         "coverage": coverage,
         "compute_estimate": "6 x actual trainable parameters x processed tokens",
@@ -283,9 +304,9 @@ def make_report(*, runs_dir: Path, experiment: str, output_dir: Path) -> tuple[d
     figures = []
     figures += _figure_scaling(rows, output_dir)
     figures += _figure_arm_bars(rows, output_dir)
-    figures += _figure_modules(rows, output_dir, runs_dir, experiment)
-    figures += _figure_digits(rows, output_dir, runs_dir, experiment)
-    figures += _figure_curves(runs_dir, experiment, output_dir)
+    figures += _figure_modules(rows, output_dir, runs_dir, experiment, seed)
+    figures += _figure_digits(rows, output_dir, runs_dir, experiment, seed)
+    figures += _figure_curves(runs_dir, experiment, output_dir, seed)
     figures += _figure_ood(rows, output_dir)
-    figures += _figure_compute(rows, runs_dir, experiment, output_dir)
+    figures += _figure_compute(rows, runs_dir, experiment, output_dir, seed)
     return report, [csv_path, output_dir / "comparison.json", *figures]

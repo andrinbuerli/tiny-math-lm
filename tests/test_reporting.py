@@ -8,7 +8,7 @@ from tinymath.reporting import make_report
 def test_comparison_report_marks_missing_runs_without_fabricating_values(workspace_tmpdir):
     runs = workspace_tmpdir / "runs"
     output = workspace_tmpdir / "reports"
-    report, outputs = make_report(runs_dir=runs, experiment="pilot", output_dir=output)
+    report, outputs = make_report(runs_dir=runs, experiment="pilot", output_dir=output, seed=17)
     assert report["coverage"]["available_evaluations"] == 0
     assert all(report["coverage"]["missing"][model][arm]["test"] for model in ("1m", "10m", "100m")
                for arm in ("sft", "grpo", "continued_sft"))

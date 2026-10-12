@@ -27,6 +27,7 @@ def main(config: DictConfig) -> None:
             runs_dir=workspace_path("runs"),
             experiment=str(config.experiment.name),
             output_dir=output_dir,
+            seed=int(config.seed),
         )
         run.log({"comparison/available_evaluations": report["coverage"]["available_evaluations"]})
         for artifact in outputs:
