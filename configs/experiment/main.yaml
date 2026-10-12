@@ -1,3 +1,5 @@
+# Experiment 03 — Main baseline: compares the three model sizes at the 500k data budget.
+# Origin: this is the primary research baseline after the small pilot protocol.
 name: main
 data_budget: 500000
 ood_examples_per_module: 1000

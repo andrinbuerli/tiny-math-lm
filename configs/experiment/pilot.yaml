@@ -1,3 +1,5 @@
+# Experiment 02 — Pilot: checks short SFT/GRPO/continued-SFT behavior on a 20k pool.
+# Origin: a bounded run was added to expose optimization and reward issues before full budgets.
 name: pilot
 data_budget: 20000
 ood_examples_per_module: 200

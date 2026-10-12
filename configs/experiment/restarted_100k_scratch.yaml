@@ -1,3 +1,5 @@
+# Experiment 07 — 100k scratch: compares all three models from fresh random initialization.
+# Origin: this followed the request to discard checkpoint initialization for the 100k runs.
 name: restarted_100k_scratch
 data_budget: 500000
 ood_examples_per_module: 1000

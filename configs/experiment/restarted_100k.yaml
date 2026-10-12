@@ -1,3 +1,5 @@
+# Experiment 06 — 100k continuation: extends checkpointed jobs to 100k optimizer steps.
+# Origin: this followed the request to double the 50k target and increase sample inspection.
 name: restarted_100k
 data_budget: 500000
 ood_examples_per_module: 1000

@@ -1,3 +1,5 @@
+# Experiment 04 — Extended: tests whether a 2M-example pool changes scaling trends.
+# Origin: this optional higher-data budget was added for follow-up capacity/data comparisons.
 name: extended
 data_budget: 2000000
 ood_examples_per_module: 2000

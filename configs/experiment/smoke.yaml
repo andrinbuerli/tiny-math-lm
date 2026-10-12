@@ -1,3 +1,5 @@
+# Experiment 01 — Smoke: checks Hydra wiring, data preparation and tracking cheaply.
+# Origin: a minimal preflight prevents expensive runs from starting with broken inputs.
 name: smoke
 data_budget: 2000
 ood_examples_per_module: 10
