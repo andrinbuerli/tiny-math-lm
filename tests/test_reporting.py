@@ -32,12 +32,22 @@ def test_comparison_markdown_summarizes_measured_gains_and_grpo_groups(workspace
             runs / "pilot" / "1m" / "evaluation" / arm / "best" / f"seed{seed}" / "results.json"
         )
         result_path.parent.mkdir(parents=True)
+        splits = {"test": {"accuracy": accuracy, "examples": 100}}
+        if arm == "sft":
+            splits["expression_length_ood"] = {
+                "accuracy": 0.25,
+                "examples": 2000,
+                "module": {
+                    "algebra__linear_1d": {"accuracy": 0.3},
+                    "arithmetic__mixed": {"accuracy": 0.2},
+                },
+            }
         result_path.write_text(
             json.dumps(
                 {
                     "model_parameters": 992640,
                     "checkpoint_step": 1,
-                    "splits": {"test": {"accuracy": accuracy, "examples": 100}},
+                    "splits": splits,
                 }
             ),
             encoding="utf-8",
@@ -60,7 +70,7 @@ def test_comparison_markdown_summarizes_measured_gains_and_grpo_groups(workspace
                 encoding="utf-8",
             )
 
-    _report, _outputs = make_report(
+    report, _outputs = make_report(
         runs_dir=runs, experiment="pilot", output_dir=output, seed=seed
     )
     markdown = (output / "report.md").read_text(encoding="utf-8")
@@ -69,6 +79,14 @@ def test_comparison_markdown_summarizes_measured_gains_and_grpo_groups(workspace
     assert "50.0%" in markdown
     assert "| 1m | sft | 40.0% | 500,000 | 500,000,000,000 |" in markdown
     assert "| 1m | grpo | 50.0% | 200 | 1,000,000,000,000 |" in markdown
+    assert "2,000 examples / algebra__linear_1d;arithmetic__mixed" in markdown
+    assert not report["coverage"]["missing"]["1m"]["sft"]["expression_length_ood"]
+    ood_measurement = next(
+        row
+        for row in report["available_measurements"]
+        if row["arm"] == "sft" and row["split"] == "expression_length_ood"
+    )
+    assert ood_measurement["module_count"] == 2
     assert "SFT token counts include processed input positions" in markdown
 
 

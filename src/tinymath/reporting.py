@@ -40,6 +40,8 @@ def collect_results(
                 "format_validity": split.get("format_validity"),
                 "mean_output_tokens": split.get("mean_output_tokens"),
                 "examples": split.get("examples"),
+                "module_count": len(split.get("module", {})),
+                "modules": ";".join(sorted(split.get("module", {}))),
                 "checkpoint": summary.get("checkpoint"),
                 "checkpoint_step": summary.get("checkpoint_step"),
             }
@@ -50,7 +52,12 @@ def collect_results(
         for model in MODELS
     }
     for row in rows:
-        if row["model"] in missing and row["arm"] in missing[row["model"]]:
+        if (
+            row["model"] in missing
+            and row["arm"] in missing[row["model"]]
+            and row["examples"]
+            and int(row["examples"]) > 0
+        ):
             missing[row["model"]][row["arm"]][row["split"]] = False
     return rows, {"available_evaluations": len(by_checkpoint), "missing": missing}
 
@@ -360,6 +367,16 @@ def _average_percent(metrics: list[dict[str, str]], column: str) -> str:
     return f"{100 * sum(values) / len(values):.1f}%" if values else "Missing"
 
 
+def _format_ood_measurement(row: dict[str, Any] | None) -> str:
+    if not row or not row.get("examples"):
+        return "Missing / 0 examples / no modules"
+    modules = row.get("modules") or "module details unavailable"
+    return (
+        f"{_format_accuracy(row.get('accuracy'))} / {_format_count(row.get('examples'))} examples / "
+        f"{modules}"
+    )
+
+
 def _markdown_report(
     *,
     report: dict[str, Any],
@@ -416,8 +433,8 @@ def _markdown_report(
             "",
             "## Controlled OOD accuracy",
             "",
-            "| Model | Arm | Number length | Expression length |",
-            "|---|---|---:|---:|",
+            "| Model | Arm | Number length: accuracy / examples / modules | Expression length: accuracy / examples / modules |",
+            "|---|---|---|---|",
         ]
     )
     for model in MODELS:
@@ -425,8 +442,8 @@ def _markdown_report(
             number = measured.get((model, arm, "number_length_ood"))
             expression = measured.get((model, arm, "expression_length_ood"))
             lines.append(
-                f"| {model} | {arm} | {_format_accuracy(number.get('accuracy') if number else None)} | "
-                f"{_format_accuracy(expression.get('accuracy') if expression else None)} |"
+                f"| {model} | {arm} | {_format_ood_measurement(number)} | "
+                f"{_format_ood_measurement(expression)} |"
             )
 
     lines.extend(
@@ -524,13 +541,15 @@ def make_report(
                     actual.get((model, arm, split), {
                         "model": model, "arm": arm, "split": split, "parameters": "",
                         "accuracy": "", "format_validity": "", "mean_output_tokens": "",
-                        "examples": "", "checkpoint": "", "checkpoint_step": "",
+                        "examples": "", "module_count": 0, "modules": "",
+                        "checkpoint": "", "checkpoint_step": "",
                     })
                 )
     csv_path = output_dir / "comparison.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         fields = ["model", "arm", "split", "parameters", "accuracy", "format_validity",
-                  "mean_output_tokens", "examples", "checkpoint", "checkpoint_step"]
+                  "mean_output_tokens", "examples", "module_count", "modules", "checkpoint",
+                  "checkpoint_step"]
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         writer.writerows(expected_rows)
