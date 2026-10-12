@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
@@ -64,9 +65,9 @@ def parse_answer(text: str) -> ParsedAnswer:
     expression_text = answer
     if "=" in answer:
         left, expression_text = (part.strip() for part in answer.split("=", 1))
-        if left != "x":
-            raise AnswerFormatError("only a simple x = value solution is supported")
-        variable = "x"
+        if re.fullmatch(r"[A-Za-z]", left) is None:
+            raise AnswerFormatError("only a simple one-letter variable assignment is supported")
+        variable = left
     try:
         tree = ast.parse(expression_text, mode="eval")
     except SyntaxError as exc:
@@ -90,10 +91,16 @@ def answers_equal(prediction: str, target: str) -> bool:
         return False
 
 
-def verify_answer(prediction: str, target: str) -> tuple[bool, bool]:
+def verify_answer(
+    prediction: str, target: str, *, question: str | None = None
+) -> tuple[bool, bool]:
     """Return correctness and format validity for a complete generated answer."""
     try:
-        parse_answer(prediction)
+        parsed = parse_answer(prediction)
     except AnswerFormatError:
         return False, False
+    if question is not None and parsed.variable is not None:
+        expected = re.search(r"\bfor\s+([A-Za-z])\b", question)
+        if expected is not None and parsed.variable != expected.group(1):
+            return False, True
     return answers_equal(prediction, target), True

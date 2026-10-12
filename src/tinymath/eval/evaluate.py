@@ -88,7 +88,7 @@ def evaluate_checkpoint(
                 if tokenizer.eos_id in generated:
                     generated = generated[: generated.index(tokenizer.eos_id) + 1]
                 prediction = tokenizer.decode(generated, skip_special=True).strip()
-                correct, valid = verify_answer(prediction, row["answer"])
+                correct, valid = verify_answer(prediction, row["answer"], question=row["question"])
                 digit_width, operator_count = question_features(row["question"])
                 counts = module_counts[row["module"]]
                 counts["examples"] += 1

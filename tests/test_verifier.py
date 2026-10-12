@@ -26,3 +26,10 @@ def test_verifier_distinguishes_incorrect_valid_answer():
 
 def test_expression_equivalence_for_linear_solution():
     assert answers_equal("x = 1 + 1", "x = 2")
+
+
+def test_one_letter_assignment_must_match_linear_question_variable():
+    question = "Solve 111*m + 1753 = -4796 for m."
+    assert verify_answer("m = -59", "-59", question=question) == (True, True)
+    assert verify_answer("x = -59", "-59", question=question) == (False, True)
+    assert verify_answer("-59", "-59", question=question) == (True, True)

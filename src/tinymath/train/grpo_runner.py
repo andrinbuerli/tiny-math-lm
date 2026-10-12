@@ -136,7 +136,10 @@ def train_grpo(
                     )
                     for completion, mask in zip(completions, rollouts.completion_mask[0], strict=True)
                 ]
-                outcome_pairs = [verify_answer(text, row["answer"]) for text in decoded]
+                outcome_pairs = [
+                    verify_answer(text, row["answer"], question=row["question"])
+                    for text in decoded
+                ]
                 rewards = torch.tensor(
                     [int(correct) for correct, _valid in outcome_pairs], dtype=torch.float32, device=device
                 )
