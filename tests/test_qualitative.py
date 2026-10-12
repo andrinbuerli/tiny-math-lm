@@ -82,5 +82,6 @@ def test_qualitative_table_covers_each_split_and_balances_modules(monkeypatch):
     assert {row[3] for row in table.data if row[2] == "train"} == {
         "arithmetic__add_or_sub", "arithmetic__mixed"
     }
-    assert run.logs[0][1] == {"step": 42}
+    assert run.logs[0][0]["optimizer_step"] == 42
+    assert run.logs[0][1] == {}
     assert run.summary["qualitative/example_count"] == 4

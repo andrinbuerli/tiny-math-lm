@@ -135,7 +135,9 @@ def log_qualitative_examples(
         max_new_tokens=max_new_tokens,
         examples_per_module=examples_per_module,
     )
-    run.log({"qualitative/examples": table, "optimizer_step": step}, step=step)
+    # The resumed W&B history may already be past the sampled checkpoint step.
+    # Keep optimizer_step as a column and let W&B assign the next history step.
+    run.log({"qualitative/examples": table, "optimizer_step": step})
     summary = getattr(run, "summary", None)
     if summary is not None:
         summary["qualitative/example_count"] = count

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
+from typing import Any
 
 import hydra
 import torch
@@ -19,7 +21,7 @@ from tinymath.train.runner import read_jsonl
 LOGGER = logging.getLogger(__name__)
 
 
-def _bundle_dir(config: DictConfig) -> tuple[object, dict]:
+def _bundle_dir(config: DictConfig) -> tuple[Path, dict[str, Any]]:
     if config.get("data_bundle"):
         bundle = workspace_path(str(config.data_bundle))
     else:
