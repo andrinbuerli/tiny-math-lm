@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import types
 
@@ -115,3 +116,27 @@ def test_online_tracking_fails_clearly_without_credentials(workspace_tmpdir, mon
         config = compose(config_name="config")
     with pytest.raises(tracking.TrackingError, match="requires WANDB_API_KEY"):
         tracking.initialize_wandb(config, workspace_tmpdir, job_type="unit")
+
+
+def test_workspace_credential_loader_accepts_legacy_assignment(monkeypatch):
+    monkeypatch.delenv("WANDB_API_KEY", raising=False)
+    monkeypatch.setattr(tracking, "load_dotenv", lambda **kwargs: None)
+    monkeypatch.setattr(
+        tracking,
+        "dotenv_values",
+        lambda **kwargs: {"WANDBKEY": "unit-test-placeholder"},
+    )
+    tracking._load_workspace_credentials()
+    assert os.environ["WANDB_API_KEY"] == "unit-test-placeholder"
+
+
+def test_environment_credential_takes_precedence_over_legacy_assignment(monkeypatch):
+    monkeypatch.setenv("WANDB_API_KEY", "environment-placeholder")
+    monkeypatch.setattr(tracking, "load_dotenv", lambda **kwargs: None)
+    monkeypatch.setattr(
+        tracking,
+        "dotenv_values",
+        lambda **kwargs: pytest.fail("legacy file value should not be read"),
+    )
+    tracking._load_workspace_credentials()
+    assert os.environ["WANDB_API_KEY"] == "environment-placeholder"

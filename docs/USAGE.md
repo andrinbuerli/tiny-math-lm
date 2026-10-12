@@ -11,7 +11,7 @@ uv sync --locked --extra dev
 uv run python scripts/prepare_data.py experiment=smoke
 ```
 
-The default W&B mode is `online`. The tracking helper reads `WANDB_API_KEY` from the environment or `/workspace/.env` at runtime. To deliberately create a local, unsynced run when authentication or network access is unavailable, pass `tracking.mode=offline`; every such run records `tracking/sync_status=unsynced`. Its local W&B directory is printed at the end and can later be uploaded with:
+The default W&B mode is `online`. The tracking helper reads `WANDB_API_KEY` from the environment or `/workspace/.env` at runtime. It also accepts the legacy `WANDBKEY` assignment found in the supplied workspace file. To deliberately create a local, unsynced run when authentication or network access is unavailable, pass `tracking.mode=offline`; every such run records `tracking/sync_status=unsynced`. Its local W&B directory is printed at the end and can later be uploaded with:
 
 ```bash
 uv run wandb sync /workspace/runs/<experiment>/<model>/<stage>/seed<seed>/wandb/offline-run-<timestamp>-<id>

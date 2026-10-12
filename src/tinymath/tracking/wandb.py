@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 from omegaconf import DictConfig
 
 from tinymath.config import persist_resolved_config, read_saved_resolved_config, sanitized_config
@@ -25,7 +25,16 @@ _ACTIVE_STATE_PATHS: dict[str, Path] = {}
 
 def _load_workspace_credentials() -> None:
     # python-dotenv parses standard assignment syntax and never prints the values.
-    load_dotenv(dotenv_path="/workspace/.env", override=False, verbose=False)
+    env_path = "/workspace/.env"
+    load_dotenv(dotenv_path=env_path, override=False, verbose=False)
+    if os.environ.get("WANDB_API_KEY"):
+        return
+
+    # Accept the legacy spelling present in this workspace's supplied .env.
+    # Keep the value in process memory only; it is never added to config or metadata.
+    legacy_key = dotenv_values(dotenv_path=env_path).get("WANDBKEY")
+    if legacy_key:
+        os.environ["WANDB_API_KEY"] = legacy_key
 
 
 def _tracking_state(path: Path) -> dict[str, Any]:
