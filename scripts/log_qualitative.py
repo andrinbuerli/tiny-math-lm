@@ -9,7 +9,7 @@ from typing import Any
 
 import hydra
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 from tinymath.config import workspace_path
 from tinymath.data.char_tokenizer import CharacterTokenizer
@@ -66,7 +66,26 @@ def main(config: DictConfig) -> None:
     if not checkpoint_path.is_file():
         raise FileNotFoundError(f"Training checkpoint not found: {checkpoint_path}")
     run_dir = checkpoint_path.parent
-    run = initialize_wandb(config, run_dir, job_type=stage)
+    saved_config_path = run_dir / "resolved_config.json"
+    if not saved_config_path.is_file():
+        raise FileNotFoundError(f"Saved Hydra config not found: {saved_config_path}")
+    saved_config = OmegaConf.load(saved_config_path)
+    for key, requested in (
+        ("experiment.name", str(config.experiment.name)),
+        ("model.name", str(config.model.name)),
+        ("trainer.name", str(config.trainer.name)),
+        ("seed", int(config.seed)),
+    ):
+        actual: Any = saved_config
+        for part in key.split("."):
+            actual = actual[part]
+        if actual != requested:
+            raise ValueError(
+                f"Saved run config {key}={actual!r} does not match requested value {requested!r}"
+            )
+    # Resume with the exact original composed config. This permits adding samples
+    # to runs created before newer config groups were introduced.
+    run = initialize_wandb(saved_config, run_dir, job_type=stage)
     try:
         payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         tokenizer = CharacterTokenizer.load(bundle_dir / "char_tokenizer.json")
