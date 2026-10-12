@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
 import torch
 
 from tinymath.data.char_tokenizer import CharacterTokenizer
+from tinymath.data.prompts import format_completion, format_prompt
+from tinymath.train.runner import train_sft
 from tinymath.train.sft import build_completion_batch, completion_only_loss
 
 
@@ -41,3 +47,62 @@ def test_long_example_is_rejected_without_truncation():
         assert "never silently truncated" in str(error)
     else:
         raise AssertionError("overlength examples must be excluded or rejected explicitly")
+
+
+def test_sft_loop_trains_and_saves_reloadable_checkpoint(workspace_tmpdir):
+    bundle = workspace_tmpdir / "bundle"
+    run_dir = workspace_tmpdir / "run"
+    bundle.mkdir()
+    rows = [
+        {"question": "1 + 1", "answer": "2", "module": "arithmetic__add_or_sub"},
+        {"question": "2 + 1", "answer": "3", "module": "arithmetic__add_or_sub"},
+    ]
+    tokenizer = CharacterTokenizer.from_texts(
+        format_prompt(row["question"]) + format_completion(row["answer"]) for row in rows
+    )
+    tokenizer.save(bundle / "char_tokenizer.json")
+    for filename, examples in (("sft_train.jsonl", rows), ("sft_validation.jsonl", rows[:1])):
+        (bundle / filename).write_text(
+            "".join(json.dumps(row) + "\n" for row in examples), encoding="utf-8"
+        )
+    config = SimpleNamespace(
+        model={
+            "vocab_size": None,
+            "context_length": 64,
+            "n_layers": 1,
+            "n_heads": 2,
+            "d_model": 16,
+            "d_ff": 32,
+            "dropout": 0.0,
+        },
+        trainer=SimpleNamespace(
+            bf16=False,
+            learning_rate=1e-3,
+            weight_decay=0.0,
+            max_steps=2,
+            batch_size=2,
+            gradient_accumulation=1,
+            eval_every=1,
+            save_every=1,
+            warmup_steps=0,
+            grad_clip=1.0,
+        ),
+        tracking=SimpleNamespace(log_every=1),
+    )
+
+    class Run:
+        def __init__(self):
+            self.logged = []
+
+        def log(self, values, **_kwargs):
+            self.logged.append(values)
+
+    run = Run()
+    result = train_sft(config=config, bundle_dir=bundle, run_dir=run_dir, run=run)
+    checkpoint = torch.load(result["checkpoint"], map_location="cpu", weights_only=False)
+    assert result["step"] == 2
+    assert checkpoint["step"] == 2
+    assert checkpoint["tokenizer_sha256"] == tokenizer.sha256
+    assert checkpoint["model"]
+    assert len(run.logged) == 2
+    assert Path(result["metrics_path"]).exists()
