@@ -29,6 +29,7 @@ class DataPools:
     duplicate_questions: int
     thresholds: dict[str, dict[str, int]]
     excluded_overlength: dict[str, dict[str, int]]
+    ood_source_by_module: dict[str, str]
 
 
 def normalize_question(question: str) -> str:
@@ -63,10 +64,17 @@ def split_records(
     rlvr_fraction: float = 0.05,
     seed: int = 17,
     context_length: int = 256,
+    ood_examples_per_module: int = 1000,
     modules: tuple[str, ...] = SELECTED_MODULES,
 ) -> DataPools:
     """Dedupe across all source categories, then allocate disjoint fixed pools."""
-    if sft_examples <= 0 or validation_fraction < 0 or rlvr_fraction < 0 or context_length < 1:
+    if (
+        sft_examples <= 0
+        or validation_fraction < 0
+        or rlvr_fraction < 0
+        or context_length < 1
+        or ood_examples_per_module < 0
+    ):
         raise ValueError("Pool sizes must be positive and split fractions nonnegative")
     if validation_fraction + rlvr_fraction >= 1:
         raise ValueError("Validation and RLVR fractions must sum to less than one")
@@ -102,18 +110,6 @@ def split_records(
         else:
             eligible[key] = record
 
-    train_by_module = {module: [] for module in modules}
-    for record in eligible.values():
-        if record["category"] in TRAIN_CATEGORIES:
-            train_by_module[record["module"]].append(record)
-
-    n_modules = len(modules)
-    train_counts = [sft_examples // n_modules + (i < sft_examples % n_modules) for i in range(n_modules)]
-    validation_count = round(sft_examples * validation_fraction)
-    rlvr_count = round(sft_examples * rlvr_fraction)
-    validation_counts = [validation_count // n_modules + (i < validation_count % n_modules) for i in range(n_modules)]
-    rlvr_counts = [rlvr_count // n_modules + (i < rlvr_count % n_modules) for i in range(n_modules)]
-
     splits: dict[str, list[dict[str, str]]] = {
         "sft_train": [],
         "sft_validation": [],
@@ -123,21 +119,6 @@ def split_records(
         "number_length_ood": [],
         "expression_length_ood": [],
     }
-    for module_index, module in enumerate(modules):
-        candidates = sorted(train_by_module[module], key=lambda row: _stable_order(row, seed))
-        requested = train_counts[module_index] + validation_counts[module_index] + rlvr_counts[module_index]
-        if len(candidates) < requested:
-            raise ValueError(
-                f"Module {module!r} has {len(candidates)} unique train examples, "
-                f"but the configured pools require {requested}"
-            )
-        train_end = train_counts[module_index]
-        validation_end = train_end + validation_counts[module_index]
-        rlvr_end = validation_end + rlvr_counts[module_index]
-        splits["sft_train"].extend(candidates[:train_end])
-        splits["sft_validation"].extend(candidates[train_end:validation_end])
-        splits["rlvr"].extend(candidates[validation_end:rlvr_end])
-
     splits["test"] = [
         record for record in eligible.values() if record["category"] == "interpolate"
     ]
@@ -154,19 +135,75 @@ def split_records(
             "expression_operator_count_p95": expression_threshold,
         }
 
-    for record in eligible.values():
-        if record["category"] != "extrapolate":
-            continue
-        digit_width, operator_count = question_features(record["question"])
-        threshold = thresholds[record["module"]]
-        longer_number = digit_width > threshold["number_digit_width_p95"]
-        longer_expression = operator_count > threshold["expression_operator_count_p95"]
-        if longer_number and not longer_expression:
-            splits["number_length_ood"].append(record)
-        elif longer_expression and not longer_number:
-            splits["expression_length_ood"].append(record)
-        else:
-            splits["extrapolate_other"].append(record)
+    held_out: set[str] = set()
+    ood_source_by_module: dict[str, str] = {}
+    for module in modules:
+        official = [
+            row for row in eligible.values()
+            if row["module"] == module and row["category"] == "extrapolate"
+        ]
+        fallback = not official
+        ood_source_by_module[module] = (
+            "train categories (controlled fallback; no eligible official extrapolate rows)"
+            if fallback else "official extrapolate"
+        )
+        candidates = official if official else [
+            row for row in eligible.values()
+            if row["module"] == module and row["category"] in TRAIN_CATEGORIES
+        ]
+        number_rows: list[dict[str, str]] = []
+        expression_rows: list[dict[str, str]] = []
+        other_rows: list[dict[str, str]] = []
+        for record in candidates:
+            digit_width, operator_count = question_features(record["question"])
+            threshold = thresholds[module]
+            longer_number = digit_width > threshold["number_digit_width_p95"]
+            longer_expression = operator_count > threshold["expression_operator_count_p95"]
+            if longer_number and not longer_expression:
+                number_rows.append(record)
+            elif longer_expression and not longer_number:
+                expression_rows.append(record)
+            elif not fallback:
+                other_rows.append(record)
+        number_rows.sort(key=lambda row: _stable_order(row, seed))
+        expression_rows.sort(key=lambda row: _stable_order(row, seed))
+        if fallback:
+            number_rows = number_rows[:ood_examples_per_module]
+            expression_rows = expression_rows[:ood_examples_per_module]
+            held_out.update(normalize_question(row["question"]) for row in number_rows)
+            held_out.update(normalize_question(row["question"]) for row in expression_rows)
+        splits["number_length_ood"].extend(number_rows)
+        splits["expression_length_ood"].extend(expression_rows)
+        splits["extrapolate_other"].extend(other_rows)
+
+    n_modules = len(modules)
+    train_counts = [sft_examples // n_modules + (i < sft_examples % n_modules) for i in range(n_modules)]
+    validation_count = round(sft_examples * validation_fraction)
+    rlvr_count = round(sft_examples * rlvr_fraction)
+    validation_counts = [validation_count // n_modules + (i < validation_count % n_modules) for i in range(n_modules)]
+    rlvr_counts = [rlvr_count // n_modules + (i < rlvr_count % n_modules) for i in range(n_modules)]
+    for module_index, module in enumerate(modules):
+        candidates = sorted(
+            (
+                row for key, row in eligible.items()
+                if row["module"] == module
+                and row["category"] in TRAIN_CATEGORIES
+                and key not in held_out
+            ),
+            key=lambda row: _stable_order(row, seed),
+        )
+        requested = train_counts[module_index] + validation_counts[module_index] + rlvr_counts[module_index]
+        if len(candidates) < requested:
+            raise ValueError(
+                f"Module {module!r} has {len(candidates)} unique train examples after OOD reservation, "
+                f"but the configured pools require {requested}"
+            )
+        train_end = train_counts[module_index]
+        validation_end = train_end + validation_counts[module_index]
+        rlvr_end = validation_end + rlvr_counts[module_index]
+        splits["sft_train"].extend(candidates[:train_end])
+        splits["sft_validation"].extend(candidates[train_end:validation_end])
+        splits["rlvr"].extend(candidates[validation_end:rlvr_end])
 
     for values in splits.values():
         values.sort(key=lambda row: (row["module"], _stable_order(row, seed)))
@@ -185,4 +222,5 @@ def split_records(
             }
             for module in modules
         },
+        ood_source_by_module=ood_source_by_module,
     )

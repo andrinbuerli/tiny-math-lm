@@ -86,6 +86,7 @@ def main(config: DictConfig) -> None:
             validation_fraction=float(config.data.validation_fraction),
             rlvr_fraction=float(config.data.rlvr_fraction),
             context_length=int(config.data.context_length),
+            ood_examples_per_module=int(config.data.ood_examples_per_module),
         )
         run.config.update(
             {

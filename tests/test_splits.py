@@ -114,6 +114,48 @@ def test_controlled_ood_splits_vary_one_question_feature():
         assert number_case["category"] == expr_case["category"] == "extrapolate"
 
 
+def test_missing_official_extrapolate_uses_reserved_disjoint_train_rows():
+    rows = [row for row in _records() if row["category"] != "extrapolate"]
+    for module in SELECTED_MODULES:
+        rows.extend(
+            [
+                {
+                    "question": f"{module} held out number 123456789012 + 1",
+                    "answer": "123456789013",
+                    "category": "train-medium",
+                    "module": module,
+                },
+                {
+                    "question": f"{module} held out expression 1 + 1 + 1 + 1 + 1",
+                    "answer": "5",
+                    "category": "train-hard",
+                    "module": module,
+                },
+            ]
+        )
+    pools = split_records(
+        rows,
+        sft_examples=5,
+        validation_fraction=0.2,
+        rlvr_fraction=0.2,
+        ood_examples_per_module=1,
+    )
+    assert len(pools.splits["number_length_ood"]) == len(SELECTED_MODULES)
+    assert len(pools.splits["expression_length_ood"]) == len(SELECTED_MODULES)
+    training_keys = {
+        normalize_question(row["question"])
+        for name in ("sft_train", "sft_validation", "rlvr")
+        for row in pools.splits[name]
+    }
+    for module in SELECTED_MODULES:
+        assert "train categories" in pools.ood_source_by_module[module]
+    for name in ("number_length_ood", "expression_length_ood"):
+        assert all(row["category"].startswith("train-") for row in pools.splits[name])
+        assert not training_keys.intersection(
+            normalize_question(row["question"]) for row in pools.splits[name]
+        )
+
+
 def test_prepared_bundle_persists_tokenizer_samples_and_hashed_manifest(workspace_tmpdir):
     inspection = DatasetInspection(
         dataset_id="d0rj/mathematics_dataset",

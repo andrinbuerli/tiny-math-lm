@@ -11,4 +11,5 @@ validation_fraction: 0.05
 rlvr_fraction: 0.05
 seed: ${seed}
 context_length: 256
+ood_examples_per_module: ${experiment.ood_examples_per_module}
 data_dir: ${paths.data}

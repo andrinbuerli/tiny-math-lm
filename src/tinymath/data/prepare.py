@@ -133,11 +133,11 @@ def write_data_bundle(
         "split_rules": {
             "train_categories": ["train-easy", "train-medium", "train-hard"],
             "test_category": "interpolate",
-            "ood_source_category": "extrapolate",
+            "ood_source_by_module": pools.ood_source_by_module,
             "deduplication": "NFC and whitespace-collapse question key; preserve original text; official evaluation category wins",
             "module_balance": "equal requested example counts across the five modules, remainder assigned in configured order",
-            "number_length_ood": "extrapolate rows above module interpolate p95 max digit-run width, while operator count stays at or below p95",
-            "expression_length_ood": "extrapolate rows above module interpolate p95 operator count, while max digit-run width stays at or below p95",
+            "number_length_ood": "rows above module interpolate p95 max digit-run width while operator count stays at or below p95; use official extrapolate rows where available, otherwise reserve deterministic train-category rows",
+            "expression_length_ood": "rows above module interpolate p95 operator count while max digit-run width stays at or below p95; use official extrapolate rows where available, otherwise reserve deterministic train-category rows",
             "extrapolate_other": "all remaining official extrapolate examples; it is disjoint from the two controlled OOD subsets",
             "overlength": "exclude examples whose prompt+completion+special-token length exceeds context; never truncate",
         },
@@ -173,6 +173,7 @@ def prepare_bundle(
     validation_fraction: float,
     rlvr_fraction: float,
     context_length: int,
+    ood_examples_per_module: int = 1000,
 ) -> tuple[DataPools, CharacterTokenizer, dict[str, Any]]:
     pools = split_records(
         records,
@@ -181,6 +182,7 @@ def prepare_bundle(
         rlvr_fraction=rlvr_fraction,
         seed=seed,
         context_length=context_length,
+        ood_examples_per_module=ood_examples_per_module,
     )
     tokenizer = make_tokenizer(pools)
     manifest = write_data_bundle(
