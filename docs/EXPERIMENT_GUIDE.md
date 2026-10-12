@@ -54,10 +54,12 @@ All experiments use the same five selected DeepMind Mathematics modules and a st
 
 ## Validation
 
-Run the unit and CPU-fallback integration suite with:
+Run the unit and integration suite with:
 
 ```bash
 uv run pytest -q
 ```
+
+The integration test uses CUDA when available. To force its CPU fallback, run `CUDA_VISIBLE_DEVICES='' uv run pytest -q`.
 
 Every command accepts Hydra overrides. For example, change a model, seed, W&B project, group, or run name by adding `model=10m seed=18 tracking.project=tinymath-rl tracking.group=scale-seed18 tracking.name=pilot-10m-seed18`.
