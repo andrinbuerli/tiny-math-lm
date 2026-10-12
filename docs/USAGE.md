@@ -33,6 +33,15 @@ uv run python scripts/train_sft.py model=1m trainer=continued_sft experiment=pil
 
 Training and evaluation locate the prepared bundle by experiment and seed. Set `data_bundle=data/processed/<bundle-name>` to select one explicitly. Each stage writes its sanitized composed config, checkpoints, CSV metrics and W&B run state beneath `/workspace/runs`.
 
+SFT, continued-SFT and GRPO training runs log deterministic W&B qualitative tables every 20,000 optimizer steps and at the final step, with generated answers for up to two examples per module from the training, validation and test pools. To attach a final table to a run that began before periodic qualitative logging was added, rerun the Hydra helper with that run's original config overrides; it resumes the matching W&B run ID:
+
+```bash
+uv run python scripts/log_qualitative.py model=1m experiment=main seed=18 \
+  tracking.mode=online data_bundle=data/processed/<bundle-name>
+```
+
+Use `trainer=continued_sft` for the continued-SFT run. For GRPO, use `trainer=sft` plus the corresponding `init_checkpoint=...` override used to launch that GRPO run.
+
 `run_all.py experiment=pilot` prepares data once and runs SFT, GRPO, continued-SFT and their evaluations for the configured model list. Override `orchestration.models=[1m]` to run one size. The default smoke preset is data-only for orchestration; direct stage commands can still run short optimization checks by setting `trainer.max_steps` or `rlvr.updates`.
 
 ## W&B overrides and local report
@@ -49,3 +58,7 @@ The comparison report writes `comparison.csv`, `comparison.json`, and PNG/SVG fi
 ## Data and OOD protocol note
 
 The streamed English split contains the official `interpolate` evaluation category for all five selected modules. The exact selected module IDs had no eligible official `extrapolate` rows in the inspected dataset revision. When a module lacks those rows, preparation reserves a deterministic capped set from its eligible `train-*` rows using the interpolation p95 thresholds and removes those questions from SFT, validation and RLVR. Number-width and expression-length groups each change one measured feature. The manifest records the source category and thresholds per module; a feature with no eligible candidates remains empty.
+Each saved training directory contains `latest.pt` for resuming and
+`latest_inference.pt` with model weights and tokenizer/model metadata for later
+inference. Both are refreshed at the configured checkpoint interval and at the
+final step.

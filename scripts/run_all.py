@@ -33,7 +33,7 @@ def _overrides(
     for key, value in values["experiment"].items():
         if key != "name":
             result.append(f"experiment.{key}={json.dumps(value)}")
-    for group in ("data", "rlvr", "eval", "tracking", "paths"):
+    for group in ("data", "rlvr", "eval", "qualitative", "tracking", "paths"):
         for key, value in values[group].items():
             if key == "name":
                 continue
@@ -74,11 +74,17 @@ def _run(
 @hydra.main(version_base="1.3", config_path="../configs", config_name="config")
 def main(config: DictConfig) -> None:
     if not config.experiment.run_optimization:
-        _run("prepare_data.py", config, model=str(config.model.name), trainer="sft")
+        if not config.data_bundle:
+            _run("prepare_data.py", config, model=str(config.model.name), trainer="sft")
         LOGGER.info("Experiment preset requested data preparation only")
         return
     selected_models: Iterable[str] = config.orchestration.models
-    _run("prepare_data.py", config, model=str(config.model.name), trainer="sft")
+    if config.data_bundle:
+        manifest = workspace_path(str(config.data_bundle)) / "manifest.json"
+        if not manifest.is_file():
+            raise FileNotFoundError(f"Prepared data manifest not found: {manifest}")
+    else:
+        _run("prepare_data.py", config, model=str(config.model.name), trainer="sft")
     for model_name in selected_models:
         _run("train_sft.py", config, model=str(model_name), trainer="sft")
         sft_run = workspace_path(

@@ -14,6 +14,7 @@ import torch
 from tinymath.checkpoint import capture_rng_state, restore_rng_state, save_checkpoint
 from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.data.prompts import format_prompt
+from tinymath.eval.qualitative import build_qualitative_table
 from tinymath.model.gpt import GPTConfig, TinyMathGPT
 from tinymath.rewards.verify import verify_answer
 from tinymath.train.grpo import (
@@ -84,6 +85,8 @@ def train_grpo(
         restore_rng_state(resumed["rng_state"])
 
     updates = int(config.rlvr.updates)
+    qualitative_every = max(1, int(getattr(getattr(config, "qualitative", None), "every_steps", 20_000)))
+    qualitative_count = 0
     prompts_per_batch = int(config.rlvr.prompts_per_batch)
     group_size = int(config.rlvr.group_size)
     temperature = float(config.rlvr.temperature)
@@ -235,8 +238,6 @@ def train_grpo(
             }
             writer.writerow(values)
             metrics_file.flush()
-            if update % int(config.tracking.log_every) == 0 or update == 1 or update == updates:
-                run.log({f"grpo/{key}": value for key, value in values.items() if key != "update"}, step=update)
             if update % int(config.trainer.save_every) == 0 or update == updates:
                 save_checkpoint(
                     latest_path,
@@ -253,6 +254,57 @@ def train_grpo(
                         "source_sft_checkpoint": str(init_checkpoint),
                     },
                 )
+                save_checkpoint(
+                    run_dir / "latest_inference.pt",
+                    {
+                        "model": model.state_dict(),
+                        "update": update,
+                        "tokenizer_sha256": tokenizer.sha256,
+                        "model_config": model_config.__dict__,
+                        "training_arm": "grpo",
+                    },
+                )
+            qualitative_due = update % qualitative_every == 0 or update == updates
+            if qualitative_due:
+                qualitative_table, qualitative_count = build_qualitative_table(
+                    model=model,
+                    tokenizer=tokenizer,
+                    split_rows={
+                        "train": prompts,
+                        "validation": _load_rows(bundle_dir / "sft_validation.jsonl"),
+                        "test": _load_rows(bundle_dir / "test.jsonl"),
+                    },
+                    training_arm="grpo",
+                    seed=int(getattr(config, "seed", 0)),
+                    max_new_tokens=int(
+                        getattr(getattr(config, "eval", None), "max_new_tokens", max_completion)
+                    ),
+                    examples_per_module=int(
+                        getattr(getattr(config, "qualitative", None), "examples_per_module", 2)
+                    ),
+                )
+                summary = getattr(run, "summary", None)
+                if summary is not None:
+                    summary["qualitative/example_count"] = qualitative_count
+                    summary["qualitative/splits"] = ["train", "validation", "test"]
+                    summary["training/latest_inference_checkpoint"] = str(
+                        run_dir / "latest_inference.pt"
+                    )
+                values["qualitative/examples"] = qualitative_table
+            if (
+                update % int(config.tracking.log_every) == 0
+                or update == 1
+                or update == updates
+                or qualitative_due
+            ):
+                run.log(
+                    {
+                        key if key == "qualitative/examples" else f"grpo/{key}": value
+                        for key, value in values.items()
+                        if key != "update"
+                    },
+                    step=update,
+                )
     finally:
         metrics_file.close()
     return {
@@ -260,6 +312,8 @@ def train_grpo(
         "tokens_seen": tokens_seen,
         "estimated_flops": estimated_flops_seen,
         "checkpoint": str(latest_path),
+        "inference_checkpoint": str(run_dir / "latest_inference.pt"),
         "metrics_path": str(metrics_path),
         "final_reward": reward_mean,
+        "qualitative_examples": qualitative_count,
     }

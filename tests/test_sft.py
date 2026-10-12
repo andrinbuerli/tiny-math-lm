@@ -61,7 +61,11 @@ def test_sft_loop_trains_and_saves_reloadable_checkpoint(workspace_tmpdir):
         format_prompt(row["question"]) + format_completion(row["answer"]) for row in rows
     )
     tokenizer.save(bundle / "char_tokenizer.json")
-    for filename, examples in (("sft_train.jsonl", rows), ("sft_validation.jsonl", rows[:1])):
+    for filename, examples in (
+        ("sft_train.jsonl", rows),
+        ("sft_validation.jsonl", rows[:1]),
+        ("test.jsonl", rows[:1]),
+    ):
         (bundle / filename).write_text(
             "".join(json.dumps(row) + "\n" for row in examples), encoding="utf-8"
         )
@@ -77,6 +81,7 @@ def test_sft_loop_trains_and_saves_reloadable_checkpoint(workspace_tmpdir):
             "dropout": 0.0,
         },
         trainer=SimpleNamespace(
+            name="sft",
             bf16=False,
             learning_rate=1e-3,
             weight_decay=0.0,
@@ -89,6 +94,7 @@ def test_sft_loop_trains_and_saves_reloadable_checkpoint(workspace_tmpdir):
             grad_clip=1.0,
         ),
         tracking=SimpleNamespace(log_every=1),
+        qualitative=SimpleNamespace(every_steps=1, examples_per_module=2),
     )
 
     class Run:
@@ -107,6 +113,12 @@ def test_sft_loop_trains_and_saves_reloadable_checkpoint(workspace_tmpdir):
     assert checkpoint["data_generator_state"].numel() > 0
     assert checkpoint["model"]
     assert len(run.logged) == 2
+    assert "qualitative/examples" in run.logged[-1]
+    assert result["qualitative_examples"] == 4
+    inference = torch.load(result["inference_checkpoint"], map_location="cpu", weights_only=False)
+    assert inference["step"] == 2
+    assert inference["tokenizer_sha256"] == tokenizer.sha256
+    assert inference["model"]
     assert Path(result["metrics_path"]).exists()
     config.trainer.max_steps = 3
     resumed = train_sft(config=config, bundle_dir=bundle, run_dir=run_dir, run=run)

@@ -76,6 +76,7 @@ def main(config: DictConfig) -> None:
                 "grpo/estimated_flops": result["estimated_flops"],
                 "grpo/final_reward": result["final_reward"],
                 "grpo/checkpoint": result["checkpoint"],
+                "grpo/latest_inference_checkpoint": result["inference_checkpoint"],
                 "grpo/source_sft_checkpoint": str(init_checkpoint),
             }
         )

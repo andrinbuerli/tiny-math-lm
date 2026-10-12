@@ -97,6 +97,7 @@ def main(config: DictConfig) -> None:
                 "training/best_validation_loss": result["best_validation_loss"],
                 "training/model_parameters": result["parameters"],
                 "training/checkpoint": result["checkpoint"],
+                "training/latest_inference_checkpoint": result["inference_checkpoint"],
             }
         )
         LOGGER.info("SFT training finished: %s", result)

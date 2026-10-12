@@ -4,6 +4,7 @@ defaults:
   - trainer: sft
   - rlvr: grpo
   - eval: default
+  - qualitative: default
   - reporting: default
   - tracking: wandb
   - experiment: smoke

@@ -1,0 +1,3 @@
+enabled: true
+every_steps: 20000
+examples_per_module: 2

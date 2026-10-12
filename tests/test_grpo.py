@@ -97,6 +97,11 @@ def test_grpo_runner_scores_mixed_group_and_applies_gradient(workspace_tmpdir, m
         json.dumps({"question": "1 + 1", "answer": "2", "module": "arithmetic__add_or_sub"}) + "\n",
         encoding="utf-8",
     )
+    qualitative_row = json.dumps(
+        {"question": "1 + 1", "answer": "2", "module": "arithmetic__add_or_sub"}
+    ) + "\n"
+    (bundle / "sft_validation.jsonl").write_text(qualitative_row, encoding="utf-8")
+    (bundle / "test.jsonl").write_text(qualitative_row, encoding="utf-8")
     model_config = GPTConfig(
         vocab_size=tokenizer.vocab_size, context_length=64, n_layers=1,
         n_heads=2, d_model=16, d_ff=32,
@@ -134,22 +139,33 @@ def test_grpo_runner_scores_mixed_group_and_applies_gradient(workspace_tmpdir, m
             max_completion_tokens=2, clip_epsilon=0.2, kl_coefficient=0.0, learning_rate=1e-2,
         ),
         tracking=SimpleNamespace(log_every=1),
+        qualitative=SimpleNamespace(every_steps=1, examples_per_module=2),
     )
 
     class Run:
-        def log(self, _values, **_kwargs):
-            pass
+        def __init__(self):
+            self.logged = []
 
+        def log(self, values, **_kwargs):
+            self.logged.append(values)
+
+    run = Run()
     result = grpo_runner.train_grpo(
         config=config,
         bundle_dir=bundle,
         init_checkpoint=checkpoint_path,
         run_dir=run_dir,
-        run=Run(),
+        run=run,
     )
     saved = torch.load(result["checkpoint"], map_location="cpu", weights_only=False)
     before = initial_model.state_dict()
     assert result["final_reward"] == 0.5
+    assert result["qualitative_examples"] == 3
+    inference = torch.load(result["inference_checkpoint"], map_location="cpu", weights_only=False)
+    assert inference["update"] == 1
+    assert inference["tokenizer_sha256"] == tokenizer.sha256
+    assert inference["model"]
+    assert "qualitative/examples" in run.logged[-1]
     assert any(not torch.equal(before[name], saved["model"][name]) for name in before)
     with (run_dir / "metrics.csv").open(encoding="utf-8") as handle:
         metrics = next(csv.DictReader(handle))

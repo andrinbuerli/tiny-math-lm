@@ -14,6 +14,7 @@ import torch
 from tinymath.checkpoint import capture_rng_state, restore_rng_state, save_checkpoint
 from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.data.prompts import format_completion, format_prompt
+from tinymath.eval.qualitative import build_qualitative_table
 from tinymath.model.gpt import GPTConfig, TinyMathGPT
 from tinymath.train.sft import build_completion_batch, completion_only_loss
 
@@ -88,8 +89,10 @@ def train_sft(
     """Train to the configured optimizer step and persist resumable state/metrics."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     tokenizer = CharacterTokenizer.load(bundle_dir / "char_tokenizer.json")
-    train_examples = _examples(read_jsonl(bundle_dir / "sft_train.jsonl"))
-    validation_examples = _examples(read_jsonl(bundle_dir / "sft_validation.jsonl"))
+    train_rows = read_jsonl(bundle_dir / "sft_train.jsonl")
+    validation_rows = read_jsonl(bundle_dir / "sft_validation.jsonl")
+    train_examples = _examples(train_rows)
+    validation_examples = _examples(validation_rows)
     if not train_examples:
         raise ValueError("SFT training split is empty")
 
@@ -151,6 +154,8 @@ def train_sft(
     accumulation = int(config.trainer.gradient_accumulation)
     eval_every = max(1, int(config.trainer.eval_every))
     save_every = max(1, int(config.trainer.save_every))
+    qualitative_every = max(1, int(getattr(getattr(config, "qualitative", None), "every_steps", 20_000)))
+    qualitative_count = 0
     warmup = int(config.trainer.warmup_steps)
     base_lr = float(config.trainer.learning_rate)
     started = time.monotonic()
@@ -218,27 +223,64 @@ def train_sft(
             }
             metric_writer.writerow(row)
             metrics_file.flush()
-            if step % int(config.tracking.log_every) == 0 or step == 1 or step == target_steps:
-                values = {
-                    "optimizer_step": step,
-                    "tokens_seen": tokens_seen,
-                    "train/loss": loss_value,
-                    "train/grad_norm": float(grad_norm.item()),
-                    "train/learning_rate": lr,
-                    "train/wall_seconds": elapsed,
-                    "train/tokens_per_second": tokens_seen / max(1e-9, elapsed),
-                    "train/estimated_flops": 6 * model.count_parameters() * tokens_seen,
-                }
-                if val_loss is not None:
-                    values["val/loss"] = val_loss
-                if device.type == "cuda":
-                    values["system/peak_gpu_memory_bytes"] = torch.cuda.max_memory_allocated(device)
-                run.log(values, step=step)
+            values = {
+                "optimizer_step": step,
+                "tokens_seen": tokens_seen,
+                "train/loss": loss_value,
+                "train/grad_norm": float(grad_norm.item()),
+                "train/learning_rate": lr,
+                "train/wall_seconds": elapsed,
+                "train/tokens_per_second": tokens_seen / max(1e-9, elapsed),
+                "train/estimated_flops": 6 * model.count_parameters() * tokens_seen,
+            }
+            if val_loss is not None:
+                values["val/loss"] = val_loss
+            if device.type == "cuda":
+                values["system/peak_gpu_memory_bytes"] = torch.cuda.max_memory_allocated(device)
             if step % save_every == 0 or step == target_steps:
                 _save_state(best_path=latest_path, model=model, optimizer=optimizer,
                             step=step, tokens_seen=tokens_seen, best_val=best_val,
                             tokenizer=tokenizer, model_config=model_config,
                             data_generator_state=data_generator.get_state())
+                _save_inference_state(
+                    run_dir / "latest_inference.pt", model=model, step=step,
+                    tokenizer=tokenizer, model_config=model_config,
+                    training_arm=str(config.trainer.name),
+                )
+            qualitative_due = step % qualitative_every == 0 or step == target_steps
+            if qualitative_due:
+                qualitative_table, qualitative_count = build_qualitative_table(
+                    model=model,
+                    tokenizer=tokenizer,
+                    split_rows={
+                        "train": train_rows,
+                        "validation": validation_rows,
+                        "test": read_jsonl(bundle_dir / "test.jsonl"),
+                    },
+                    training_arm=str(config.trainer.name),
+                    seed=int(config.seed),
+                    max_new_tokens=int(
+                        getattr(getattr(config, "eval", None), "max_new_tokens", 128)
+                    ),
+                    examples_per_module=int(
+                        getattr(getattr(config, "qualitative", None), "examples_per_module", 2)
+                    ),
+                )
+                summary = getattr(run, "summary", None)
+                if summary is not None:
+                    summary["qualitative/example_count"] = qualitative_count
+                    summary["qualitative/splits"] = ["train", "validation", "test"]
+                    summary["training/latest_inference_checkpoint"] = str(
+                        run_dir / "latest_inference.pt"
+                    )
+                values["qualitative/examples"] = qualitative_table
+            if (
+                step % int(config.tracking.log_every) == 0
+                or step == 1
+                or step == target_steps
+                or qualitative_due
+            ):
+                run.log(values, step=step)
     finally:
         metrics_file.close()
     return {
@@ -247,7 +289,9 @@ def train_sft(
         "best_validation_loss": best_val,
         "metrics_path": str(metrics_path),
         "checkpoint": str(latest_path),
+        "inference_checkpoint": str(run_dir / "latest_inference.pt"),
         "parameters": model.count_parameters(),
+        "qualitative_examples": qualitative_count,
     }
 
 
@@ -275,5 +319,26 @@ def _save_state(
             "data_generator_state": data_generator_state,
             "tokenizer_sha256": tokenizer.sha256,
             "model_config": model_config.__dict__,
+        },
+    )
+
+
+def _save_inference_state(
+    path: Path,
+    *,
+    model: TinyMathGPT,
+    step: int,
+    tokenizer: CharacterTokenizer,
+    model_config: GPTConfig,
+    training_arm: str,
+) -> None:
+    save_checkpoint(
+        path,
+        {
+            "model": model.state_dict(),
+            "step": step,
+            "tokenizer_sha256": tokenizer.sha256,
+            "model_config": model_config.__dict__,
+            "training_arm": training_arm,
         },
     )
