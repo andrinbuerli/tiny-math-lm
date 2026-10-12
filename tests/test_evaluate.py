@@ -89,6 +89,19 @@ def test_evaluation_writes_linked_predictions_and_decoding_metadata(
     assert saved_result["decoding"] == result["decoding"]
     assert generation_temperatures == [effective_temperature]
 
+    (bundle / "test.jsonl").write_text("", encoding="utf-8")
+    empty_result = evaluate_checkpoint(
+        checkpoint_path=checkpoint,
+        bundle_dir=bundle,
+        output_dir=workspace_tmpdir / "empty-eval",
+        split_names=["test"],
+        max_new_tokens=3,
+    )["splits"]["test"]
+    assert empty_result["examples"] == 0
+    assert empty_result["accuracy"] is None
+    assert empty_result["format_validity"] is None
+    assert empty_result["mean_output_tokens"] is None
+
 
 def test_sampled_evaluation_requires_positive_temperature():
     with pytest.raises(ValueError, match="positive temperature"):

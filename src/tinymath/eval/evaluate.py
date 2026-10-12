@@ -163,9 +163,9 @@ def evaluate_checkpoint(
                 )
         results[split_name] = {
             "examples": len(examples),
-            "accuracy": correct_total / len(examples) if examples else 0.0,
-            "format_validity": valid_total / len(examples) if examples else 0.0,
-            "mean_output_tokens": output_tokens / len(examples) if examples else 0.0,
+            "accuracy": correct_total / len(examples) if examples else None,
+            "format_validity": valid_total / len(examples) if examples else None,
+            "mean_output_tokens": output_tokens / len(examples) if examples else None,
             "module": {
                 module: {
                     **counts,

@@ -88,10 +88,11 @@ def main(config: DictConfig) -> None:
         )
         logged = {}
         for split, result in summary["splits"].items():
-            logged[f"eval/{split}/accuracy"] = result["accuracy"]
-            logged[f"eval/{split}/format_validity"] = result["format_validity"]
-            logged[f"eval/{split}/mean_output_tokens"] = result["mean_output_tokens"]
             logged[f"eval/{split}/examples"] = result["examples"]
+            for metric in ("accuracy", "format_validity", "mean_output_tokens"):
+                value = result[metric]
+                if value is not None:
+                    logged[f"eval/{split}/{metric}"] = value
             for module, metrics in result["module"].items():
                 logged[f"eval/{split}/module/{module}/accuracy"] = metrics["accuracy"]
                 logged[f"eval/{split}/module/{module}/format_validity"] = metrics["format_validity"]
