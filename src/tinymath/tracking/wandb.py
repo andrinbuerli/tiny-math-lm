@@ -52,12 +52,40 @@ def _tracking_state(path: Path) -> dict[str, Any]:
 def _compatible_with_runtime_extension(
     saved: dict[str, Any], current: dict[str, Any]
 ) -> bool:
-    """Allow adding the runtime thread cap to runs created before that config group."""
-    if "runtime" in saved or "runtime" not in current:
-        return False
-    without_new_group = dict(current)
-    without_new_group.pop("runtime")
-    return saved == without_new_group
+    """Accept config-only additions that cannot change a resumed training run."""
+    import copy
+
+    normalized = copy.deepcopy(current)
+    saved_normalized = copy.deepcopy(saved)
+
+    # This group was added to cap thread usage on resume. It does not change the
+    # model, batches, optimizer, or objective.
+    if "runtime" not in saved_normalized and "runtime" in normalized:
+        normalized.pop("runtime")
+
+    # A prepared bundle fixes the actual data. A newer pinned source revision
+    # default therefore does not alter the data seen by a resumed run.
+    if (
+        saved_normalized.get("data_bundle")
+        and saved_normalized.get("data_bundle") == normalized.get("data_bundle")
+        and saved_normalized.get("data", {}).get("revision") is None
+        and normalized.get("data", {}).get("revision") is not None
+    ):
+        normalized["data"]["revision"] = None
+
+    # Temperature is inert under greedy decoding, so adding this setting to a
+    # config created before it existed is safe only when both configs are greedy.
+    saved_eval = saved_normalized.get("eval", {})
+    current_eval = normalized.get("eval", {})
+    if (
+        saved_eval.get("greedy") is True
+        and current_eval.get("greedy") is True
+        and "temperature" not in saved_eval
+        and "temperature" in current_eval
+    ):
+        current_eval.pop("temperature")
+
+    return saved_normalized == normalized
 
 
 def initialize_wandb(config: DictConfig, run_dir: str | Path, *, job_type: str) -> Any:

@@ -154,7 +154,7 @@ def test_wandb_offline_initialization_reuses_id(workspace_tmpdir, monkeypatch):
         tracking.initialize_wandb(config, workspace_tmpdir, job_type="unit")
 
 
-def test_wandb_resume_accepts_only_new_runtime_config_group(workspace_tmpdir, monkeypatch):
+def test_wandb_resume_accepts_safe_config_extensions(workspace_tmpdir, monkeypatch):
     captured = []
 
     class FakeRun:
@@ -173,9 +173,17 @@ def test_wandb_resume_accepts_only_new_runtime_config_group(workspace_tmpdir, mo
     monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
     monkeypatch.setattr(tracking, "_load_workspace_credentials", lambda: None)
     with initialize_config_dir(version_base="1.3", config_dir="/workspace/configs"):
-        current = compose(config_name="config", overrides=["tracking.mode=offline"])
+        current = compose(
+            config_name="config",
+            overrides=[
+                "tracking.mode=offline",
+                "data_bundle=data/processed/example-bundle",
+            ],
+        )
     saved = OmegaConf.create(current)
     del saved.runtime
+    del saved.eval.temperature
+    saved.data.revision = None
     persist_resolved_config(saved, workspace_tmpdir)
     (workspace_tmpdir / "wandb_run.json").write_text(
         json.dumps({"id": "legacy-run", "mode": "offline", "sync_status": "unsynced"})
