@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+import csv
+import json
+from types import SimpleNamespace
+
 import torch
 
+from tinymath.checkpoint import save_checkpoint
+from tinymath.data.char_tokenizer import CharacterTokenizer
+from tinymath.data.prompts import format_prompt
 from tinymath.model.gpt import GPTConfig, TinyMathGPT
+from tinymath.train import grpo_runner
 from tinymath.train.grpo import (
+    Rollouts,
     completion_log_probs,
     group_outcome_rates,
     group_relative_advantages,
@@ -75,4 +84,75 @@ def test_rollouts_are_grouped_detached_and_keep_eos_in_the_mask():
     )
     assert current.shape == rollouts.old_log_probs.shape
     assert current.requires_grad
+
+
+def test_grpo_runner_scores_mixed_group_and_applies_gradient(workspace_tmpdir, monkeypatch):
+    torch.manual_seed(11)
+    bundle = workspace_tmpdir / "bundle"
+    run_dir = workspace_tmpdir / "grpo"
+    bundle.mkdir()
+    tokenizer = CharacterTokenizer.from_texts([format_prompt("1 + 1") + "23"])
+    tokenizer.save(bundle / "char_tokenizer.json")
+    (bundle / "rlvr.jsonl").write_text(
+        json.dumps({"question": "1 + 1", "answer": "2", "module": "arithmetic__add_or_sub"}) + "\n",
+        encoding="utf-8",
+    )
+    model_config = GPTConfig(
+        vocab_size=tokenizer.vocab_size, context_length=64, n_layers=1,
+        n_heads=2, d_model=16, d_ff=32,
+    )
+    initial_model = TinyMathGPT(model_config)
+    checkpoint_path = workspace_tmpdir / "sft.pt"
+    save_checkpoint(
+        checkpoint_path,
+        {
+            "model": initial_model.state_dict(),
+            "model_config": model_config.__dict__,
+            "tokenizer_sha256": tokenizer.sha256,
+            "step": 1,
+        },
+    )
+
+    def fixed_rollouts(model, prompt_ids, *, temperature, **_kwargs):
+        completion_ids = torch.tensor(
+            [[[tokenizer.token_to_id["2"], tokenizer.eos_id],
+              [tokenizer.token_to_id["3"], tokenizer.eos_id]]],
+            device=prompt_ids.device,
+        )
+        mask = torch.ones_like(completion_ids, dtype=torch.bool)
+        with torch.no_grad():
+            old = grpo_runner.completion_log_probs(
+                model, prompt_ids, completion_ids, temperature=temperature
+            )
+        return Rollouts(completion_ids, mask, old, torch.ones_like(old))
+
+    monkeypatch.setattr(grpo_runner, "sample_group_rollouts", fixed_rollouts)
+    config = SimpleNamespace(
+        trainer=SimpleNamespace(bf16=False, weight_decay=0.0, grad_clip=1.0, save_every=1),
+        rlvr=SimpleNamespace(
+            updates=1, prompts_per_batch=1, group_size=2, temperature=1.0,
+            max_completion_tokens=2, clip_epsilon=0.2, kl_coefficient=0.0, learning_rate=1e-2,
+        ),
+        tracking=SimpleNamespace(log_every=1),
+    )
+
+    class Run:
+        def log(self, _values, **_kwargs):
+            pass
+
+    result = grpo_runner.train_grpo(
+        config=config,
+        bundle_dir=bundle,
+        init_checkpoint=checkpoint_path,
+        run_dir=run_dir,
+        run=Run(),
+    )
+    saved = torch.load(result["checkpoint"], map_location="cpu", weights_only=False)
+    before = initial_model.state_dict()
+    assert result["final_reward"] == 0.5
+    assert any(not torch.equal(before[name], saved["model"][name]) for name in before)
+    with (run_dir / "metrics.csv").open(encoding="utf-8") as handle:
+        metrics = next(csv.DictReader(handle))
+    assert float(metrics["grad_norm"]) > 0
+    assert float(metrics["group/mixed_rate"]) == 1.0
 
