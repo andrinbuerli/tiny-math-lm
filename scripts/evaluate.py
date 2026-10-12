@@ -68,6 +68,8 @@ def main(config: DictConfig) -> None:
             output_dir=run_dir,
             split_names=list(config.eval.splits),
             max_new_tokens=int(config.eval.max_new_tokens),
+            greedy=bool(config.eval.greedy),
+            temperature=float(config.eval.temperature),
             batch_size=int(config.eval.batch_size),
             max_examples_per_split=(
                 int(config.eval.max_examples_per_split)

@@ -30,6 +30,7 @@ def collect_results(
         summary = json.loads(path.read_text(encoding="utf-8"))
         model_name = path.parents[4].name
         arm = path.parents[2].name
+        decoding = summary.get("decoding", {})
         for split_name, split in summary.get("splits", {}).items():
             examples = split.get("examples")
             accuracy = split.get("accuracy")
@@ -48,6 +49,10 @@ def collect_results(
                 "modules": ";".join(sorted(split.get("module", {}))),
                 "checkpoint": summary.get("checkpoint"),
                 "checkpoint_step": summary.get("checkpoint_step"),
+                "decoding_strategy": decoding.get("strategy"),
+                "temperature": decoding.get("temperature"),
+                "max_new_tokens": decoding.get("max_new_tokens"),
+                "context_length": decoding.get("context_length"),
             }
             rows.append(row)
             by_checkpoint[(model_name, arm)] = summary
@@ -415,12 +420,41 @@ def _markdown_report(
         for arm in ARMS
         for split in SPLITS
     )
+    decoding_protocols = sorted(
+        {
+            (
+                row.get("decoding_strategy"),
+                row.get("temperature"),
+                row.get("max_new_tokens"),
+                row.get("context_length"),
+            )
+            for row in rows
+        },
+        key=lambda protocol: tuple("" if value is None else str(value) for value in protocol),
+    )
+    if decoding_protocols:
+        decoding_lines = [
+            (
+                f"- {strategy} decoding at temperature {temperature}; max_new_tokens cap {cap}; "
+                f"context length {context_length}. The effective cap is also limited by each "
+                "prompt's remaining context."
+                if strategy is not None
+                else "- Decoding metadata is missing for at least one saved evaluation."
+            )
+            for strategy, temperature, cap, context_length in decoding_protocols
+        ]
+    else:
+        decoding_lines = ["Decoding metadata is missing because no evaluation results are available."]
     lines = [
         f"# TinyMath-RL comparison: `{experiment}`",
         "",
         f"Seed: `{seed}`" if seed is not None else "Seed filter: all available seeds",
         f"Evaluation coverage: {actual_combinations}/{len(MODELS) * len(ARMS) * len(SPLITS)} model/arm/split measurements.",
         "Only saved evaluation results are included; `Missing` means no result file was available.",
+        "",
+        "## Decoding protocol",
+        "",
+        *decoding_lines,
         "",
         "## In-distribution test accuracy",
         "",
@@ -563,13 +597,16 @@ def make_report(
                         "accuracy": "", "format_validity": "", "mean_output_tokens": "",
                         "examples": "", "module_count": 0, "modules": "",
                         "checkpoint": "", "checkpoint_step": "",
+                        "decoding_strategy": "", "temperature": "", "max_new_tokens": "",
+                        "context_length": "",
                     })
                 )
     csv_path = output_dir / "comparison.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         fields = ["model", "arm", "split", "parameters", "accuracy", "format_validity",
                   "mean_output_tokens", "examples", "module_count", "modules", "checkpoint",
-                  "checkpoint_step"]
+                  "checkpoint_step", "decoding_strategy", "temperature", "max_new_tokens",
+                  "context_length"]
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         writer.writerows(expected_rows)

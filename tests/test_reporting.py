@@ -53,6 +53,12 @@ def test_comparison_markdown_summarizes_measured_gains_and_grpo_groups(workspace
                 {
                     "model_parameters": 992640,
                     "checkpoint_step": 1,
+                    "decoding": {
+                        "strategy": "greedy",
+                        "temperature": 0.0,
+                        "max_new_tokens": 128,
+                        "context_length": 256,
+                    },
                     "splits": splits,
                 }
             ),
@@ -83,11 +89,21 @@ def test_comparison_markdown_summarizes_measured_gains_and_grpo_groups(workspace
     assert "+10.0 pp" in markdown
     assert "+5.0 pp" in markdown
     assert "50.0%" in markdown
+    assert "greedy decoding at temperature 0.0; max_new_tokens cap 128; context length 256" in markdown
     assert "| 1m | sft | 40.0% | 500,000 | 500,000,000,000 |" in markdown
     assert "| 1m | grpo | 50.0% | 200 | 1,000,000,000,000 |" in markdown
     assert "2,000 examples / algebra__linear_1d;arithmetic__mixed" in markdown
     assert not report["coverage"]["missing"]["1m"]["sft"]["expression_length_ood"]
     assert report["coverage"]["missing"]["1m"]["continued_sft"]["number_length_ood"]
+    measured_test = next(
+        row
+        for row in report["available_measurements"]
+        if row["arm"] == "sft" and row["split"] == "test"
+    )
+    assert measured_test["decoding_strategy"] == "greedy"
+    assert measured_test["max_new_tokens"] == 128
+    csv_header = (output / "comparison.csv").read_text(encoding="utf-8").splitlines()[0]
+    assert "max_new_tokens" in csv_header
     empty_split = next(
         row
         for row in report["available_measurements"]

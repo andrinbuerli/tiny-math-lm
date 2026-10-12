@@ -76,10 +76,16 @@ def evaluate_checkpoint(
     output_dir: Path,
     split_names: list[str],
     max_new_tokens: int,
+    greedy: bool = True,
+    temperature: float = 0.8,
     batch_size: int = 1,
     max_examples_per_split: int | None = None,
 ) -> dict[str, Any]:
     del batch_size  # autoregressive generation uses one unpadded prompt at a time
+    if max_new_tokens < 1:
+        raise ValueError("max_new_tokens must be positive")
+    if not greedy and temperature <= 0:
+        raise ValueError("Sampled evaluation requires a positive temperature")
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     training_arm, source_sft_checkpoint = _checkpoint_provenance(checkpoint_path, checkpoint)
     tokenizer = CharacterTokenizer.load(bundle_dir / "char_tokenizer.json")
@@ -128,7 +134,7 @@ def evaluate_checkpoint(
                     generated = model.generate(
                         prompt,
                         max_new_tokens=min(max_new_tokens, available),
-                        temperature=0.0,
+                        temperature=0.0 if greedy else temperature,
                         eos_id=tokenizer.eos_id,
                     )[0, prompt.shape[1] :].tolist()
                 if tokenizer.eos_id in generated:
@@ -185,6 +191,13 @@ def evaluate_checkpoint(
         "source_sft_checkpoint": source_sft_checkpoint,
         "model_parameters": model.count_parameters(),
         "tokenizer_sha256": tokenizer.sha256,
+        "decoding": {
+            "strategy": "greedy" if greedy else "sampled",
+            "temperature": 0.0 if greedy else temperature,
+            "max_new_tokens": max_new_tokens,
+            "context_length": model_config.context_length,
+            "per_prompt_cap": "min(max_new_tokens, context_length - prompt_tokens)",
+        },
         "splits": results,
     }
     (output_dir / "results.json").write_text(

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from tinymath.checkpoint import save_checkpoint
 from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.data.prompts import format_prompt
@@ -57,9 +59,31 @@ def test_greedy_evaluation_writes_linked_predictions_and_metrics(workspace_tmpdi
     assert result["checkpoint_step"] == 4
     assert result["training_arm"] == "continued_sft"
     assert result["source_sft_checkpoint"] == source_checkpoint
+    assert result["decoding"] == {
+        "strategy": "greedy",
+        "temperature": 0.0,
+        "max_new_tokens": 3,
+        "context_length": 64,
+        "per_prompt_cap": "min(max_new_tokens, context_length - prompt_tokens)",
+    }
     assert result["splits"]["test"]["examples"] == 1
     assert (output / "test_predictions.csv").is_file()
-    assert json.loads((output / "results.json").read_text())["tokenizer_sha256"] == tokenizer.sha256
+    saved_result = json.loads((output / "results.json").read_text())
+    assert saved_result["tokenizer_sha256"] == tokenizer.sha256
+    assert saved_result["decoding"] == result["decoding"]
+
+
+def test_sampled_evaluation_requires_positive_temperature():
+    with pytest.raises(ValueError, match="positive temperature"):
+        evaluate_checkpoint(
+            checkpoint_path=None,
+            bundle_dir=None,
+            output_dir=None,
+            split_names=[],
+            max_new_tokens=1,
+            greedy=False,
+            temperature=0.0,
+        )
 
 
 def test_bounded_evaluation_subsets_round_robin_across_modules():
