@@ -1,0 +1,31 @@
+defaults:
+  - model: 1m
+  - data: default
+  - trainer: sft
+  - rlvr: grpo
+  - eval: default
+  - tracking: wandb
+  - experiment: smoke
+  - _self_
+
+seed: 17
+paths:
+  root: /workspace
+  data: ${paths.root}/data
+  runs: ${paths.root}/runs
+  outputs: ${paths.root}/outputs
+tracking:
+  project: tinymath-rl
+  entity: ${oc.env:WANDB_ENTITY,null}
+  group: ${experiment.name}
+  name: ${experiment.name}-${model.name}-seed${seed}
+  mode: online
+  tags: ["${experiment.name}", "${model.name}"]
+  log_every: 10
+  resume: true
+hydra:
+  run:
+    dir: ${paths.outputs}/${experiment.name}/${model.name}/seed${seed}
+  job:
+    chdir: false
+  output_subdir: hydra

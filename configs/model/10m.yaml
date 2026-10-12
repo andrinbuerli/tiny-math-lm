@@ -1,0 +1,9 @@
+name: 10m
+target_params: 10_000_000
+vocab_size: null
+context_length: 256
+n_layers: 5
+n_heads: 8
+d_model: 384
+d_ff: 1152
+dropout: 0.0

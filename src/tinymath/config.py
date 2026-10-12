@@ -1,37 +1,57 @@
-"""Small, strict YAML configuration loader."""
+"""Hydra configuration helpers shared by every experiment entry point."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+import os
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
-import yaml
+from omegaconf import DictConfig, OmegaConf
 
-
-@dataclass(frozen=True)
-class ExperimentConfig:
-    """A configuration and the source path it was loaded from."""
-
-    values: Mapping[str, Any]
-    path: Path
-
-    def require(self, key: str, expected_type: type | tuple[type, ...] | None = None) -> Any:
-        if key not in self.values:
-            raise KeyError(f"Missing required configuration key: {key}")
-        value = self.values[key]
-        if expected_type is not None and not isinstance(value, expected_type):
-            raise TypeError(
-                f"Configuration key {key!r} must be {expected_type}, got {type(value).__name__}"
-            )
-        return value
+WORKSPACE = Path("/workspace")
 
 
-def load_config(path: str | Path) -> ExperimentConfig:
-    """Load a YAML mapping and reject malformed or empty configs."""
-    config_path = Path(path).resolve()
-    with config_path.open("r", encoding="utf-8") as handle:
-        values = yaml.safe_load(handle)
-    if not isinstance(values, dict):
-        raise ValueError(f"Expected a YAML mapping in {config_path}")
-    return ExperimentConfig(values=values, path=config_path)
+def workspace_path(*parts: str) -> Path:
+    """Resolve a project path under the fixed experiment workspace."""
+    path = WORKSPACE.joinpath(*parts).resolve()
+    if path != WORKSPACE and WORKSPACE not in path.parents:
+        raise ValueError(f"Path must stay under {WORKSPACE}")
+    return path
+
+
+def _sanitize(value: Any, parent_key: str = "") -> Any:
+    """Remove credential-like fields recursively before persistence or logging."""
+    sensitive = ("api_key", "apikey", "secret", "password", "credential", "token")
+    if any(part in parent_key.lower() for part in sensitive):
+        return "<redacted>"
+    if isinstance(value, dict):
+        return {str(key): _sanitize(item, str(key)) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize(item, parent_key) for item in value]
+    return value
+
+
+def sanitized_config(config: DictConfig | dict[str, Any]) -> dict[str, Any]:
+    """Return a resolved, credential-scrubbed plain mapping."""
+    raw = OmegaConf.to_container(config, resolve=True) if isinstance(config, DictConfig) else config
+    if not isinstance(raw, dict):
+        raise TypeError("Experiment configuration must resolve to a mapping")
+    return _sanitize(raw)
+
+
+def persist_resolved_config(config: DictConfig, run_dir: str | Path) -> Path:
+    """Write full sanitized composed config and return its path."""
+    destination = Path(run_dir).resolve()
+    if destination != WORKSPACE and WORKSPACE not in destination.parents:
+        raise ValueError(f"Run directory must stay under {WORKSPACE}")
+    destination.mkdir(parents=True, exist_ok=True)
+    values = sanitized_config(config)
+    path = destination / "resolved_config.json"
+    path.write_text(json.dumps(values, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def configure_workspace_environment() -> None:
+    """Keep subprocesses and Hydra runs rooted at the project workspace."""
+    os.environ["WORKSPACE_ROOT"] = str(WORKSPACE)

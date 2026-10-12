@@ -1,12 +1,13 @@
-"""Reproducibility and runtime environment helpers."""
+"""Random seeding and local runtime provenance."""
 
 from __future__ import annotations
 
-import os
+import hashlib
 import random
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -22,13 +23,14 @@ class RuntimeInfo:
     cuda_version: str | None
     device_name: str | None
     git_commit: str | None
+    uv_lock_sha256: str | None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
 def seed_everything(seed: int, *, deterministic: bool = True) -> None:
-    """Seed Python, NumPy and PyTorch, including CUDA generators."""
+    """Seed Python, NumPy, PyTorch and available CUDA generators."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -41,25 +43,26 @@ def seed_everything(seed: int, *, deterministic: bool = True) -> None:
             torch.backends.cudnn.benchmark = False
 
 
-def runtime_info() -> RuntimeInfo:
-    """Capture versions and the local Git revision without contacting a remote."""
+def _git_commit() -> str | None:
     try:
-        commit = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=2,
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True, timeout=2
         ).stdout.strip()
     except (OSError, subprocess.SubprocessError):
-        commit = None
-    cuda_available = torch.cuda.is_available()
+        return None
+
+
+def runtime_info(workspace: str | Path = "/workspace") -> RuntimeInfo:
+    lockfile = Path(workspace) / "uv.lock"
+    lock_hash = hashlib.sha256(lockfile.read_bytes()).hexdigest() if lockfile.exists() else None
+    available = torch.cuda.is_available()
     return RuntimeInfo(
         python=sys.version.split()[0],
         torch=torch.__version__,
         numpy=np.__version__,
-        cuda_available=cuda_available,
+        cuda_available=available,
         cuda_version=torch.version.cuda,
-        device_name=torch.cuda.get_device_name(0) if cuda_available else None,
-        git_commit=commit,
+        device_name=torch.cuda.get_device_name(0) if available else None,
+        git_commit=_git_commit(),
+        uv_lock_sha256=lock_hash,
     )

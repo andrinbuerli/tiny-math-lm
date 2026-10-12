@@ -1,0 +1,104 @@
+"""Secure, resumable W&B run setup used by all experiment entry points."""
+
+from __future__ import annotations
+
+import json
+import os
+import secrets
+from pathlib import Path
+from typing import Any
+
+import requests
+from dotenv import load_dotenv
+from omegaconf import DictConfig
+
+from tinymath.config import persist_resolved_config, sanitized_config
+from tinymath.repro import runtime_info
+
+
+class TrackingError(RuntimeError):
+    """Raised when required experiment tracking cannot be initialized."""
+
+
+def _load_workspace_credentials() -> None:
+    # python-dotenv parses standard assignment syntax and never prints the values.
+    load_dotenv(dotenv_path="/workspace/.env", override=False, verbose=False)
+
+
+def _tracking_state(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TrackingError(f"Cannot read W&B resume metadata at {path}: {exc}") from exc
+    if not isinstance(state, dict) or not isinstance(state.get("id"), str):
+        raise TrackingError(f"Invalid W&B resume metadata at {path}")
+    return state
+
+
+def initialize_wandb(config: DictConfig, run_dir: str | Path, *, job_type: str) -> Any:
+    """Create or resume one W&B run, persisting its ID before initialization."""
+    import wandb
+
+    _load_workspace_credentials()
+    tracking = config.tracking
+    mode = str(tracking.get("mode", "online"))
+    run_path = Path(run_dir).resolve()
+    run_path.mkdir(parents=True, exist_ok=True)
+    config_path = persist_resolved_config(config, run_path)
+    state_path = run_path / "wandb_run.json"
+    state = _tracking_state(state_path)
+    run_id = state.get("id") or secrets.token_hex(8)
+    if mode != "offline" and not os.environ.get("WANDB_API_KEY"):
+        raise TrackingError(
+            "W&B online tracking requires WANDB_API_KEY in the environment or /workspace/.env; "
+            "no online run was started. Set tracking.mode=offline explicitly to create an "
+            "unsynced local run."
+        )
+    state_path.write_text(
+        json.dumps(
+            {
+                "id": run_id,
+                "mode": mode,
+                "sync_status": "unsynced" if mode == "offline" else "pending",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    metadata = {
+        "runtime": runtime_info().as_dict(),
+        "resolved_config_path": str(config_path),
+        "protocol": "tinymath-r1",
+        "resolved_config": sanitized_config(config),
+    }
+    try:
+        return wandb.init(
+            project=str(tracking.get("project", "tinymath-rl")),
+            entity=tracking.get("entity"),
+            group=str(tracking.get("group", "default")),
+            name=str(tracking.get("name", run_id)),
+            tags=list(tracking.get("tags", [])),
+            mode=mode,
+            id=run_id,
+            resume="allow" if tracking.get("resume", True) or state else None,
+            dir=str(run_path),
+            job_type=job_type,
+            config=metadata,
+            settings=wandb.Settings(code_dir="/workspace"),
+        )
+    except (wandb.errors.Error, requests.exceptions.RequestException, OSError, ValueError) as exc:
+        message = str(exc).replace(os.environ.get("WANDB_API_KEY", "\0"), "<redacted>")
+        raise TrackingError(f"W&B initialization failed ({mode} mode): {message}") from None
+
+
+def finish_wandb(run: Any) -> None:
+    """Flush a run and report explicit offline state in local metadata."""
+    if run is None:
+        return
+    mode = getattr(getattr(run, "settings", None), "mode", None)
+    if hasattr(run, "summary"):
+        run.summary["tracking/sync_status"] = "unsynced" if str(mode) == "offline" else "synced"
+    run.finish()

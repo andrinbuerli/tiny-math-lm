@@ -1,0 +1,4 @@
+name: extended
+data_budget: 2000000
+max_steps: 200000
+run_optimization: true

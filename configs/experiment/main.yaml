@@ -1,0 +1,4 @@
+name: main
+data_budget: 500000
+max_steps: 50000
+run_optimization: true

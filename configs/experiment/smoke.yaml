@@ -1,0 +1,4 @@
+name: smoke
+data_budget: 2000
+max_steps: 10
+run_optimization: false

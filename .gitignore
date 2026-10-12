@@ -1,4 +1,4 @@
-# Python
+# Python and local development
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -7,20 +7,19 @@ __pycache__/
 .ruff_cache/
 .coverage
 htmlcov/
-
-# Local environments and secrets
 .venv/
-venv/
+.tools/
+
+# Credentials and local service state
 .env
 .env.*
 !.env.example
+wandb/
 
-# Downloaded and processed data
+# Downloaded data and generated run artifacts
 /data/raw/
 /data/processed/
 /data/cache/
-
-# Training outputs and generated figures
 /runs/
 /outputs/
 /figures/generated/

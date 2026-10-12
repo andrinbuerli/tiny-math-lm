@@ -1,0 +1,8 @@
+project: tinymath-rl
+entity: ${oc.env:WANDB_ENTITY,null}
+group: ${experiment.name}
+name: ${experiment.name}-${model.name}-seed${seed}
+mode: online
+tags: ["${experiment.name}", "${model.name}"]
+log_every: 10
+resume: true

@@ -1,8 +1,7 @@
-"""Checkpoint persistence and experiment metadata."""
+"""Atomic checkpoint persistence including optimizer and random state."""
 
 from __future__ import annotations
 
-import json
 import os
 import random
 import tempfile
@@ -11,8 +10,6 @@ from typing import Any
 
 import numpy as np
 import torch
-
-from tinymath.repro import runtime_info
 
 
 def capture_rng_state() -> dict[str, Any]:
@@ -35,8 +32,10 @@ def restore_rng_state(state: dict[str, Any]) -> None:
 
 
 def save_checkpoint(path: str | Path, payload: dict[str, Any]) -> None:
-    """Atomically save a resumable checkpoint within the caller's workspace."""
-    destination = Path(path)
+    """Atomically save a resumable checkpoint under the workspace."""
+    destination = Path(path).resolve()
+    if Path("/workspace") not in destination.parents:
+        raise ValueError("Checkpoint path must be inside /workspace")
     destination.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
     os.close(fd)
@@ -50,11 +49,3 @@ def save_checkpoint(path: str | Path, payload: dict[str, Any]) -> None:
 
 def load_checkpoint(path: str | Path, *, map_location: str | torch.device = "cpu") -> dict[str, Any]:
     return torch.load(path, map_location=map_location, weights_only=False)
-
-
-def write_run_metadata(path: str | Path, config: dict[str, Any]) -> None:
-    """Write effective config and observed runtime versions as JSON."""
-    destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    metadata = {"config": config, "runtime": runtime_info().as_dict()}
-    destination.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")

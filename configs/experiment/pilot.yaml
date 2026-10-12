@@ -1,0 +1,4 @@
+name: pilot
+data_budget: 20000
+max_steps: 2000
+run_optimization: true

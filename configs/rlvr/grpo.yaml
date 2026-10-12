@@ -1,0 +1,9 @@
+name: grpo
+updates: 1000
+prompts_per_batch: 8
+group_size: 8
+temperature: 0.8
+max_completion_tokens: 128
+clip_epsilon: 0.2
+kl_coefficient: 0.0
+learning_rate: 0.00001
