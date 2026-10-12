@@ -33,9 +33,22 @@ def main(config: DictConfig) -> None:
         for artifact in outputs:
             if artifact.suffix == ".png":
                 run.log({f"comparison/{artifact.stem}": wandb.Image(str(artifact))})
+        report_artifact = wandb.Artifact(
+            name=f"{config.experiment.name}-comparison-seed{int(config.seed)}",
+            type="comparison-report",
+            metadata={
+                "experiment": str(config.experiment.name),
+                "seed": int(config.seed),
+                "available_evaluations": report["coverage"]["available_evaluations"],
+            },
+        )
+        for artifact_path in outputs:
+            report_artifact.add_file(str(artifact_path))
+        run.log_artifact(report_artifact)
         run.summary.update(
             {
                 "comparison/report_path": str(output_dir / "comparison.json"),
+                "comparison/markdown_path": str(output_dir / "report.md"),
                 "comparison/csv_path": str(output_dir / "comparison.csv"),
                 "comparison/available_evaluations": report["coverage"]["available_evaluations"],
             }

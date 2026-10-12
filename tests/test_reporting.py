@@ -17,6 +17,59 @@ def test_comparison_report_marks_missing_runs_without_fabricating_values(workspa
     comparison = json.loads((output / "comparison.json").read_text(encoding="utf-8"))
     assert comparison["available_measurements"] == []
     assert "SFT uses 6PN" in comparison["compute_estimate"]
+    assert comparison["report_path"] == str(output / "report.md")
+    markdown = (output / "report.md").read_text(encoding="utf-8")
+    assert "Evaluation coverage: 0/27" in markdown
+    assert "Missing" in markdown
+
+
+def test_comparison_markdown_summarizes_measured_gains_and_grpo_groups(workspace_tmpdir):
+    runs = workspace_tmpdir / "runs"
+    output = workspace_tmpdir / "reports"
+    seed = 17
+    for arm, accuracy in (("sft", 0.4), ("grpo", 0.5), ("continued_sft", 0.45)):
+        result_path = (
+            runs / "pilot" / "1m" / "evaluation" / arm / "best" / f"seed{seed}" / "results.json"
+        )
+        result_path.parent.mkdir(parents=True)
+        result_path.write_text(
+            json.dumps(
+                {
+                    "model_parameters": 992640,
+                    "checkpoint_step": 1,
+                    "splits": {"test": {"accuracy": accuracy, "examples": 100}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        metrics_path = runs / "pilot" / "1m" / arm / f"seed{seed}" / "metrics.csv"
+        metrics_path.parent.mkdir(parents=True)
+        if arm == "grpo":
+            metrics_path.write_text(
+                "update,reward/mean,group/mixed_rate,group/all_correct_rate,"
+                "group/all_wrong_rate,tokens_seen,estimated_flops\n"
+                "1,0.5,0.75,0.125,0.125,200,1000000000000\n"
+                "2,0.6,0.25,0.375,0.375,400,2000000000000\n",
+                encoding="utf-8",
+            )
+        else:
+            metrics_path.write_text(
+                "optimizer_step,tokens_seen,estimated_flops\n"
+                "1,500000,500000000000\n"
+                "2,1000000,1000000000000\n",
+                encoding="utf-8",
+            )
+
+    _report, _outputs = make_report(
+        runs_dir=runs, experiment="pilot", output_dir=output, seed=seed
+    )
+    markdown = (output / "report.md").read_text(encoding="utf-8")
+    assert "+10.0 pp" in markdown
+    assert "+5.0 pp" in markdown
+    assert "50.0%" in markdown
+    assert "| 1m | sft | 40.0% | 500,000 | 500,000,000,000 |" in markdown
+    assert "| 1m | grpo | 50.0% | 200 | 1,000,000,000,000 |" in markdown
+    assert "SFT token counts include processed input positions" in markdown
 
 
 def test_result_collection_keeps_one_seed_coherent(workspace_tmpdir):

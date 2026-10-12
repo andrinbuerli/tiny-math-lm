@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,7 @@ def collect_results(
                 "mean_output_tokens": split.get("mean_output_tokens"),
                 "examples": split.get("examples"),
                 "checkpoint": summary.get("checkpoint"),
+                "checkpoint_step": summary.get("checkpoint_step"),
             }
             rows.append(row)
             by_checkpoint[(model_name, arm)] = summary
@@ -272,17 +274,30 @@ def _figure_compute(
         if not curve:
             continue
         token_key = "tokens_seen"
-        if token_key not in curve[-1]:
+        result = next(
+            (row for row in rows if row["model"] == path.parents[2].name and row["arm"] == arm and row["split"] == "test"),
+            None,
+        )
+        if result is None:
             continue
-        if path.parent.parent.name == "grpo" and curve[-1].get("flops_estimator_version") != "dense_position_v2":
+        step_key = "update" if arm == "grpo" else "optimizer_step"
+        checkpoint_step = result.get("checkpoint_step")
+        selected = next(
+            (row for row in curve if checkpoint_step is not None and row.get(step_key) == str(checkpoint_step)),
+            None,
+        )
+        if selected is None and checkpoint_step is None:
+            selected = curve[-1]
+        if selected is None or token_key not in selected:
             continue
-        result = next((row for row in rows if row["model"] == path.parents[2].name and row["arm"] == arm), None)
+        if arm == "grpo" and selected.get("flops_estimator_version") != "dense_position_v2":
+            continue
         if result and result["parameters"]:
-            estimate = curve[-1].get("estimated_flops")
+            estimate = selected.get("estimated_flops")
             flops = (
                 int(float(estimate))
                 if estimate not in (None, "")
-                else 6 * result["parameters"] * int(float(curve[-1][token_key]))
+                else 6 * result["parameters"] * int(float(selected[token_key]))
             )
             points[(path.parents[2].name, arm)] = (flops, 0)
     for row in rows:
@@ -302,6 +317,199 @@ def _figure_compute(
     return _save(fig, output_dir, "accuracy_vs_compute")
 
 
+def _format_accuracy(value: Any) -> str:
+    if value is None or value == "":
+        return "Missing"
+    return f"{100 * float(value):.1f}%"
+
+
+def _format_count(value: Any) -> str:
+    if value is None or value == "":
+        return "Missing"
+    return f"{int(float(value)):,}"
+
+
+def _read_training_metrics(path: Path) -> list[dict[str, str]]:
+    if not path.is_file():
+        return []
+    with path.open(encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
+def _training_metric_path(
+    runs_dir: Path, experiment: str, model: str, arm: str, seed: int | None
+) -> Path | None:
+    arm_dir = runs_dir / experiment / model / arm
+    if seed is not None:
+        path = arm_dir / f"seed{seed}" / "metrics.csv"
+        return path if path.is_file() else None
+    matches = sorted(arm_dir.glob("seed*/metrics.csv"))
+    return matches[-1] if matches else None
+
+
+def _accuracy_gain(
+    sft: dict[str, Any] | None, candidate: dict[str, Any] | None
+) -> str:
+    if not sft or not candidate or sft.get("accuracy") is None or candidate.get("accuracy") is None:
+        return "Missing"
+    return f"{100 * (float(candidate['accuracy']) - float(sft['accuracy'])):+.1f} pp"
+
+
+def _average_percent(metrics: list[dict[str, str]], column: str) -> str:
+    values = [float(row[column]) for row in metrics if row.get(column) not in (None, "")]
+    return f"{100 * sum(values) / len(values):.1f}%" if values else "Missing"
+
+
+def _markdown_report(
+    *,
+    report: dict[str, Any],
+    rows: list[dict[str, Any]],
+    runs_dir: Path,
+    experiment: str,
+    seed: int | None,
+) -> str:
+    measured = {
+        (row["model"], row["arm"], row["split"]): row
+        for row in rows
+    }
+    actual_combinations = sum(
+        not report["coverage"]["missing"][model][arm][split]
+        for model in MODELS
+        for arm in ARMS
+        for split in SPLITS
+    )
+    lines = [
+        f"# TinyMath-RL comparison: `{experiment}`",
+        "",
+        f"Seed: `{seed}`" if seed is not None else "Seed filter: all available seeds",
+        f"Evaluation coverage: {actual_combinations}/{len(MODELS) * len(ARMS) * len(SPLITS)} model/arm/split measurements.",
+        "Only saved evaluation results are included; `Missing` means no result file was available.",
+        "",
+        "## In-distribution test accuracy",
+        "",
+        "| Model | Parameters | SFT | GRPO | Continued SFT | GRPO gain vs SFT | Continued SFT gain vs SFT |",
+        "|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    for model in MODELS:
+        sft = measured.get((model, "sft", "test"))
+        grpo = measured.get((model, "grpo", "test"))
+        continued = measured.get((model, "continued_sft", "test"))
+        parameter_count = next(
+            (row.get("parameters") for row in rows if row["model"] == model and row.get("parameters")),
+            None,
+        )
+
+        lines.append(
+            "| {model} | {parameters} | {sft} | {grpo} | {continued} | {grpo_gain} | {continued_gain} |".format(
+                model=model,
+                parameters=_format_count(parameter_count),
+                sft=_format_accuracy(sft.get("accuracy") if sft else None),
+                grpo=_format_accuracy(grpo.get("accuracy") if grpo else None),
+                continued=_format_accuracy(continued.get("accuracy") if continued else None),
+                grpo_gain=_accuracy_gain(sft, grpo),
+                continued_gain=_accuracy_gain(sft, continued),
+            )
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Controlled OOD accuracy",
+            "",
+            "| Model | Arm | Number length | Expression length |",
+            "|---|---|---:|---:|",
+        ]
+    )
+    for model in MODELS:
+        for arm in ARMS:
+            number = measured.get((model, arm, "number_length_ood"))
+            expression = measured.get((model, arm, "expression_length_ood"))
+            lines.append(
+                f"| {model} | {arm} | {_format_accuracy(number.get('accuracy') if number else None)} | "
+                f"{_format_accuracy(expression.get('accuracy') if expression else None)} |"
+            )
+
+    lines.extend(
+        [
+            "",
+            "## GRPO rollout diagnostics",
+            "",
+            "Mixed-group rate is averaged over recorded updates; these are groups with both correct and incorrect outcomes.",
+            "",
+            "| Model | Updates | Mean reward | Mixed-group rate | All-correct rate | All-wrong rate |",
+            "|---|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for model in MODELS:
+        metrics_path = _training_metric_path(runs_dir, experiment, model, "grpo", seed)
+        metrics = _read_training_metrics(metrics_path) if metrics_path else []
+
+        latest_update = metrics[-1].get("update") if metrics else None
+        lines.append(
+            f"| {model} | {_format_count(latest_update)} | {_average_percent(metrics, 'reward/mean')} | "
+            f"{_average_percent(metrics, 'group/mixed_rate')} | "
+            f"{_average_percent(metrics, 'group/all_correct_rate')} | "
+            f"{_average_percent(metrics, 'group/all_wrong_rate')} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Accuracy efficiency",
+            "",
+            "Efficiency pairs ID test accuracy with each arm's logged token count and estimated FLOPs.",
+            "FLOPs are a dense-transformer approximation, not hardware-counter measurements.",
+            "",
+            "| Model | Arm | ID accuracy | Logged tokens | Estimated FLOPs | ID percentage points / 1M logged tokens | ID percentage points / 1T FLOPs |",
+            "|---|---|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for model in MODELS:
+        for arm in ARMS:
+            evaluation = measured.get((model, arm, "test"))
+            metrics_path = _training_metric_path(runs_dir, experiment, model, arm, seed)
+            metrics = _read_training_metrics(metrics_path) if metrics_path else []
+            checkpoint_step = evaluation.get("checkpoint_step") if evaluation else None
+            step_key = "update" if arm == "grpo" else "optimizer_step"
+            selected = next(
+                (row for row in metrics if checkpoint_step is not None and row.get(step_key) == str(checkpoint_step)),
+                None,
+            )
+            if selected is None and checkpoint_step is None and metrics:
+                selected = metrics[-1]
+            latest = selected or {}
+            accuracy = evaluation.get("accuracy") if evaluation else None
+            token_positions = latest.get("tokens_seen")
+            estimated_flops = latest.get("estimated_flops")
+            token_efficiency = flops_efficiency = "Missing"
+            if accuracy is not None and token_positions not in (None, ""):
+                count = float(token_positions)
+                if count > 0:
+                    token_efficiency = f"{100 * float(accuracy) / (count / 1_000_000):.3g}"
+            if accuracy is not None and estimated_flops not in (None, ""):
+                flops = float(estimated_flops)
+                if math.isfinite(flops) and flops > 0:
+                    flops_efficiency = f"{100 * float(accuracy) / (flops / 1_000_000_000_000):.3g}"
+            lines.append(
+                f"| {model} | {arm} | {_format_accuracy(accuracy)} | {_format_count(token_positions)} | "
+                f"{_format_count(estimated_flops)} | {token_efficiency} | {flops_efficiency} |"
+            )
+
+    lines.extend(["", "## Limitations", ""])
+    if seed is not None:
+        lines.append(f"- This report covers seed `{seed}` only; it does not estimate between-seed uncertainty.")
+    lines.extend(
+        [
+            "- OOD results describe the fixed prepared number-length and expression-length pools; unavailable pools remain missing.",
+            "- SFT token counts include processed input positions; GRPO token counts include generated completion tokens, so token efficiency is descriptive within each arm, not a strictly matched cross-arm measure.",
+            "- FLOP and token efficiency are descriptive proxies tied to the logged counters; they are not hardware energy or latency measurements.",
+            "- Accuracy differences are descriptive for this protocol and seed; they do not establish a general scaling or RLVR effect beyond these runs.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def make_report(
     *, runs_dir: Path, experiment: str, output_dir: Path, seed: int | None = None
 ) -> tuple[dict[str, Any], list[Path]]:
@@ -316,13 +524,13 @@ def make_report(
                     actual.get((model, arm, split), {
                         "model": model, "arm": arm, "split": split, "parameters": "",
                         "accuracy": "", "format_validity": "", "mean_output_tokens": "",
-                        "examples": "", "checkpoint": "",
+                        "examples": "", "checkpoint": "", "checkpoint_step": "",
                     })
                 )
     csv_path = output_dir / "comparison.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         fields = ["model", "arm", "split", "parameters", "accuracy", "format_validity",
-                  "mean_output_tokens", "examples", "checkpoint"]
+                  "mean_output_tokens", "examples", "checkpoint", "checkpoint_step"]
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         writer.writerows(expected_rows)
@@ -337,6 +545,18 @@ def make_report(
             "GRPO compute points are omitted when a run lacks the dense_position_v2 estimator marker.",
         ],
     }
+    report_path = output_dir / "report.md"
+    report_path.write_text(
+        _markdown_report(
+            report=report,
+            rows=rows,
+            runs_dir=runs_dir,
+            experiment=experiment,
+            seed=seed,
+        ),
+        encoding="utf-8",
+    )
+    report["report_path"] = str(report_path)
     (output_dir / "comparison.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -349,4 +569,4 @@ def make_report(
     figures += _figure_curves(runs_dir, experiment, output_dir, seed)
     figures += _figure_ood(rows, output_dir)
     figures += _figure_compute(rows, runs_dir, experiment, output_dir, seed)
-    return report, [csv_path, output_dir / "comparison.json", *figures]
+    return report, [csv_path, output_dir / "comparison.json", report_path, *figures]
