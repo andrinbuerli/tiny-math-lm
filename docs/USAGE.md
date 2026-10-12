@@ -6,6 +6,7 @@ The repository uses `uv`, Hydra and W&B for experiment setup and tracking. Run c
 
 ```bash
 cd /workspace
+export PATH="/workspace/.tools:$PATH"
 uv sync --locked --extra dev
 uv run python scripts/prepare_data.py experiment=smoke
 ```
