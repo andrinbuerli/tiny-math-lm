@@ -26,12 +26,15 @@ uv run python scripts/train_sft.py model=1m trainer=sft experiment=02_pilot
 uv run python scripts/train_rlvr.py model=1m rlvr=grpo experiment=02_pilot \
   'init_checkpoint=runs/pilot/1m/sft/seed17/best.pt'
 uv run python scripts/evaluate.py model=1m eval=default experiment=02_pilot \
-  'checkpoint=runs/pilot/1m/grpo/seed17/latest.pt'
+  'checkpoint=runs/pilot/1m/grpo/seed17/latest.pt' eval.greedy=true \
+  eval.max_new_tokens=128
 uv run python scripts/train_sft.py model=1m trainer=continued_sft experiment=02_pilot \
   'init_checkpoint=runs/pilot/1m/sft/seed17/best.pt'
 ```
 
 Training and evaluation locate the prepared bundle by experiment and seed. Set `data_bundle=data/processed/<bundle-name>` to select one explicitly. Each stage writes its sanitized composed config, checkpoints, CSV metrics and W&B run state beneath `/workspace/runs`.
+
+Checkpoint evaluation is greedy by default (`eval.greedy=true`, temperature 0). `eval.max_new_tokens` sets the generation cap; remaining context can lower the effective cap for long prompts. `results.json` and comparison reports record the strategy, temperature, cap and model context length. For an explicitly sampled evaluation, set `eval.greedy=false eval.temperature=0.8`.
 
 SFT, continued-SFT and GRPO training runs log deterministic W&B qualitative tables every 5,000 optimizer steps and at the final step, with generated answers for up to two examples per module from the training, validation and test pools. At those same points, they log greedy exact accuracy for the same fixed examples under `train/greedy_accuracy`, `val/greedy_accuracy`, and `test/greedy_accuracy`; with five modules and two examples per module, each value summarizes 10 examples and is not full-split accuracy. To attach a final table to a run that began before periodic qualitative logging was added, rerun the Hydra helper with that run's original config overrides; it resumes the matching W&B run ID:
 
