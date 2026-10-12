@@ -47,6 +47,27 @@ def _balanced_limit(examples: list[dict[str, str]], limit: int | None) -> list[d
     return selected
 
 
+def _checkpoint_provenance(checkpoint_path: Path, payload: dict[str, Any]) -> tuple[str, str | None]:
+    """Read provenance from checkpoint fields, with run-directory fallbacks for older saves."""
+    stage = checkpoint_path.resolve().parent.parent.name
+    training_arm = payload.get("training_arm") or (
+        stage if stage in {"sft", "grpo", "continued_sft"} else "unknown"
+    )
+    source_sft_checkpoint = payload.get(
+        "source_sft_checkpoint", payload.get("source_checkpoint")
+    )
+    if source_sft_checkpoint is None and training_arm == "continued_sft":
+        config_path = checkpoint_path.resolve().parent / "resolved_config.json"
+        try:
+            saved_config = json.loads(config_path.read_text(encoding="utf-8"))
+            source_sft_checkpoint = saved_config.get("init_checkpoint")
+        except (OSError, json.JSONDecodeError):
+            pass
+    if source_sft_checkpoint is not None:
+        source_sft_checkpoint = str(Path(source_sft_checkpoint).resolve())
+    return str(training_arm), source_sft_checkpoint
+
+
 @torch.no_grad()
 def evaluate_checkpoint(
     *,
@@ -60,6 +81,7 @@ def evaluate_checkpoint(
 ) -> dict[str, Any]:
     del batch_size  # autoregressive generation uses one unpadded prompt at a time
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    training_arm, source_sft_checkpoint = _checkpoint_provenance(checkpoint_path, checkpoint)
     tokenizer = CharacterTokenizer.load(bundle_dir / "char_tokenizer.json")
     if checkpoint.get("tokenizer_sha256") != tokenizer.sha256:
         raise ValueError("Checkpoint tokenizer does not match the evaluation data bundle")
@@ -159,10 +181,8 @@ def evaluate_checkpoint(
     summary = {
         "checkpoint": str(checkpoint_path.resolve()),
         "checkpoint_step": checkpoint.get("step", checkpoint.get("update")),
-        "training_arm": checkpoint.get("training_arm", "unknown"),
-        "source_sft_checkpoint": checkpoint.get(
-            "source_sft_checkpoint", checkpoint.get("source_checkpoint")
-        ),
+        "training_arm": training_arm,
+        "source_sft_checkpoint": source_sft_checkpoint,
         "model_parameters": model.count_parameters(),
         "tokenizer_sha256": tokenizer.sha256,
         "splits": results,
