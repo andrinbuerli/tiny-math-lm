@@ -155,4 +155,14 @@ def test_grpo_runner_scores_mixed_group_and_applies_gradient(workspace_tmpdir, m
         metrics = next(csv.DictReader(handle))
     assert float(metrics["grad_norm"]) > 0
     assert float(metrics["group/mixed_rate"]) == 1.0
+    config.rlvr.updates = 2
+    resumed = grpo_runner.train_grpo(
+        config=config,
+        bundle_dir=bundle,
+        init_checkpoint=checkpoint_path,
+        run_dir=run_dir,
+        run=Run(),
+    )
+    resumed_checkpoint = torch.load(resumed["checkpoint"], map_location="cpu", weights_only=False)
+    assert resumed["update"] == resumed_checkpoint["update"] == 2
 
