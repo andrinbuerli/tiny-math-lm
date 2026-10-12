@@ -11,7 +11,13 @@ from tinymath.eval.evaluate import _balanced_limit, evaluate_checkpoint
 from tinymath.model.gpt import GPTConfig, TinyMathGPT
 
 
-def test_greedy_evaluation_writes_linked_predictions_and_metrics(workspace_tmpdir):
+@pytest.mark.parametrize(
+    ("greedy", "temperature", "strategy", "effective_temperature"),
+    ((True, 0.8, "greedy", 0.0), (False, 0.6, "sampled", 0.6)),
+)
+def test_evaluation_writes_linked_predictions_and_decoding_metadata(
+    workspace_tmpdir, monkeypatch, greedy, temperature, strategy, effective_temperature
+):
     bundle = workspace_tmpdir / "bundle"
     output = workspace_tmpdir / "eval"
     bundle.mkdir()
@@ -49,19 +55,29 @@ def test_greedy_evaluation_writes_linked_predictions_and_metrics(workspace_tmpdi
             "step": 4,
         },
     )
+    generation_temperatures = []
+    original_generate = TinyMathGPT.generate
+
+    def record_temperature(model, *args, **kwargs):
+        generation_temperatures.append(kwargs["temperature"])
+        return original_generate(model, *args, **kwargs)
+
+    monkeypatch.setattr(TinyMathGPT, "generate", record_temperature)
     result = evaluate_checkpoint(
         checkpoint_path=checkpoint,
         bundle_dir=bundle,
         output_dir=output,
         split_names=["test"],
         max_new_tokens=3,
+        greedy=greedy,
+        temperature=temperature,
     )
     assert result["checkpoint_step"] == 4
     assert result["training_arm"] == "continued_sft"
     assert result["source_sft_checkpoint"] == source_checkpoint
     assert result["decoding"] == {
-        "strategy": "greedy",
-        "temperature": 0.0,
+        "strategy": strategy,
+        "temperature": effective_temperature,
         "max_new_tokens": 3,
         "context_length": 64,
         "per_prompt_cap": "min(max_new_tokens, context_length - prompt_tokens)",
@@ -71,6 +87,7 @@ def test_greedy_evaluation_writes_linked_predictions_and_metrics(workspace_tmpdi
     saved_result = json.loads((output / "results.json").read_text())
     assert saved_result["tokenizer_sha256"] == tokenizer.sha256
     assert saved_result["decoding"] == result["decoding"]
+    assert generation_temperatures == [effective_temperature]
 
 
 def test_sampled_evaluation_requires_positive_temperature():
