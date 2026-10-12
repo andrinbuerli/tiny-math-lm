@@ -11,6 +11,7 @@ defaults:
 seed: 17
 init_checkpoint: null
 data_bundle: null
+checkpoint: null
 paths:
   root: /workspace
   data: ${paths.root}/data

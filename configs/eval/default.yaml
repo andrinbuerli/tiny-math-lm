@@ -1,5 +1,6 @@
 name: default
 batch_size: 64
 max_new_tokens: 128
+max_examples_per_split: null
 greedy: true
 splits: [test, number_length_ood, expression_length_ood]
