@@ -111,7 +111,7 @@ def main(config: DictConfig) -> None:
             )
             _run(
                 "train_sft.py", config, model=str(model_name), trainer="continued_sft",
-                checkpoint=sft_checkpoint,
+                init_checkpoint=sft_checkpoint,
             )
             _run(
                 "evaluate.py", config, model=str(model_name), trainer="sft",
