@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local environments and secrets
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Downloaded and processed data
+/data/raw/
+/data/processed/
+/data/cache/
+
+# Training outputs and generated figures
+/runs/
+/outputs/
+/figures/generated/
+*.pt
+*.pth
+*.ckpt
+
+# Editor and temporary files
+.DS_Store
+*.swp
+*.tmp
