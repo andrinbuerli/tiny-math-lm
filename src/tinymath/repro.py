@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import random
 import subprocess
 import sys
@@ -31,6 +32,8 @@ class RuntimeInfo:
 
 def seed_everything(seed: int, *, deterministic: bool = True) -> None:
     """Seed Python, NumPy, PyTorch and available CUDA generators."""
+    if deterministic:
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
