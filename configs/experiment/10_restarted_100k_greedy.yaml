@@ -1,0 +1,7 @@
+# Experiment 10 — clean 100k scratch restart with train/validation/test greedy-accuracy curves.
+# Origin: restart Experiment 09 from fresh weights after stopping its active jobs; preserve that attempt's partial checkpoints, metrics, and W&B runs for comparison.
+name: restarted_100k_greedy_restart_2
+data_budget: 500000
+ood_examples_per_module: 1000
+max_steps: 100000
+run_optimization: true
