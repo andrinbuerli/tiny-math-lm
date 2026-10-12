@@ -176,7 +176,8 @@ def train_sft(
         metrics_file,
         fieldnames=[
             "optimizer_step", "train/loss", "val/loss", "learning_rate", "tokens_seen",
-            "tokens_per_second", "estimated_flops", "wall_seconds",
+            "tokens_per_second", "estimated_flops", "wall_seconds", "train/greedy_accuracy",
+            "val/greedy_accuracy", "test/greedy_accuracy",
         ],
     )
     if is_new_metrics:
@@ -191,7 +192,7 @@ def train_sft(
     define_metric = getattr(run, "define_metric", None)
     if callable(define_metric):
         define_metric("optimizer_step")
-        for metric in ("train/*", "val/*", "system/*", "qualitative/*"):
+        for metric in ("train/*", "val/*", "test/*", "system/*", "qualitative/*"):
             define_metric(metric, step_metric="optimizer_step")
     warmup = int(config.trainer.warmup_steps)
     base_lr = float(config.trainer.learning_rate)
@@ -267,8 +268,6 @@ def train_sft(
                 "estimated_flops": 6 * model.count_parameters() * tokens_seen,
                 "wall_seconds": elapsed,
             }
-            metric_writer.writerow(row)
-            metrics_file.flush()
             values = {
                 "optimizer_step": step,
                 "tokens_seen": tokens_seen,
@@ -298,7 +297,7 @@ def train_sft(
                 )
             qualitative_due = step % qualitative_every == 0 or step == target_steps
             if qualitative_due:
-                qualitative_table, qualitative_count = build_qualitative_table(
+                qualitative_table, qualitative_count, greedy_accuracy = build_qualitative_table(
                     model=model,
                     tokenizer=tokenizer,
                     split_rows={
@@ -323,6 +322,12 @@ def train_sft(
                         run_dir / "latest_inference.pt"
                     )
                 values["qualitative/examples"] = qualitative_table
+                for split, value in greedy_accuracy.items():
+                    metric_name = "val/greedy_accuracy" if split == "validation" else f"{split}/greedy_accuracy"
+                    values[metric_name] = value
+                    row[metric_name] = value
+            metric_writer.writerow(row)
+            metrics_file.flush()
             if (
                 step % int(config.tracking.log_every) == 0
                 or step == 1

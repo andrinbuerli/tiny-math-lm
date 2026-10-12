@@ -37,7 +37,7 @@ def test_sft_grpo_checkpoint_evaluation_pipeline(workspace_tmpdir, monkeypatch):
         )
 
     def fake_qualitative_table(**_kwargs):
-        return "unit qualitative table", 3
+        return "unit qualitative table", 3, {"train": 0.2, "validation": 0.3, "test": 0.4}
 
     monkeypatch.setattr(runner, "build_qualitative_table", fake_qualitative_table)
     monkeypatch.setattr(grpo_runner, "build_qualitative_table", fake_qualitative_table)

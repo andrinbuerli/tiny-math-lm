@@ -142,6 +142,9 @@ def test_sft_loop_trains_and_saves_reloadable_checkpoint(workspace_tmpdir):
     assert checkpoint["model"]
     assert len(run.logged) == 2
     assert "qualitative/examples" in run.logged[-1]
+    assert "train/greedy_accuracy" in run.logged[-1]
+    assert "val/greedy_accuracy" in run.logged[-1]
+    assert "test/greedy_accuracy" in run.logged[-1]
     assert result["qualitative_examples"] == 4
     inference = torch.load(result["inference_checkpoint"], map_location="cpu", weights_only=False)
     assert inference["step"] == 2

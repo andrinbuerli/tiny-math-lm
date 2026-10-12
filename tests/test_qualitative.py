@@ -83,5 +83,8 @@ def test_qualitative_table_covers_each_split_and_balances_modules(monkeypatch):
         "arithmetic__add_or_sub", "arithmetic__mixed"
     }
     assert run.logs[0][0]["optimizer_step"] == 42
+    assert run.logs[0][0]["train/greedy_accuracy"] in (0.0, 1.0)
+    assert run.logs[0][0]["val/greedy_accuracy"] == 0.0
+    assert run.logs[0][0]["test/greedy_accuracy"] == 0.0
     assert run.logs[0][1] == {}
     assert run.summary["qualitative/example_count"] == 4

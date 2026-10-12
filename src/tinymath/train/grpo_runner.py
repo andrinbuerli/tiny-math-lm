@@ -93,6 +93,8 @@ def train_grpo(
         define_metric("optimizer_step")
         define_metric("grpo/update")
         define_metric("grpo/*", step_metric="grpo/update")
+        for metric in ("train/*", "val/*", "test/*"):
+            define_metric(metric, step_metric="optimizer_step")
         define_metric("qualitative/*", step_metric="optimizer_step")
     prompts_per_batch = int(config.rlvr.prompts_per_batch)
     group_size = int(config.rlvr.group_size)
@@ -112,7 +114,8 @@ def train_grpo(
         "group/mixed_rate", "group/all_correct_rate", "group/all_wrong_rate", "loss",
         "policy_loss", "kl", "entropy", "clip_fraction", "grad_norm", "tokens_seen", "wall_seconds",
         "tokens_per_second", "estimated_flops", "peak_gpu_memory_bytes",
-        "flops_estimator_version",
+        "flops_estimator_version", "train/greedy_accuracy", "val/greedy_accuracy",
+        "test/greedy_accuracy",
     ]
     writer = csv.DictWriter(metrics_file, fieldnames=fields)
     if mode == "w":
@@ -245,8 +248,6 @@ def train_grpo(
                     torch.cuda.max_memory_allocated(device) if device.type == "cuda" else 0
                 ),
             }
-            writer.writerow(values)
-            metrics_file.flush()
             if update % int(config.trainer.save_every) == 0 or update == updates:
                 save_checkpoint(
                     latest_path,
@@ -277,7 +278,7 @@ def train_grpo(
                 )
             qualitative_due = update % qualitative_every == 0 or update == updates
             if qualitative_due:
-                qualitative_table, qualitative_count = build_qualitative_table(
+                qualitative_table, qualitative_count, greedy_accuracy = build_qualitative_table(
                     model=model,
                     tokenizer=tokenizer,
                     split_rows={
@@ -302,6 +303,9 @@ def train_grpo(
                         run_dir / "latest_inference.pt"
                     )
                 values["qualitative/examples"] = qualitative_table
+                for split, value in greedy_accuracy.items():
+                    metric_name = "val/greedy_accuracy" if split == "validation" else f"{split}/greedy_accuracy"
+                    values[metric_name] = value
             if (
                 update % int(config.tracking.log_every) == 0
                 or update == 1
@@ -312,11 +316,15 @@ def train_grpo(
                 for key, value in values.items():
                     if key == "update":
                         logged["grpo/update"] = value
-                    elif key == "qualitative/examples":
+                    elif key == "qualitative/examples" or key in {
+                        "train/greedy_accuracy", "val/greedy_accuracy", "test/greedy_accuracy"
+                    }:
                         logged[key] = value
                     else:
                         logged[f"grpo/{key}"] = value
                 run.log(logged)
+            writer.writerow({key: value for key, value in values.items() if key in fields})
+            metrics_file.flush()
     finally:
         metrics_file.close()
     return {

@@ -41,7 +41,7 @@ def build_qualitative_table(
     seed: int,
     max_new_tokens: int = 128,
     examples_per_module: int = 2,
-) -> tuple[Any, int]:
+) -> tuple[Any, int, dict[str, float | None]]:
     """Build a deterministic W&B table with generated train/validation/test answers."""
     if examples_per_module < 1 or max_new_tokens < 1:
         raise ValueError("Qualitative sample and generation limits must be positive")
@@ -51,6 +51,7 @@ def build_qualitative_table(
     model.eval()
     use_bf16 = device.type == "cuda" and torch.cuda.is_bf16_supported()
     rows: list[list[Any]] = []
+    split_correct = {split: [0, 0] for split in ("train", "validation", "test")}
     try:
         for split in ("train", "validation", "test"):
             examples = _selected_rows(
@@ -78,6 +79,8 @@ def build_qualitative_table(
                 correct, valid = verify_answer(
                     prediction, example["answer"], question=example["question"]
                 )
+                split_correct[split][0] += int(correct)
+                split_correct[split][1] += 1
                 rows.append(
                     [
                         training_arm,
@@ -110,7 +113,11 @@ def build_qualitative_table(
         ],
         data=rows,
     )
-    return table, len(rows)
+    accuracy = {
+        split: correct / total if total else None
+        for split, (correct, total) in split_correct.items()
+    }
+    return table, len(rows), accuracy
 
 
 def log_qualitative_examples(
@@ -126,7 +133,7 @@ def log_qualitative_examples(
     examples_per_module: int = 2,
 ) -> int:
     """Log deterministic train/validation/test prompts with generated answers."""
-    table, count = build_qualitative_table(
+    table, count, accuracy = build_qualitative_table(
         model=model,
         tokenizer=tokenizer,
         split_rows=split_rows,
@@ -137,7 +144,16 @@ def log_qualitative_examples(
     )
     # The resumed W&B history may already be past the sampled checkpoint step.
     # Keep optimizer_step as a column and let W&B assign the next history step.
-    run.log({"qualitative/examples": table, "optimizer_step": step})
+    run.log(
+        {
+            "qualitative/examples": table,
+            "optimizer_step": step,
+            **{
+                f"{'val' if split == 'validation' else split}/greedy_accuracy": value
+                for split, value in accuracy.items()
+            },
+        }
+    )
     summary = getattr(run, "summary", None)
     if summary is not None:
         summary["qualitative/example_count"] = count

@@ -167,6 +167,9 @@ def test_grpo_runner_scores_mixed_group_and_applies_gradient(workspace_tmpdir, m
     assert inference["tokenizer_sha256"] == tokenizer.sha256
     assert inference["model"]
     assert "qualitative/examples" in run.logged[-1]
+    assert "train/greedy_accuracy" in run.logged[-1]
+    assert "val/greedy_accuracy" in run.logged[-1]
+    assert "test/greedy_accuracy" in run.logged[-1]
     assert any(not torch.equal(before[name], saved["model"][name]) for name in before)
     with (run_dir / "metrics.csv").open(encoding="utf-8") as handle:
         metrics = next(csv.DictReader(handle))
