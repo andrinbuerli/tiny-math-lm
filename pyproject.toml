@@ -19,8 +19,11 @@ dependencies = [
   "wandb>=0.17",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = ["pytest>=8.0", "ruff>=0.3"]
+
+[tool.uv]
+default-groups = ["dev"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
