@@ -23,6 +23,7 @@ wandb/
 /runs/
 /outputs/
 /figures/generated/
+/reports/
 *.pt
 *.pth
 *.ckpt

@@ -136,6 +136,7 @@ def evaluate_checkpoint(
         "checkpoint": str(checkpoint_path.resolve()),
         "checkpoint_step": checkpoint.get("step", checkpoint.get("update")),
         "source_sft_checkpoint": checkpoint.get("source_sft_checkpoint"),
+        "model_parameters": model.count_parameters(),
         "tokenizer_sha256": tokenizer.sha256,
         "splits": results,
     }

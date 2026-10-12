@@ -48,7 +48,7 @@ def main(config: DictConfig) -> None:
     manifest = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
     run_dir = workspace_path(
         "runs", str(config.experiment.name), str(config.model.name), "evaluation",
-        checkpoint.stem, f"seed{int(config.seed)}",
+        checkpoint.parent.parent.name, checkpoint.stem, f"seed{int(config.seed)}",
     )
     run = initialize_wandb(config, run_dir, job_type="evaluation")
     try:

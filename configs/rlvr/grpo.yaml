@@ -1,5 +1,5 @@
 name: grpo
-updates: 1000
+updates: ${experiment.max_steps}
 prompts_per_batch: 8
 group_size: 8
 temperature: 0.8

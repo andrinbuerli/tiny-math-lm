@@ -1,5 +1,5 @@
 name: continued_sft
-max_steps: 2000
+max_steps: ${experiment.max_steps}
 batch_size: 32
 gradient_accumulation: 1
 learning_rate: 0.0001

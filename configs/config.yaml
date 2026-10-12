@@ -4,6 +4,7 @@ defaults:
   - trainer: sft
   - rlvr: grpo
   - eval: default
+  - reporting: default
   - tracking: wandb
   - experiment: smoke
   - _self_
@@ -12,6 +13,10 @@ seed: 17
 init_checkpoint: null
 data_bundle: null
 checkpoint: null
+orchestration:
+  models: [1m, 10m, 100m]
+  run_grpo: true
+  run_continued_sft: true
 paths:
   root: /workspace
   data: ${paths.root}/data

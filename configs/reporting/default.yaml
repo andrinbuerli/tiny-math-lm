@@ -1,0 +1,1 @@
+output_dir: ${paths.root}/reports/${experiment.name}/seed${seed}

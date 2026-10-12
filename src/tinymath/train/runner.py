@@ -112,7 +112,8 @@ def train_sft(
         if payload.get("tokenizer_sha256") != tokenizer.sha256:
             raise ValueError("Checkpoint tokenizer does not match the prepared data bundle")
         model.load_state_dict(payload["model"])
-        if payload.get("optimizer") is not None:
+        is_continuation = str(config.trainer.name) == "continued_sft"
+        if payload.get("optimizer") is not None and not is_continuation:
             optimizer.load_state_dict(payload["optimizer"])
             start_step = int(payload["step"])
             tokens_seen = int(payload.get("tokens_seen", 0))
