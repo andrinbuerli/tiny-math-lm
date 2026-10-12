@@ -1,5 +1,5 @@
 dataset: d0rj/mathematics_dataset
-revision: null
+revision: d9f78d0665b3a13dad21c6830b9b358c8a25ae74
 modules:
   - arithmetic__add_or_sub
   - arithmetic__mul
