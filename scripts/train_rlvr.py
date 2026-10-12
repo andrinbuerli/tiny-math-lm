@@ -39,7 +39,7 @@ def main(config: DictConfig) -> None:
         raise ValueError(f"The experiment is restricted to exactly these modules: {SELECTED_MODULES}")
     if not config.init_checkpoint:
         raise ValueError("Set init_checkpoint to the corresponding SFT checkpoint")
-    seed_everything(int(config.seed))
+    seed_everything(int(config.seed), cpu_threads=int(config.runtime.cpu_threads))
     init_checkpoint = workspace_path(str(config.init_checkpoint))
     if not init_checkpoint.is_file():
         raise FileNotFoundError(f"SFT checkpoint not found: {init_checkpoint}")

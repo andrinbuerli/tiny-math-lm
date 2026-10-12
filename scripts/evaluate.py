@@ -40,7 +40,7 @@ def main(config: DictConfig) -> None:
         raise ValueError(f"The experiment is restricted to exactly these modules: {SELECTED_MODULES}")
     if not config.checkpoint:
         raise ValueError("Set checkpoint= to the model checkpoint to evaluate")
-    seed_everything(int(config.seed))
+    seed_everything(int(config.seed), cpu_threads=int(config.runtime.cpu_threads))
     checkpoint = workspace_path(str(config.checkpoint))
     if not checkpoint.is_file():
         raise FileNotFoundError(f"Evaluation checkpoint not found: {checkpoint}")

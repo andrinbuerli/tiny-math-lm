@@ -30,8 +30,13 @@ class RuntimeInfo:
         return asdict(self)
 
 
-def seed_everything(seed: int, *, deterministic: bool = True) -> None:
+def seed_everything(
+    seed: int, *, deterministic: bool = True, cpu_threads: int = 4
+) -> None:
     """Seed Python, NumPy, PyTorch and available CUDA generators."""
+    if cpu_threads < 1:
+        raise ValueError("cpu_threads must be positive")
+    torch.set_num_threads(cpu_threads)
     if deterministic:
         os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     random.seed(seed)

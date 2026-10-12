@@ -5,6 +5,7 @@ defaults:
   - rlvr: grpo
   - eval: default
   - qualitative: default
+  - runtime: default
   - reporting: default
   - tracking: wandb
   - experiment: smoke

@@ -65,6 +65,15 @@ def test_seed_everything_repeats_torch_sequence():
     assert torch.equal(torch.rand(5), expected)
 
 
+def test_seed_everything_applies_configured_cpu_thread_cap():
+    previous = torch.get_num_threads()
+    try:
+        seed_everything(23, cpu_threads=2)
+        assert torch.get_num_threads() == 2
+    finally:
+        torch.set_num_threads(previous)
+
+
 def test_checkpoint_round_trip(workspace_tmpdir):
     path = workspace_tmpdir / "state.pt"
     save_checkpoint(path, {"step": 9, "weights": torch.arange(4)})

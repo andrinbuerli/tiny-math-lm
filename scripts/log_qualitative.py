@@ -15,6 +15,7 @@ from tinymath.config import workspace_path
 from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.eval.qualitative import log_qualitative_examples
 from tinymath.model.gpt import GPTConfig, TinyMathGPT
+from tinymath.repro import seed_everything
 from tinymath.tracking.wandb import finish_wandb, initialize_wandb
 from tinymath.train.runner import read_jsonl
 
@@ -41,6 +42,7 @@ def _bundle_dir(config: DictConfig) -> tuple[Path, dict[str, Any]]:
 
 @hydra.main(version_base="1.3", config_path="../configs", config_name="config")
 def main(config: DictConfig) -> None:
+    seed_everything(int(config.seed), cpu_threads=int(config.runtime.cpu_threads))
     bundle_dir, manifest = _bundle_dir(config)
     if config.trainer.name == "continued_sft":
         stage = "continued_sft"

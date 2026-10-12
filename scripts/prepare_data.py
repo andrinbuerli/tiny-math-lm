@@ -21,7 +21,7 @@ LOGGER = logging.getLogger(__name__)
 def main(config: DictConfig) -> None:
     if set(config.data.modules) != set(SELECTED_MODULES):
         raise ValueError(f"The experiment is restricted to exactly these modules: {SELECTED_MODULES}")
-    seed_everything(int(config.seed))
+    seed_everything(int(config.seed), cpu_threads=int(config.runtime.cpu_threads))
     run_dir = workspace_path(
         "runs", str(config.experiment.name), "data", f"seed{int(config.seed)}"
     )

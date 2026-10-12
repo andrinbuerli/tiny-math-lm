@@ -48,7 +48,7 @@ def _bundle_dir(config: DictConfig) -> Path:
 def main(config: DictConfig) -> None:
     if set(config.data.modules) != set(SELECTED_MODULES):
         raise ValueError(f"The experiment is restricted to exactly these modules: {SELECTED_MODULES}")
-    seed_everything(int(config.seed))
+    seed_everything(int(config.seed), cpu_threads=int(config.runtime.cpu_threads))
     bundle_dir = _bundle_dir(config)
     manifest = __import__("json").loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
     run_dir = workspace_path(
