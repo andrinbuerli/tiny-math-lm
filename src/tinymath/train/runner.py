@@ -178,7 +178,8 @@ def train_sft(
                     device=device,
                     generator=data_generator,
                 )
-                tokens_this_step += int(mask.sum().item())
+                # Count all model input positions, including prompt and padding compute.
+                tokens_this_step += inputs.numel()
                 with torch.autocast("cuda", dtype=torch.bfloat16, enabled=amp_enabled):
                     logits = model(inputs)
                     loss = completion_only_loss(logits, targets, mask) / accumulation
