@@ -31,15 +31,19 @@ def collect_results(
         model_name = path.parents[4].name
         arm = path.parents[2].name
         for split_name, split in summary.get("splits", {}).items():
+            examples = split.get("examples")
+            accuracy = split.get("accuracy")
+            if examples is not None and int(examples) == 0:
+                accuracy = None
             row = {
                 "model": model_name,
                 "arm": arm,
                 "split": split_name,
                 "parameters": summary.get("model_parameters"),
-                "accuracy": split.get("accuracy"),
+                "accuracy": accuracy,
                 "format_validity": split.get("format_validity"),
                 "mean_output_tokens": split.get("mean_output_tokens"),
-                "examples": split.get("examples"),
+                "examples": examples,
                 "module_count": len(split.get("module", {})),
                 "modules": ";".join(sorted(split.get("module", {}))),
                 "checkpoint": summary.get("checkpoint"),
@@ -143,12 +147,19 @@ def _figure_modules(
                 values = [modules.get((model, arm, module)) for module in names]
                 if any(value is not None for value in values):
                     offset = (index - (len(MODELS) * len(ARMS) - 1) / 2) * width
-                    axis.bar([i + offset for i in range(len(names))],
-                             [value or 0 for value in values], width, label=f"{model} {arm}")
+                    present_positions = [
+                        module_index + offset
+                        for module_index, value in enumerate(values)
+                        if value is not None
+                    ]
+                    present_values = [value for value in values if value is not None]
+                    axis.bar(present_positions, present_values, width, label=f"{model} {arm}")
                 index += 1
         axis.set_xticks(range(len(names)), labels, rotation=25, ha="right")
         axis.set_ylabel("Greedy exact accuracy")
         axis.set_title("Per-module ID test accuracy")
+        axis.text(0.01, 0.02, "Missing measurements are omitted, not set to zero.",
+                  transform=axis.transAxes, fontsize=7)
         axis.legend(fontsize=7, ncol=2)
     else:
         _no_data(axis, "Per-module breakdown")
@@ -166,10 +177,19 @@ def _figure_ood(rows: list[dict[str, Any]], output_dir: Path) -> list[Path]:
         labels = [f"{model}\n{arm}" for model in MODELS for arm in ARMS]
         for index, split in enumerate(categories):
             vals = [wanted.get((model, arm, split)) for model in MODELS for arm in ARMS]
-            axis.bar([pos + (index - 1) * width for pos in x], [v or 0 for v in vals], width, label=split)
+            positions = [pos + (index - 1) * width for pos in x]
+            present_positions = [pos for pos, value in zip(positions, vals, strict=True) if value is not None]
+            present_values = [value for value in vals if value is not None]
+            if present_values:
+                axis.bar(present_positions, present_values, width, label=split)
+            for pos, value in zip(positions, vals, strict=True):
+                if value is None:
+                    axis.text(pos, 0.015, "missing", ha="center", va="bottom", rotation=90, fontsize=5)
         axis.set_xticks(x, labels, fontsize=7)
         axis.set_ylabel("Greedy exact accuracy")
         axis.set_title("In-distribution and controlled OOD accuracy")
+        axis.text(0.01, 0.02, "Missing measurements are labeled; no bar means no measured accuracy.",
+                  transform=axis.transAxes, fontsize=7)
         axis.legend(fontsize=8)
     else:
         _no_data(axis, "ID and OOD")

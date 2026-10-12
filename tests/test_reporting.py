@@ -42,6 +42,12 @@ def test_comparison_markdown_summarizes_measured_gains_and_grpo_groups(workspace
                     "arithmetic__mixed": {"accuracy": 0.2},
                 },
             }
+        if arm == "continued_sft":
+            splits["number_length_ood"] = {
+                "accuracy": 0.0,
+                "examples": 0,
+                "module": {},
+            }
         result_path.write_text(
             json.dumps(
                 {
@@ -81,6 +87,13 @@ def test_comparison_markdown_summarizes_measured_gains_and_grpo_groups(workspace
     assert "| 1m | grpo | 50.0% | 200 | 1,000,000,000,000 |" in markdown
     assert "2,000 examples / algebra__linear_1d;arithmetic__mixed" in markdown
     assert not report["coverage"]["missing"]["1m"]["sft"]["expression_length_ood"]
+    assert report["coverage"]["missing"]["1m"]["continued_sft"]["number_length_ood"]
+    empty_split = next(
+        row
+        for row in report["available_measurements"]
+        if row["arm"] == "continued_sft" and row["split"] == "number_length_ood"
+    )
+    assert empty_split["accuracy"] is None
     ood_measurement = next(
         row
         for row in report["available_measurements"]
