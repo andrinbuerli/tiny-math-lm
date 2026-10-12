@@ -194,6 +194,34 @@ def _figure_digits(
     return _save(fig, output_dir, "accuracy_by_digit_width")
 
 
+def _figure_operators(
+    rows: list[dict[str, Any]], output_dir: Path, runs_dir: Path, experiment: str, seed: int | None
+) -> list[Path]:
+    fig, axis = plt.subplots(figsize=(7, 4.5))
+    found = False
+    for path in sorted((runs_dir / experiment).glob("*/evaluation/*/*/seed*/results.json")):
+        if seed is not None and path.parent.name != f"seed{seed}":
+            continue
+        if path.parents[2].name != "sft":
+            continue
+        summary = json.loads(path.read_text(encoding="utf-8"))
+        curve = summary.get("splits", {}).get("test", {}).get("by_operator_count", {})
+        if curve:
+            found = True
+            ordered = sorted(curve.items(), key=lambda item: int(item[0]))
+            axis.plot([int(key) for key, _value in ordered], [value["accuracy"] for _key, value in ordered],
+                      marker="o", label=path.parents[4].name)
+    if found:
+        axis.set_xlabel("Operator count in question")
+        axis.set_ylabel("Greedy exact accuracy")
+        axis.set_title("SFT accuracy by expression length")
+        axis.legend()
+        axis.grid(alpha=0.25)
+    else:
+        _no_data(axis, "Accuracy by expression length")
+    return _save(fig, output_dir, "accuracy_by_expression_length")
+
+
 def _figure_curves(runs_dir: Path, experiment: str, output_dir: Path, seed: int | None) -> list[Path]:
     outputs: list[Path] = []
     for figure_name, columns, title in (
@@ -306,6 +334,7 @@ def make_report(
     figures += _figure_arm_bars(rows, output_dir)
     figures += _figure_modules(rows, output_dir, runs_dir, experiment, seed)
     figures += _figure_digits(rows, output_dir, runs_dir, experiment, seed)
+    figures += _figure_operators(rows, output_dir, runs_dir, experiment, seed)
     figures += _figure_curves(runs_dir, experiment, output_dir, seed)
     figures += _figure_ood(rows, output_dir)
     figures += _figure_compute(rows, runs_dir, experiment, output_dir, seed)
