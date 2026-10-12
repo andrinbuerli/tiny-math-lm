@@ -66,6 +66,7 @@ def test_sft_loop_trains_and_saves_reloadable_checkpoint(workspace_tmpdir):
             "".join(json.dumps(row) + "\n" for row in examples), encoding="utf-8"
         )
     config = SimpleNamespace(
+        seed=17,
         model={
             "vocab_size": None,
             "context_length": 64,
@@ -103,6 +104,7 @@ def test_sft_loop_trains_and_saves_reloadable_checkpoint(workspace_tmpdir):
     assert result["step"] == 2
     assert checkpoint["step"] == 2
     assert checkpoint["tokenizer_sha256"] == tokenizer.sha256
+    assert checkpoint["data_generator_state"].numel() > 0
     assert checkpoint["model"]
     assert len(run.logged) == 2
     assert Path(result["metrics_path"]).exists()

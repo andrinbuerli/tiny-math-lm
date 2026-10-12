@@ -98,6 +98,7 @@ def train_grpo(
         "update", "reward/mean", "reward/format_valid_rate", "reward/verifier_failure_rate",
         "group/mixed_rate", "group/all_correct_rate", "group/all_wrong_rate", "loss",
         "policy_loss", "kl", "entropy", "clip_fraction", "grad_norm", "tokens_seen", "wall_seconds",
+        "tokens_per_second", "estimated_flops", "peak_gpu_memory_bytes",
     ]
     writer = csv.DictWriter(metrics_file, fieldnames=fields)
     if mode == "w":
@@ -203,6 +204,11 @@ def train_grpo(
                 "grad_norm": grad_norm_value,
                 "tokens_seen": tokens_seen,
                 "wall_seconds": time.monotonic() - started,
+                "tokens_per_second": tokens_seen / max(1e-9, time.monotonic() - started),
+                "estimated_flops": 6 * model.count_parameters() * tokens_seen,
+                "peak_gpu_memory_bytes": (
+                    torch.cuda.max_memory_allocated(device) if device.type == "cuda" else 0
+                ),
             }
             writer.writerow(values)
             metrics_file.flush()

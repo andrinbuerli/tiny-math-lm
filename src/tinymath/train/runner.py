@@ -41,8 +41,9 @@ def _batch(
     batch_size: int,
     context_length: int,
     device: torch.device,
+    generator: torch.Generator,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    indices = torch.randint(len(examples), (batch_size,)).tolist()
+    indices = torch.randint(len(examples), (batch_size,), generator=generator).tolist()
     inputs, targets, mask = build_completion_batch(
         [examples[index] for index in indices], tokenizer, context_length=context_length
     )
@@ -107,6 +108,7 @@ def train_sft(
     start_step = 0
     best_val = math.inf
     tokens_seen = 0
+    data_generator = torch.Generator(device="cpu").manual_seed(int(config.seed))
     if init_checkpoint is not None:
         payload = torch.load(init_checkpoint, map_location="cpu", weights_only=False)
         if payload.get("tokenizer_sha256") != tokenizer.sha256:
@@ -120,6 +122,8 @@ def train_sft(
             best_val = float(payload.get("best_val_loss", math.inf))
             if payload.get("rng_state"):
                 restore_rng_state(payload["rng_state"])
+            if payload.get("data_generator_state") is not None:
+                data_generator.set_state(payload["data_generator_state"])
     elif latest_path.exists():
         payload = torch.load(latest_path, map_location="cpu", weights_only=False)
         model.load_state_dict(payload["model"])
@@ -128,6 +132,8 @@ def train_sft(
         tokens_seen = int(payload.get("tokens_seen", 0))
         best_val = float(payload.get("best_val_loss", math.inf))
         restore_rng_state(payload["rng_state"])
+        if payload.get("data_generator_state") is not None:
+            data_generator.set_state(payload["data_generator_state"])
 
     run_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = run_dir / "metrics.csv"
@@ -135,7 +141,10 @@ def train_sft(
     metrics_file = metrics_path.open("w" if is_new_metrics else "a", newline="", encoding="utf-8")
     metric_writer = csv.DictWriter(
         metrics_file,
-        fieldnames=["optimizer_step", "train/loss", "val/loss", "learning_rate", "tokens_seen", "wall_seconds"],
+        fieldnames=[
+            "optimizer_step", "train/loss", "val/loss", "learning_rate", "tokens_seen",
+            "tokens_per_second", "estimated_flops", "wall_seconds",
+        ],
     )
     if is_new_metrics:
         metric_writer.writeheader()
@@ -169,6 +178,7 @@ def train_sft(
                     batch_size=batch_size,
                     context_length=model_config.context_length,
                     device=device,
+                    generator=data_generator,
                 )
                 tokens_this_step += int(mask.sum().item())
                 with torch.autocast("cuda", dtype=torch.bfloat16, enabled=amp_enabled):
@@ -194,14 +204,18 @@ def train_sft(
                     best_val = val_loss
                     _save_state(best_path=run_dir / "best.pt", model=model, optimizer=optimizer,
                                 step=step, tokens_seen=tokens_seen, best_val=best_val,
-                                tokenizer=tokenizer, model_config=model_config)
+                                tokenizer=tokenizer, model_config=model_config,
+                                data_generator_state=data_generator.get_state())
+            elapsed = time.monotonic() - started
             row = {
                 "optimizer_step": step,
                 "train/loss": loss_value,
                 "val/loss": "" if val_loss is None else val_loss,
                 "learning_rate": lr,
                 "tokens_seen": tokens_seen,
-                "wall_seconds": time.monotonic() - started,
+                "tokens_per_second": tokens_seen / max(1e-9, elapsed),
+                "estimated_flops": 6 * model.count_parameters() * tokens_seen,
+                "wall_seconds": elapsed,
             }
             metric_writer.writerow(row)
             metrics_file.flush()
@@ -212,7 +226,9 @@ def train_sft(
                     "train/loss": loss_value,
                     "train/grad_norm": float(grad_norm.item()),
                     "train/learning_rate": lr,
-                    "train/wall_seconds": time.monotonic() - started,
+                    "train/wall_seconds": elapsed,
+                    "train/tokens_per_second": tokens_seen / max(1e-9, elapsed),
+                    "train/estimated_flops": 6 * model.count_parameters() * tokens_seen,
                 }
                 if val_loss is not None:
                     values["val/loss"] = val_loss
@@ -222,7 +238,8 @@ def train_sft(
             if step % save_every == 0 or step == target_steps:
                 _save_state(best_path=latest_path, model=model, optimizer=optimizer,
                             step=step, tokens_seen=tokens_seen, best_val=best_val,
-                            tokenizer=tokenizer, model_config=model_config)
+                            tokenizer=tokenizer, model_config=model_config,
+                            data_generator_state=data_generator.get_state())
     finally:
         metrics_file.close()
     return {
@@ -245,6 +262,7 @@ def _save_state(
     best_val: float,
     tokenizer: CharacterTokenizer,
     model_config: GPTConfig,
+    data_generator_state: torch.Tensor,
 ) -> None:
     save_checkpoint(
         best_path,
@@ -255,6 +273,7 @@ def _save_state(
             "tokens_seen": tokens_seen,
             "best_val_loss": best_val,
             "rng_state": capture_rng_state(),
+            "data_generator_state": data_generator_state,
             "tokenizer_sha256": tokenizer.sha256,
             "model_config": model_config.__dict__,
         },
