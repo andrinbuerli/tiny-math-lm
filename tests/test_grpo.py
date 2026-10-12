@@ -174,6 +174,10 @@ def test_grpo_runner_scores_mixed_group_and_applies_gradient(workspace_tmpdir, m
     prompt_length = len(tokenizer.encode(format_prompt("1 + 1"), add_bos=True))
     expected_flops = initial_model.count_parameters() * (20 * prompt_length + 28)
     assert int(metrics["estimated_flops"]) == expected_flops
+    with (run_dir / "metrics.csv").open(encoding="utf-8") as existing:
+        fieldnames = next(csv.reader(existing))
+    with (run_dir / "metrics.csv").open("a", encoding="utf-8", newline="") as handle:
+        csv.DictWriter(handle, fieldnames=fieldnames).writerow({"update": 2, "reward/mean": 999})
     config.rlvr.updates = 2
     resumed = grpo_runner.train_grpo(
         config=config,
@@ -184,4 +188,6 @@ def test_grpo_runner_scores_mixed_group_and_applies_gradient(workspace_tmpdir, m
     )
     resumed_checkpoint = torch.load(resumed["checkpoint"], map_location="cpu", weights_only=False)
     assert resumed["update"] == resumed_checkpoint["update"] == 2
+    with (run_dir / "metrics.csv").open(encoding="utf-8") as handle:
+        assert [int(row["update"]) for row in csv.DictReader(handle)] == [1, 2]
 

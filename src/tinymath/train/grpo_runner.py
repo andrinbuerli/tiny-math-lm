@@ -24,6 +24,7 @@ from tinymath.train.grpo import (
     grpo_objective,
     sample_group_rollouts,
 )
+from tinymath.train.metrics import truncate_csv_after_step
 
 
 def _load_rows(path: Path) -> list[dict[str, str]]:
@@ -87,6 +88,12 @@ def train_grpo(
     updates = int(config.rlvr.updates)
     qualitative_every = max(1, int(getattr(getattr(config, "qualitative", None), "every_steps", 20_000)))
     qualitative_count = 0
+    define_metric = getattr(run, "define_metric", None)
+    if callable(define_metric):
+        define_metric("optimizer_step")
+        define_metric("grpo/update")
+        define_metric("grpo/*", step_metric="grpo/update")
+        define_metric("qualitative/*", step_metric="optimizer_step")
     prompts_per_batch = int(config.rlvr.prompts_per_batch)
     group_size = int(config.rlvr.group_size)
     temperature = float(config.rlvr.temperature)
@@ -96,6 +103,8 @@ def train_grpo(
     if prompts_per_batch < 1 or group_size < 2 or updates < 1:
         raise ValueError("GRPO requires positive updates/prompts and group_size >= 2")
     metrics_path = run_dir / "metrics.csv"
+    if start_update:
+        truncate_csv_after_step(metrics_path, step_column="update", step=start_update)
     mode = "a" if metrics_path.exists() and start_update else "w"
     metrics_file = metrics_path.open(mode, newline="", encoding="utf-8")
     fields = [
@@ -297,14 +306,15 @@ def train_grpo(
                 or update == updates
                 or qualitative_due
             ):
-                run.log(
-                    {
-                        key if key == "qualitative/examples" else f"grpo/{key}": value
-                        for key, value in values.items()
-                        if key != "update"
-                    },
-                    step=update,
-                )
+                logged = {"optimizer_step": update}
+                for key, value in values.items():
+                    if key == "update":
+                        logged["grpo/update"] = value
+                    elif key == "qualitative/examples":
+                        logged[key] = value
+                    else:
+                        logged[f"grpo/{key}"] = value
+                run.log(logged)
     finally:
         metrics_file.close()
     return {

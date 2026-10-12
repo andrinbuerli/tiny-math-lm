@@ -16,6 +16,7 @@ from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.data.prompts import format_completion, format_prompt
 from tinymath.eval.qualitative import build_qualitative_table
 from tinymath.model.gpt import GPTConfig, TinyMathGPT
+from tinymath.train.metrics import truncate_csv_after_step
 from tinymath.train.sft import build_completion_batch, completion_only_loss
 
 
@@ -138,6 +139,8 @@ def train_sft(
 
     run_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = run_dir / "metrics.csv"
+    if start_step:
+        truncate_csv_after_step(metrics_path, step_column="optimizer_step", step=start_step)
     is_new_metrics = not metrics_path.exists() or start_step == 0
     metrics_file = metrics_path.open("w" if is_new_metrics else "a", newline="", encoding="utf-8")
     metric_writer = csv.DictWriter(
@@ -156,6 +159,11 @@ def train_sft(
     save_every = max(1, int(config.trainer.save_every))
     qualitative_every = max(1, int(getattr(getattr(config, "qualitative", None), "every_steps", 20_000)))
     qualitative_count = 0
+    define_metric = getattr(run, "define_metric", None)
+    if callable(define_metric):
+        define_metric("optimizer_step")
+        for metric in ("train/*", "val/*", "system/*", "qualitative/*"):
+            define_metric(metric, step_metric="optimizer_step")
     warmup = int(config.trainer.warmup_steps)
     base_lr = float(config.trainer.learning_rate)
     started = time.monotonic()
@@ -280,7 +288,7 @@ def train_sft(
                 or step == target_steps
                 or qualitative_due
             ):
-                run.log(values, step=step)
+                run.log(values)
     finally:
         metrics_file.close()
     return {
