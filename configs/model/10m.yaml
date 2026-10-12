@@ -5,5 +5,5 @@ context_length: 256
 n_layers: 5
 n_heads: 8
 d_model: 384
-d_ff: 1152
+d_ff: 1216
 dropout: 0.0
