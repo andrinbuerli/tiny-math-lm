@@ -6,6 +6,7 @@ import json
 import logging
 import subprocess
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
 
 import hydra
 from hydra.core.hydra_config import HydraConfig
@@ -66,16 +67,63 @@ def _run(
     trainer: str,
     checkpoint: str | None = None,
     init_checkpoint: str | None = None,
+    experiment_choice: str | None = None,
 ) -> None:
     command = [
         str(workspace_path(".tools", "uv")), "run", "--locked", "python",
         str(workspace_path("scripts", script)),
         *_overrides(
-            config, model=model, trainer=trainer, checkpoint=checkpoint, init_checkpoint=init_checkpoint
+            config,
+            model=model,
+            trainer=trainer,
+            experiment_choice=experiment_choice,
+            checkpoint=checkpoint,
+            init_checkpoint=init_checkpoint,
         ),
     ]
     LOGGER.info("Running %s model=%s trainer=%s", script, model, trainer)
     subprocess.run(command, cwd="/workspace", check=True)
+
+
+def _run_model(config: DictConfig, model_name: str, experiment_choice: str) -> None:
+    """Run a model's SFT, GRPO and continued-SFT arms and their evaluations."""
+    _run(
+        "train_sft.py", config, model=model_name, trainer="sft",
+        experiment_choice=experiment_choice,
+    )
+    sft_run = workspace_path(
+        "runs", str(config.experiment.name), model_name, "sft", f"seed{int(config.seed)}"
+    )
+    sft_checkpoint = str(sft_run / "best.pt")
+    _run(
+        "evaluate.py", config, model=model_name, trainer="sft", checkpoint=sft_checkpoint,
+        experiment_choice=experiment_choice,
+    )
+    if config.orchestration.run_grpo:
+        _run(
+            "train_rlvr.py", config, model=model_name, trainer="sft",
+            init_checkpoint=sft_checkpoint, experiment_choice=experiment_choice,
+        )
+        grpo_checkpoint = workspace_path(
+            "runs", str(config.experiment.name), model_name, "grpo", f"seed{int(config.seed)}",
+            "latest.pt",
+        )
+        _run(
+            "evaluate.py", config, model=model_name, trainer="sft",
+            checkpoint=str(grpo_checkpoint), experiment_choice=experiment_choice,
+        )
+    if config.orchestration.run_continued_sft:
+        control_run = workspace_path(
+            "runs", str(config.experiment.name), model_name, "continued_sft", f"seed{int(config.seed)}"
+        )
+        _run(
+            "train_sft.py", config, model=model_name, trainer="continued_sft",
+            init_checkpoint=sft_checkpoint, experiment_choice=experiment_choice,
+        )
+        _run(
+            "evaluate.py", config, model=model_name, trainer="sft",
+            checkpoint=str(control_run / "best.pt"), experiment_choice=experiment_choice,
+        )
 
 
 @hydra.main(version_base="1.3", config_path="../configs", config_name="config")
@@ -92,38 +140,21 @@ def main(config: DictConfig) -> None:
             raise FileNotFoundError(f"Prepared data manifest not found: {manifest}")
     else:
         _run("prepare_data.py", config, model=str(config.model.name), trainer="sft")
-    for model_name in selected_models:
-        _run("train_sft.py", config, model=str(model_name), trainer="sft")
-        sft_run = workspace_path(
-            "runs", str(config.experiment.name), str(model_name), "sft", f"seed{int(config.seed)}"
-        )
-        sft_checkpoint = str(sft_run / "best.pt")
-        _run("evaluate.py", config, model=str(model_name), trainer="sft", checkpoint=sft_checkpoint)
-        if config.orchestration.run_grpo:
-            _run(
-                "train_rlvr.py", config, model=str(model_name), trainer="sft",
-                init_checkpoint=sft_checkpoint,
-            )
-            grpo_checkpoint = workspace_path(
-                "runs", str(config.experiment.name), str(model_name), "grpo", f"seed{int(config.seed)}",
-                "latest.pt",
-            )
-            _run(
-                "evaluate.py", config, model=str(model_name), trainer="sft",
-                checkpoint=str(grpo_checkpoint),
-            )
-        if config.orchestration.run_continued_sft:
-            control_run = workspace_path(
-                "runs", str(config.experiment.name), str(model_name), "continued_sft", f"seed{int(config.seed)}"
-            )
-            _run(
-                "train_sft.py", config, model=str(model_name), trainer="continued_sft",
-                init_checkpoint=sft_checkpoint,
-            )
-            _run(
-                "evaluate.py", config, model=str(model_name), trainer="sft",
-                checkpoint=str(control_run / "best.pt"),
-            )
+    experiment_choice = HydraConfig.get().runtime.choices.get(
+        "experiment", str(config.experiment.name)
+    )
+    model_names = [str(name) for name in selected_models]
+    if config.orchestration.get("parallel_models", False) and len(model_names) > 1:
+        with ThreadPoolExecutor(max_workers=len(model_names)) as executor:
+            futures = [
+                executor.submit(_run_model, config, name, experiment_choice)
+                for name in model_names
+            ]
+            for future in futures:
+                future.result()
+    else:
+        for model_name in model_names:
+            _run_model(config, model_name, experiment_choice)
     _run("plot.py", config, model=str(config.model.name), trainer="sft")
 
 
