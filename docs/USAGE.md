@@ -33,7 +33,7 @@ uv run python scripts/train_sft.py model=1m trainer=continued_sft experiment=02_
 
 Training and evaluation locate the prepared bundle by experiment and seed. Set `data_bundle=data/processed/<bundle-name>` to select one explicitly. Each stage writes its sanitized composed config, checkpoints, CSV metrics and W&B run state beneath `/workspace/runs`.
 
-SFT, continued-SFT and GRPO training runs log deterministic W&B qualitative tables every 5,000 optimizer steps and at the final step, with generated answers for up to two examples per module from the training, validation and test pools. To attach a final table to a run that began before periodic qualitative logging was added, rerun the Hydra helper with that run's original config overrides; it resumes the matching W&B run ID:
+SFT, continued-SFT and GRPO training runs log deterministic W&B qualitative tables every 5,000 optimizer steps and at the final step, with generated answers for up to two examples per module from the training, validation and test pools. At those same points, they log greedy exact accuracy for the same fixed examples under `train/greedy_accuracy`, `val/greedy_accuracy`, and `test/greedy_accuracy`; with five modules and two examples per module, each value summarizes 10 examples and is not full-split accuracy. To attach a final table to a run that began before periodic qualitative logging was added, rerun the Hydra helper with that run's original config overrides; it resumes the matching W&B run ID:
 
 ```bash
 uv run python scripts/log_qualitative.py model=1m experiment=03_main seed=18 \
