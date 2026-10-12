@@ -52,6 +52,19 @@ def persist_resolved_config(config: DictConfig, run_dir: str | Path) -> Path:
     return path
 
 
+def read_saved_resolved_config(run_dir: str | Path) -> dict[str, Any] | None:
+    """Read a previous run's sanitized config for exact-resume reconstruction."""
+    path = Path(run_dir).resolve() / "resolved_config.json"
+    if Path("/workspace") not in path.parents:
+        raise ValueError(f"Run directory must stay under {WORKSPACE}")
+    if not path.exists():
+        return None
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise TypeError(f"Saved run config must be a mapping: {path}")
+    return value
+
+
 def configure_workspace_environment() -> None:
     """Keep subprocesses and Hydra runs rooted at the project workspace."""
     os.environ["WORKSPACE_ROOT"] = str(WORKSPACE)

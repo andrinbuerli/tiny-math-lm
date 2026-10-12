@@ -9,7 +9,12 @@ import torch
 from hydra import compose, initialize_config_dir
 
 from tinymath.checkpoint import load_checkpoint, save_checkpoint
-from tinymath.config import persist_resolved_config, sanitized_config, workspace_path
+from tinymath.config import (
+    persist_resolved_config,
+    read_saved_resolved_config,
+    sanitized_config,
+    workspace_path,
+)
 from tinymath.repro import seed_everything
 from tinymath.tracking import wandb as tracking
 
@@ -33,6 +38,7 @@ def test_resolved_config_is_sanitized_and_saved(workspace_tmpdir):
     assert values["tracking"]["api_key"] == "<redacted>"
     path = persist_resolved_config(config, workspace_tmpdir)
     assert json.loads(path.read_text())["tracking"]["api_key"] == "<redacted>"
+    assert read_saved_resolved_config(workspace_tmpdir)["tracking"]["project"] == "tinymath-rl"
     with pytest.raises(ValueError):
         workspace_path("..", "outside")
 
@@ -64,9 +70,14 @@ def test_wandb_offline_initialization_reuses_id(workspace_tmpdir, monkeypatch):
         config = compose(config_name="config", overrides=["tracking.mode=offline"])
     assert tracking.initialize_wandb(config, workspace_tmpdir, job_type="unit") == "run"
     first_id = captured[0]["id"]
+    state = json.loads((workspace_tmpdir / "wandb_run.json").read_text())
+    assert state["sync_status"] == "unsynced"
     assert tracking.initialize_wandb(config, workspace_tmpdir, job_type="unit") == "run"
     assert captured[1]["id"] == first_id
     assert captured[0]["mode"] == "offline"
+    config.tracking.name = "changed-config"
+    with pytest.raises(tracking.TrackingError, match="different resolved Hydra config"):
+        tracking.initialize_wandb(config, workspace_tmpdir, job_type="unit")
 
 
 def test_online_tracking_fails_clearly_without_credentials(workspace_tmpdir, monkeypatch):

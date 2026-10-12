@@ -12,7 +12,7 @@ import requests
 from dotenv import load_dotenv
 from omegaconf import DictConfig
 
-from tinymath.config import persist_resolved_config, sanitized_config
+from tinymath.config import persist_resolved_config, read_saved_resolved_config, sanitized_config
 from tinymath.repro import runtime_info
 
 
@@ -46,9 +46,16 @@ def initialize_wandb(config: DictConfig, run_dir: str | Path, *, job_type: str) 
     mode = str(tracking.get("mode", "online"))
     run_path = Path(run_dir).resolve()
     run_path.mkdir(parents=True, exist_ok=True)
-    config_path = persist_resolved_config(config, run_path)
     state_path = run_path / "wandb_run.json"
     state = _tracking_state(state_path)
+    saved_config = read_saved_resolved_config(run_path)
+    current_config = sanitized_config(config)
+    if state and saved_config is not None and saved_config != current_config:
+        raise TrackingError(
+            "This W&B run already has a different resolved Hydra config; resume it with the "
+            "original options or choose a new run directory."
+        )
+    config_path = persist_resolved_config(config, run_path)
     run_id = state.get("id") or secrets.token_hex(8)
     if mode != "offline" and not os.environ.get("WANDB_API_KEY"):
         raise TrackingError(
