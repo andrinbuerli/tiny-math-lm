@@ -74,6 +74,16 @@ def main(config: DictConfig) -> None:
                 if config.eval.max_examples_per_split is not None else None
             ),
         )
+        run.config.update(
+            {
+                "training_arm": summary["training_arm"],
+                "source_sft_checkpoint": summary["source_sft_checkpoint"],
+                "source_training_run_dir": str(checkpoint.parent),
+                "checkpoint_step": summary["checkpoint_step"],
+                "model_parameters": summary["model_parameters"],
+            },
+            allow_val_change=True,
+        )
         logged = {}
         for split, result in summary["splits"].items():
             logged[f"eval/{split}/accuracy"] = result["accuracy"]

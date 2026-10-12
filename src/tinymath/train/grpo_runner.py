@@ -260,6 +260,7 @@ def train_grpo(
                         "rng_state": capture_rng_state(),
                         "tokenizer_sha256": tokenizer.sha256,
                         "model_config": model_config.__dict__,
+                        "training_arm": "grpo",
                         "source_sft_checkpoint": str(init_checkpoint),
                     },
                 )

@@ -159,7 +159,10 @@ def evaluate_checkpoint(
     summary = {
         "checkpoint": str(checkpoint_path.resolve()),
         "checkpoint_step": checkpoint.get("step", checkpoint.get("update")),
-        "source_sft_checkpoint": checkpoint.get("source_sft_checkpoint"),
+        "training_arm": checkpoint.get("training_arm", "unknown"),
+        "source_sft_checkpoint": checkpoint.get(
+            "source_sft_checkpoint", checkpoint.get("source_checkpoint")
+        ),
         "model_parameters": model.count_parameters(),
         "tokenizer_sha256": tokenizer.sha256,
         "splits": results,

@@ -40,6 +40,8 @@ def test_greedy_evaluation_writes_linked_predictions_and_metrics(workspace_tmpdi
             "model_config": model_config.__dict__,
             "tokenizer_sha256": tokenizer.sha256,
             "step": 4,
+            "training_arm": "continued_sft",
+            "source_sft_checkpoint": "/workspace/runs/source/sft/best.pt",
         },
     )
     result = evaluate_checkpoint(
@@ -50,6 +52,8 @@ def test_greedy_evaluation_writes_linked_predictions_and_metrics(workspace_tmpdi
         max_new_tokens=3,
     )
     assert result["checkpoint_step"] == 4
+    assert result["training_arm"] == "continued_sft"
+    assert result["source_sft_checkpoint"] == "/workspace/runs/source/sft/best.pt"
     assert result["splits"]["test"]["examples"] == 1
     assert (output / "test_predictions.csv").is_file()
     assert json.loads((output / "results.json").read_text())["tokenizer_sha256"] == tokenizer.sha256

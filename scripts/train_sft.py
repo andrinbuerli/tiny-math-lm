@@ -98,6 +98,7 @@ def main(config: DictConfig) -> None:
                 "training/model_parameters": result["parameters"],
                 "training/checkpoint": result["checkpoint"],
                 "training/latest_inference_checkpoint": result["inference_checkpoint"],
+                "training/source_sft_checkpoint": result["source_sft_checkpoint"],
             }
         )
         LOGGER.info("SFT training finished: %s", result)

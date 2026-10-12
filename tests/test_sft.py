@@ -118,6 +118,7 @@ def test_sft_loop_trains_and_saves_reloadable_checkpoint(workspace_tmpdir):
     assert result["qualitative_examples"] == 4
     inference = torch.load(result["inference_checkpoint"], map_location="cpu", weights_only=False)
     assert inference["step"] == 2
+    assert inference["training_arm"] == "sft"
     assert inference["tokenizer_sha256"] == tokenizer.sha256
     assert inference["model"]
     assert Path(result["metrics_path"]).exists()
@@ -138,3 +139,90 @@ def test_sft_loop_trains_and_saves_reloadable_checkpoint(workspace_tmpdir):
         rows = list(csv.DictReader(handle))
         assert [int(row["optimizer_step"]) for row in rows] == [1, 2, 3]
         assert rows[1]["train/loss"] != "duplicate"
+
+
+def test_continued_sft_resumes_its_own_checkpoint_and_records_source(workspace_tmpdir):
+    bundle = workspace_tmpdir / "bundle"
+    source_dir = workspace_tmpdir / "sft"
+    control_dir = workspace_tmpdir / "continued_sft"
+    bundle.mkdir()
+    rows = [
+        {"question": "1 + 1", "answer": "2", "module": "arithmetic__add_or_sub"},
+        {"question": "2 + 1", "answer": "3", "module": "arithmetic__add_or_sub"},
+    ]
+    tokenizer = CharacterTokenizer.from_texts(
+        format_prompt(row["question"]) + format_completion(row["answer"]) for row in rows
+    )
+    tokenizer.save(bundle / "char_tokenizer.json")
+    for filename, examples in (
+        ("sft_train.jsonl", rows),
+        ("sft_validation.jsonl", rows[:1]),
+        ("test.jsonl", rows[:1]),
+    ):
+        (bundle / filename).write_text(
+            "".join(json.dumps(row) + "\n" for row in examples), encoding="utf-8"
+        )
+    config = SimpleNamespace(
+        seed=19,
+        model={
+            "vocab_size": None,
+            "context_length": 64,
+            "n_layers": 1,
+            "n_heads": 2,
+            "d_model": 16,
+            "d_ff": 32,
+            "dropout": 0.0,
+        },
+        trainer=SimpleNamespace(
+            name="sft",
+            bf16=False,
+            learning_rate=1e-3,
+            weight_decay=0.0,
+            max_steps=2,
+            batch_size=2,
+            gradient_accumulation=1,
+            eval_every=1,
+            save_every=1,
+            warmup_steps=0,
+            grad_clip=1.0,
+        ),
+        tracking=SimpleNamespace(log_every=10),
+        qualitative=SimpleNamespace(every_steps=100, examples_per_module=1),
+    )
+
+    class Run:
+        def __init__(self):
+            self.summary = {}
+
+        def log(self, _values, **_kwargs):
+            pass
+
+    run = Run()
+    source_result = train_sft(config=config, bundle_dir=bundle, run_dir=source_dir, run=run)
+    source_checkpoint = Path(source_result["checkpoint"]).resolve()
+    config.trainer.name = "continued_sft"
+    first = train_sft(
+        config=config,
+        bundle_dir=bundle,
+        run_dir=control_dir,
+        run=run,
+        init_checkpoint=source_checkpoint,
+    )
+    first_payload = torch.load(first["checkpoint"], map_location="cpu", weights_only=False)
+    assert first["step"] == first_payload["step"] == 2
+    assert first_payload["training_arm"] == "continued_sft"
+    assert first_payload["source_sft_checkpoint"] == str(source_checkpoint)
+
+    config.trainer.max_steps = 3
+    resumed = train_sft(
+        config=config,
+        bundle_dir=bundle,
+        run_dir=control_dir,
+        run=run,
+        init_checkpoint=source_checkpoint,
+    )
+    resumed_payload = torch.load(resumed["checkpoint"], map_location="cpu", weights_only=False)
+    assert resumed["step"] == resumed_payload["step"] == 3
+    assert resumed_payload["source_sft_checkpoint"] == str(source_checkpoint)
+    with Path(resumed["metrics_path"]).open(encoding="utf-8") as handle:
+        assert [int(row["optimizer_step"]) for row in csv.DictReader(handle)] == [1, 2, 3]

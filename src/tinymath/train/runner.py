@@ -110,6 +110,7 @@ def train_sft(
     start_step = 0
     best_val = math.inf
     tokens_seen = 0
+    source_sft_checkpoint: str | None = None
     data_generator = torch.Generator(device="cpu").manual_seed(int(config.seed))
     if init_checkpoint is not None:
         payload = torch.load(init_checkpoint, map_location="cpu", weights_only=False)
@@ -117,11 +118,37 @@ def train_sft(
             raise ValueError("Checkpoint tokenizer does not match the prepared data bundle")
         model.load_state_dict(payload["model"])
         is_continuation = str(config.trainer.name) == "continued_sft"
-        if payload.get("optimizer") is not None and not is_continuation:
+        if is_continuation:
+            source_sft_checkpoint = str(init_checkpoint.resolve())
+            if latest_path.exists():
+                resume_payload = torch.load(latest_path, map_location="cpu", weights_only=False)
+                if resume_payload.get("tokenizer_sha256") != tokenizer.sha256:
+                    raise ValueError(
+                        "Continued-SFT checkpoint tokenizer does not match the data bundle"
+                    )
+                saved_source = resume_payload.get("source_sft_checkpoint")
+                if saved_source and Path(saved_source).resolve() != init_checkpoint.resolve():
+                    raise ValueError(
+                        "Continued-SFT checkpoint came from a different SFT checkpoint"
+                    )
+                if resume_payload.get("optimizer") is None:
+                    raise ValueError("Continued-SFT resume checkpoint has no optimizer state")
+                model.load_state_dict(resume_payload["model"])
+                optimizer.load_state_dict(resume_payload["optimizer"])
+                start_step = int(resume_payload["step"])
+                tokens_seen = int(resume_payload.get("tokens_seen", 0))
+                best_val = float(resume_payload.get("best_val_loss", math.inf))
+                best_val = _latest_best_val(run_dir, best_val)
+                restore_rng_state(resume_payload["rng_state"])
+                if resume_payload.get("data_generator_state") is not None:
+                    data_generator.set_state(resume_payload["data_generator_state"])
+                source_sft_checkpoint = saved_source or source_sft_checkpoint
+        elif payload.get("optimizer") is not None:
             optimizer.load_state_dict(payload["optimizer"])
             start_step = int(payload["step"])
             tokens_seen = int(payload.get("tokens_seen", 0))
             best_val = float(payload.get("best_val_loss", math.inf))
+            source_sft_checkpoint = payload.get("source_sft_checkpoint")
             if payload.get("rng_state"):
                 restore_rng_state(payload["rng_state"])
             if payload.get("data_generator_state") is not None:
@@ -133,6 +160,8 @@ def train_sft(
         start_step = int(payload["step"])
         tokens_seen = int(payload.get("tokens_seen", 0))
         best_val = float(payload.get("best_val_loss", math.inf))
+        best_val = _latest_best_val(run_dir, best_val)
+        source_sft_checkpoint = payload.get("source_sft_checkpoint")
         restore_rng_state(payload["rng_state"])
         if payload.get("data_generator_state") is not None:
             data_generator.set_state(payload["data_generator_state"])
@@ -214,10 +243,19 @@ def train_sft(
                 )
                 if val_loss < best_val:
                     best_val = val_loss
-                    _save_state(best_path=run_dir / "best.pt", model=model, optimizer=optimizer,
-                                step=step, tokens_seen=tokens_seen, best_val=best_val,
-                                tokenizer=tokenizer, model_config=model_config,
-                                data_generator_state=data_generator.get_state())
+                    _save_state(
+                        best_path=run_dir / "best.pt",
+                        model=model,
+                        optimizer=optimizer,
+                        step=step,
+                        tokens_seen=tokens_seen,
+                        best_val=best_val,
+                        tokenizer=tokenizer,
+                        model_config=model_config,
+                    data_generator_state=data_generator.get_state(),
+                        source_sft_checkpoint=source_sft_checkpoint,
+                        training_arm=str(config.trainer.name),
+                    )
             elapsed = time.monotonic() - started
             row = {
                 "optimizer_step": step,
@@ -249,11 +287,14 @@ def train_sft(
                 _save_state(best_path=latest_path, model=model, optimizer=optimizer,
                             step=step, tokens_seen=tokens_seen, best_val=best_val,
                             tokenizer=tokenizer, model_config=model_config,
-                            data_generator_state=data_generator.get_state())
+                            data_generator_state=data_generator.get_state(),
+                            source_sft_checkpoint=source_sft_checkpoint,
+                            training_arm=str(config.trainer.name))
                 _save_inference_state(
                     run_dir / "latest_inference.pt", model=model, step=step,
                     tokenizer=tokenizer, model_config=model_config,
                     training_arm=str(config.trainer.name),
+                    source_sft_checkpoint=source_sft_checkpoint,
                 )
             qualitative_due = step % qualitative_every == 0 or step == target_steps
             if qualitative_due:
@@ -300,6 +341,7 @@ def train_sft(
         "inference_checkpoint": str(run_dir / "latest_inference.pt"),
         "parameters": model.count_parameters(),
         "qualitative_examples": qualitative_count,
+        "source_sft_checkpoint": source_sft_checkpoint,
     }
 
 
@@ -314,6 +356,8 @@ def _save_state(
     tokenizer: CharacterTokenizer,
     model_config: GPTConfig,
     data_generator_state: torch.Tensor,
+    source_sft_checkpoint: str | None,
+    training_arm: str,
 ) -> None:
     save_checkpoint(
         best_path,
@@ -327,8 +371,19 @@ def _save_state(
             "data_generator_state": data_generator_state,
             "tokenizer_sha256": tokenizer.sha256,
             "model_config": model_config.__dict__,
+            "source_sft_checkpoint": source_sft_checkpoint,
+            "training_arm": training_arm,
         },
     )
+
+
+def _latest_best_val(run_dir: Path, fallback: float) -> float:
+    """Keep the validation best if it advanced after the last resumable checkpoint."""
+    best_path = run_dir / "best.pt"
+    if not best_path.is_file():
+        return fallback
+    best_payload = torch.load(best_path, map_location="cpu", weights_only=False)
+    return min(fallback, float(best_payload.get("best_val_loss", math.inf)))
 
 
 def _save_inference_state(
@@ -339,6 +394,7 @@ def _save_inference_state(
     tokenizer: CharacterTokenizer,
     model_config: GPTConfig,
     training_arm: str,
+    source_sft_checkpoint: str | None,
 ) -> None:
     save_checkpoint(
         path,
@@ -348,5 +404,6 @@ def _save_inference_state(
             "tokenizer_sha256": tokenizer.sha256,
             "model_config": model_config.__dict__,
             "training_arm": training_arm,
+            "source_sft_checkpoint": source_sft_checkpoint,
         },
     )

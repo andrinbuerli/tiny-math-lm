@@ -158,6 +158,7 @@ def test_grpo_runner_scores_mixed_group_and_applies_gradient(workspace_tmpdir, m
         run=run,
     )
     saved = torch.load(result["checkpoint"], map_location="cpu", weights_only=False)
+    assert saved["training_arm"] == "grpo"
     before = initial_model.state_dict()
     assert result["final_reward"] == 0.5
     assert result["qualitative_examples"] == 3
