@@ -164,11 +164,16 @@ def finish_wandb(run: Any) -> None:
     if run is None:
         return
     mode = getattr(getattr(run, "settings", None), "mode", None)
-    status = "unsynced" if str(mode) == "offline" else "synced"
+    offline = str(mode) == "offline"
+    status = "unsynced" if offline else "pending"
     try:
-        if hasattr(run, "summary"):
-            run.summary["tracking/sync_status"] = status
+        # Offline is known not to reach W&B. For online runs, a local status is
+        # only marked synced after finish() returns without interruption/error.
+        if offline and hasattr(run, "summary"):
+            run.summary["tracking/sync_status"] = "unsynced"
         run.finish()
+        if not offline and not bool(getattr(run, "_finish_timed_out", False)):
+            status = "synced"
     finally:
         state_path = _ACTIVE_STATE_PATHS.pop(str(getattr(run, "id", "")), None)
         if state_path is not None and state_path.exists():

@@ -154,6 +154,41 @@ def test_wandb_offline_initialization_reuses_id(workspace_tmpdir, monkeypatch):
         tracking.initialize_wandb(config, workspace_tmpdir, job_type="unit")
 
 
+def test_online_sync_status_requires_successful_finish(workspace_tmpdir):
+    class FakeRun:
+        id = "online-run"
+        settings = types.SimpleNamespace(mode="online")
+        summary = {}
+
+        def __init__(self, *, interrupt=False):
+            self.interrupt = interrupt
+
+        def finish(self):
+            if self.interrupt:
+                raise KeyboardInterrupt
+
+    for interrupt, timed_out, expected in (
+        (True, False, "pending"),
+        (False, True, "pending"),
+        (False, False, "synced"),
+    ):
+        run_dir = workspace_tmpdir / str(interrupt) / str(timed_out)
+        run_dir.mkdir(parents=True)
+        state_path = run_dir / "wandb_run.json"
+        state_path.write_text(
+            json.dumps({"id": "online-run", "mode": "online", "sync_status": "pending"})
+        )
+        tracking._ACTIVE_STATE_PATHS["online-run"] = state_path
+        run = FakeRun(interrupt=interrupt)
+        run._finish_timed_out = timed_out
+        if interrupt:
+            with pytest.raises(KeyboardInterrupt):
+                tracking.finish_wandb(run)
+        else:
+            tracking.finish_wandb(run)
+        assert json.loads(state_path.read_text())["sync_status"] == expected
+
+
 def test_wandb_resume_accepts_safe_config_extensions(workspace_tmpdir, monkeypatch):
     captured = []
 
