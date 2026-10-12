@@ -9,6 +9,7 @@ description = "Reproducible character-level math language modeling and RLVR expe
 requires-python = ">=3.11"
 dependencies = [
   "datasets>=2.18",
+  "huggingface-hub>=0.34,<1.0",
   "hydra-core>=1.3.2",
   "matplotlib>=3.8",
   "numpy>=1.24",
