@@ -111,6 +111,7 @@ def main(config: DictConfig) -> None:
                 "evaluate.py", config, model=str(model_name), trainer="sft",
                 checkpoint=str(control_run / "best.pt"),
             )
+    _run("plot.py", config, model=str(config.model.name), trainer="sft")
 
 
 if __name__ == "__main__":
