@@ -44,7 +44,7 @@ uv run python scripts/train_sft.py experiment=pilot model=1m \
 uv run python scripts/plot.py experiment=pilot tracking.mode=online
 ```
 
-The comparison report writes `comparison.csv`, `comparison.json`, and PNG/SVG figures under `/workspace/reports/<experiment>/seed<seed>`. It lists missing model/arm/split measurements as missing and includes only measurements from local evaluation files. Estimated compute uses `6 × parameters × processed tokens`; this is an approximation, not a measured FLOP count.
+The comparison report writes `comparison.csv`, `comparison.json`, and PNG/SVG figures under `/workspace/reports/<experiment>/seed<seed>`. It lists missing model/arm/split measurements as missing and includes only measurements from local evaluation files. SFT compute uses `6PN`; GRPO includes rollout prefix recomputation and policy/reference token positions under dense `2N/6N` multipliers. These are approximations, not hardware-counter FLOP measurements.
 
 ## Data and OOD protocol note
 

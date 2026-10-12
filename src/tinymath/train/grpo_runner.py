@@ -68,6 +68,8 @@ def train_grpo(
     latest_path = run_dir / "latest.pt"
     start_update = 0
     tokens_seen = 0
+    estimated_flops_seen = 0
+    parameter_count = model.count_parameters()
     if latest_path.exists():
         resumed = torch.load(latest_path, map_location="cpu", weights_only=False)
         if resumed.get("tokenizer_sha256") != tokenizer.sha256:
@@ -76,6 +78,9 @@ def train_grpo(
         optimizer.load_state_dict(resumed["optimizer"])
         start_update = int(resumed["update"])
         tokens_seen = int(resumed.get("tokens_seen", 0))
+        estimated_flops_seen = int(
+            resumed.get("estimated_flops", 6 * parameter_count * tokens_seen)
+        )
         restore_rng_state(resumed["rng_state"])
 
     updates = int(config.rlvr.updates)
@@ -111,6 +116,7 @@ def train_grpo(
             kl_values: list[float] = []
             entropy_values: list[float] = []
             clip_values: list[float] = []
+            estimated_flops_update = 0
             for row in chosen:
                 prompt_text = format_prompt(row["question"])
                 prompt_ids = torch.tensor(
@@ -172,6 +178,18 @@ def train_grpo(
                 if torch.any(advantages):
                     (metrics.loss / len(chosen)).backward()
                     optimized_groups += 1
+                completion_length = completions.shape[-1]
+                rollout_positions = group_size * (
+                    completion_length * prompt_ids.shape[1]
+                    + completion_length * (completion_length - 1) // 2
+                )
+                policy_positions = group_size * (prompt_ids.shape[1] + completion_length)
+                policy_factor = 6 if torch.any(advantages) else 2
+                reference_factor = 2 if reference is not None else 0
+                estimated_flops_update += parameter_count * (
+                    2 * rollout_positions
+                    + (policy_factor + reference_factor) * policy_positions
+                )
                 policy_losses.append(float(metrics.policy_loss.detach().item()))
                 kl_values.append(float(metrics.kl.detach().item()))
                 entropy_values.append(float(metrics.entropy.detach().item()))
@@ -183,7 +201,9 @@ def train_grpo(
                 )
                 optimizer.step()
             tokens_seen += token_total
+            estimated_flops_seen += estimated_flops_update
             reward_mean = batch_correct / batch_total
+
             def mean(values: list[float]) -> float:
                 return sum(values) / max(1, len(values))
             mixed = mean([item["mixed_group_rate"].item() for item in metric_groups])
@@ -206,7 +226,7 @@ def train_grpo(
                 "tokens_seen": tokens_seen,
                 "wall_seconds": time.monotonic() - started,
                 "tokens_per_second": tokens_seen / max(1e-9, time.monotonic() - started),
-                "estimated_flops": 6 * model.count_parameters() * tokens_seen,
+                "estimated_flops": estimated_flops_seen,
                 "peak_gpu_memory_bytes": (
                     torch.cuda.max_memory_allocated(device) if device.type == "cuda" else 0
                 ),
@@ -223,6 +243,7 @@ def train_grpo(
                         "optimizer": optimizer.state_dict(),
                         "update": update,
                         "tokens_seen": tokens_seen,
+                        "estimated_flops": estimated_flops_seen,
                         "rng_state": capture_rng_state(),
                         "tokenizer_sha256": tokenizer.sha256,
                         "model_config": model_config.__dict__,
@@ -234,6 +255,7 @@ def train_grpo(
     return {
         "update": updates,
         "tokens_seen": tokens_seen,
+        "estimated_flops": estimated_flops_seen,
         "checkpoint": str(latest_path),
         "metrics_path": str(metrics_path),
         "final_reward": reward_mean,

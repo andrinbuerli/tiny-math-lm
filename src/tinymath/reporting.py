@@ -276,7 +276,13 @@ def _figure_compute(
             continue
         result = next((row for row in rows if row["model"] == path.parents[2].name and row["arm"] == arm), None)
         if result and result["parameters"]:
-            points[(path.parents[2].name, arm)] = (6 * result["parameters"] * int(float(curve[-1][token_key])), 0)
+            estimate = curve[-1].get("estimated_flops")
+            flops = (
+                int(float(estimate))
+                if estimate not in (None, "")
+                else 6 * result["parameters"] * int(float(curve[-1][token_key]))
+            )
+            points[(path.parents[2].name, arm)] = (flops, 0)
     for row in rows:
         key = (row["model"], row["arm"])
         if key in points and row["split"] == "test" and row["accuracy"] is not None:
@@ -284,7 +290,7 @@ def _figure_compute(
             axis.scatter(compute, row["accuracy"], label=f"{row['model']} {row['arm']}")
     if points:
         axis.set_xscale("log")
-        axis.set_xlabel("Estimated training FLOPs (6 × parameters × tokens)")
+        axis.set_xlabel("Estimated training FLOPs (dense 2N/6N token-position model)")
         axis.set_ylabel("Greedy ID test accuracy")
         axis.set_title("Accuracy versus estimated training compute")
         axis.legend(fontsize=7)
@@ -323,8 +329,8 @@ def make_report(
         "seed": seed,
         "available_measurements": rows,
         "coverage": coverage,
-        "compute_estimate": "6 x actual trainable parameters x processed tokens",
-        "limitations": ["Compute is estimated using the standard dense-transformer 6PN approximation."],
+        "compute_estimate": "SFT uses 6PN; GRPO counts no-cache rollout prefix positions and policy/reference token positions with dense 2N/6N multipliers",
+        "limitations": ["Compute uses a dense-transformer token-position approximation; it is not hardware-counter FLOPs."],
     }
     (output_dir / "comparison.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"

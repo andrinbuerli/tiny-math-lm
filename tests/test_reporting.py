@@ -16,7 +16,7 @@ def test_comparison_report_marks_missing_runs_without_fabricating_values(workspa
     assert len(list(output.glob("*.png"))) == len(list(output.glob("*.svg"))) == 9
     comparison = json.loads((output / "comparison.json").read_text(encoding="utf-8"))
     assert comparison["available_measurements"] == []
-    assert "6 x actual trainable parameters" in comparison["compute_estimate"]
+    assert "SFT uses 6PN" in comparison["compute_estimate"]
 
 
 def test_result_collection_keeps_one_seed_coherent(workspace_tmpdir):

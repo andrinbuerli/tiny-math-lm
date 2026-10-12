@@ -73,6 +73,7 @@ def main(config: DictConfig) -> None:
             {
                 "grpo/updates": result["update"],
                 "grpo/tokens_seen": result["tokens_seen"],
+                "grpo/estimated_flops": result["estimated_flops"],
                 "grpo/final_reward": result["final_reward"],
                 "grpo/checkpoint": result["checkpoint"],
                 "grpo/source_sft_checkpoint": str(init_checkpoint),

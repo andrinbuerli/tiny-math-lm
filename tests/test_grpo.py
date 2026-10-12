@@ -155,6 +155,9 @@ def test_grpo_runner_scores_mixed_group_and_applies_gradient(workspace_tmpdir, m
         metrics = next(csv.DictReader(handle))
     assert float(metrics["grad_norm"]) > 0
     assert float(metrics["group/mixed_rate"]) == 1.0
+    prompt_length = len(tokenizer.encode(format_prompt("1 + 1"), add_bos=True))
+    expected_flops = initial_model.count_parameters() * (20 * prompt_length + 28)
+    assert int(metrics["estimated_flops"]) == expected_flops
     config.rlvr.updates = 2
     resumed = grpo_runner.train_grpo(
         config=config,
