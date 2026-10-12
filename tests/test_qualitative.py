@@ -7,7 +7,23 @@ import torch
 
 from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.data.prompts import format_prompt
-from tinymath.eval.qualitative import log_qualitative_examples
+from tinymath.eval.qualitative import _selected_rows, log_qualitative_examples
+
+
+def test_qualitative_selection_stays_fixed_across_steps_and_row_order():
+    rows = [
+        {"question": f"{left} + {right}", "answer": str(left + right), "module": module}
+        for module, offset in (("arithmetic__add_or_sub", 0), ("arithmetic__mixed", 10))
+        for left, right in ((offset + 1, 1), (offset + 2, 1), (offset + 3, 1), (offset + 4, 1))
+    ]
+
+    at_5k = _selected_rows(rows, split="train", seed=23, per_module=2)
+    at_10k = _selected_rows(list(reversed(rows)), split="train", seed=23, per_module=2)
+
+    assert [(row["module"], row["question"]) for row in at_5k] == [
+        (row["module"], row["question"]) for row in at_10k
+    ]
+    assert len(at_5k) == 4
 
 
 def test_qualitative_table_covers_each_split_and_balances_modules(monkeypatch):
