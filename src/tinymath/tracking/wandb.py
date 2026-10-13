@@ -89,6 +89,16 @@ def _compatible_with_runtime_extension(
     # model, batches, optimizer, or objective.
     if "runtime" not in saved_normalized and "runtime" in normalized:
         normalized.pop("runtime")
+    elif "runtime" in saved_normalized and "runtime" in normalized:
+        # Added later to keep wandb-core within the container's PID limit. This
+        # changes service resource use only, not the experiment itself.
+        saved_runtime = saved_normalized["runtime"]
+        current_runtime = normalized["runtime"]
+        if (
+            "wandb_service_gomaxprocs" not in saved_runtime
+            and "wandb_service_gomaxprocs" in current_runtime
+        ):
+            current_runtime.pop("wandb_service_gomaxprocs")
 
     # A prepared bundle fixes the actual data. A newer pinned source revision
     # default therefore does not alter the data seen by a resumed run.

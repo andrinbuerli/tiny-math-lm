@@ -80,6 +80,17 @@ def test_wandb_go_service_thread_limit_respects_runtime_and_environment(monkeypa
     assert os.environ["GOMAXPROCS"] == "1"
 
 
+def test_resume_accepts_wandb_thread_limit_runtime_extension():
+    saved = {"runtime": {"cpu_threads": 4}}
+    current = {"runtime": {"cpu_threads": 4, "wandb_service_gomaxprocs": 2}}
+    assert tracking._compatible_with_runtime_extension(saved, current)
+
+    changed_training_runtime = {
+        "runtime": {"cpu_threads": 8, "wandb_service_gomaxprocs": 2}
+    }
+    assert not tracking._compatible_with_runtime_extension(saved, changed_training_runtime)
+
+
 def test_continued_sft_config_approximately_matches_grpo_compute():
     with initialize_config_dir(version_base="1.3", config_dir="/workspace/configs"):
         config = compose(
