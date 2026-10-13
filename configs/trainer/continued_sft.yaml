@@ -2,7 +2,7 @@ name: continued_sft
 max_steps: ${experiment.max_steps}
 batch_size: 32
 # Four microbatches keep 100k optimizer updates while approximately matching
-# the GRPO arm's measured 3.5–3.8x additional dense FLOPs.
+# the GRPO arm's projected 3.5–4.0x additional dense FLOPs.
 gradient_accumulation: 4
 learning_rate: 0.0001
 weight_decay: 0.1
