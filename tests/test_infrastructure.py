@@ -43,11 +43,13 @@ def test_hydra_composes_all_experiment_groups_and_overrides():
     spec.loader.exec_module(run_all)
     overrides = run_all._overrides(
         config,
-        model="10m",
+        model="100m",
         trainer="sft",
         experiment_choice="02_pilot",
     )
     assert "experiment=02_pilot" in overrides
+    assert "model=100m" in overrides
+    assert 'tracking.tags=["pilot", "100m"]' in overrides
 
 
 def test_experiment_presets_are_contiguously_numbered_and_documented():

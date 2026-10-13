@@ -45,6 +45,11 @@ def _overrides(
         for key, value in values[group].items():
             if key == "name":
                 continue
+            if group == "tracking" and key == "tags":
+                root_model_name = str(values["model"]["name"])
+                value = [model if tag == root_model_name else tag for tag in value]
+                if model not in value:
+                    value.append(model)
             if group == "data" and key == "modules" and set(value) != set(SELECTED_MODULES):
                 raise ValueError("The orchestration requires exactly the five specified modules")
             result.append(f"{group}.{key}={json.dumps(value)}")
