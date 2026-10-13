@@ -31,6 +31,9 @@ def test_comparison_report_marks_missing_runs_without_fabricating_values(workspa
     assert "Evaluation coverage: 0/27" in markdown
     assert "Missing" in markdown
     assert "four-way gradient accumulation" in markdown
+    assert "10 examples per split" in markdown
+    assert "not full-split accuracy" in markdown
+    assert any("fixed qualitative probe" in item for item in comparison["limitations"])
 
 
 def test_report_documents_dataset_revision_and_limited_controlled_ood_coverage(workspace_tmpdir):

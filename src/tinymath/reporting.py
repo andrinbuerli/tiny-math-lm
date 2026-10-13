@@ -672,6 +672,7 @@ def _markdown_report(
     lines.extend(
         [
             "- OOD results describe the fixed prepared number-length and expression-length pools; unavailable pools remain missing.",
+            "- Training-time train/validation/test greedy-accuracy curves come from the same fixed qualitative probe: 2 examples per module across 5 modules (10 examples per split). Read these as a small-sample inspection signal, not full-split accuracy; the example identities stay fixed across checkpoints.",
             "- SFT token counts include processed input positions; GRPO token counts include generated completion tokens, so token efficiency is descriptive within each arm, not a strictly matched cross-arm measure.",
             "- Continued SFT keeps the configured optimizer-step count and uses four-way gradient accumulation to approximate the GRPO arm's additional compute; compare logged FLOP estimates because rollout lengths vary and the effective batch differs.",
             "- FLOP and token efficiency are descriptive proxies tied to the logged counters; they are not hardware energy or latency measurements.",
@@ -726,6 +727,7 @@ def make_report(
         "limitations": [
             "Compute uses a dense-transformer token-position approximation; it is not hardware-counter FLOPs.",
             "GRPO compute points are omitted when a run lacks the dense_position_v2 estimator marker.",
+            "Training-time train/validation/test greedy-accuracy curves use the same fixed qualitative probe of 2 examples per module across 5 modules (10 examples per split), not full-split accuracy; selected example identities remain fixed across checkpoints.",
         ],
     }
     report_path = output_dir / "report.md"
