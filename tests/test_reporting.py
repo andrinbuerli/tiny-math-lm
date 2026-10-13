@@ -32,6 +32,62 @@ def test_comparison_report_marks_missing_runs_without_fabricating_values(workspa
     assert "Missing" in markdown
 
 
+def test_report_documents_dataset_revision_and_limited_controlled_ood_coverage(workspace_tmpdir):
+    runs = workspace_tmpdir / "runs"
+    output = workspace_tmpdir / "reports"
+    bundle = workspace_tmpdir / "bundle"
+    bundle.mkdir()
+    (bundle / "manifest.json").write_text(
+        json.dumps(
+            {
+                "dataset_id": "d0rj/mathematics_dataset",
+                "dataset_revision": "abc123",
+                "split_manifest_sha256": "manifest-hash",
+                "tokenizer": {"sha256": "tokenizer-hash"},
+                "selected_modules": ["algebra__linear_1d", "arithmetic__mixed"],
+                "source_category_counts": {
+                    "algebra__linear_1d": {"extrapolate": 0},
+                    "arithmetic__mixed": {"extrapolate": 0},
+                },
+                "selected_pool_category_counts": {
+                    "number_length_ood": {
+                        "algebra__linear_1d": {"train-hard": 10},
+                        "arithmetic__mixed": {"train-hard": 10},
+                    },
+                    "expression_length_ood": {
+                        "algebra__linear_1d": {"train-hard": 5},
+                        "arithmetic__mixed": {"train-hard": 5},
+                    },
+                },
+                "split_rules": {
+                    "ood_source_by_module": {
+                        "algebra__linear_1d": "train categories (controlled fallback; no eligible official extrapolate rows)",
+                        "arithmetic__mixed": "train categories (controlled fallback; no eligible official extrapolate rows)",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report, _outputs = make_report(
+        runs_dir=runs,
+        experiment="pilot",
+        output_dir=output,
+        seed=17,
+        data_bundle_dir=bundle,
+    )
+
+    assert report["data_provenance"]["dataset_revision"] == "abc123"
+    assert report["data_provenance"]["ood_module_counts"]["expression_length_ood"] == {
+        "algebra__linear_1d": 5,
+        "arithmetic__mixed": 5,
+    }
+    markdown = (output / "report.md").read_text(encoding="utf-8")
+    assert "No official `extrapolate` examples were present" in markdown
+    assert "algebra__linear_1d: 5; arithmetic__mixed: 5" in markdown
+
+
 def test_comparison_markdown_summarizes_measured_gains_and_grpo_groups(workspace_tmpdir):
     runs = workspace_tmpdir / "runs"
     output = workspace_tmpdir / "reports"

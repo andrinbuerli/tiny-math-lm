@@ -376,6 +376,89 @@ def _format_count(value: Any) -> str:
     return f"{int(float(value)):,}"
 
 
+def _data_provenance(data_bundle_dir: Path | None) -> dict[str, Any] | None:
+    """Summarize the prepared dataset and actual controlled-OOD coverage."""
+    if data_bundle_dir is None:
+        return None
+    manifest_path = data_bundle_dir / "manifest.json"
+    if not manifest_path.is_file():
+        return None
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    selected_counts = manifest.get("selected_pool_category_counts", {})
+    module_counts: dict[str, dict[str, int]] = {}
+    for split_name in ("number_length_ood", "expression_length_ood"):
+        module_counts[split_name] = {
+            module: sum(int(count) for count in categories.values())
+            for module, categories in selected_counts.get(split_name, {}).items()
+        }
+    source_counts = manifest.get("source_category_counts", {})
+    return {
+        "dataset_id": manifest.get("dataset_id"),
+        "dataset_revision": manifest.get("dataset_revision"),
+        "split_manifest_sha256": manifest.get("split_manifest_sha256"),
+        "tokenizer_sha256": manifest.get("tokenizer", {}).get("sha256"),
+        "selected_modules": manifest.get("selected_modules", []),
+        "source_extrapolate_counts": {
+            module: int(categories.get("extrapolate", 0))
+            for module, categories in source_counts.items()
+        },
+        "ood_source_by_module": manifest.get("split_rules", {}).get(
+            "ood_source_by_module", {}
+        ),
+        "ood_module_counts": module_counts,
+    }
+
+
+def _data_provenance_markdown(provenance: dict[str, Any] | None) -> list[str]:
+    if provenance is None:
+        return [
+            "## Dataset and OOD coverage",
+            "",
+            "Prepared dataset manifest was unavailable; split provenance cannot be summarized.",
+        ]
+    lines = [
+        "## Dataset and OOD coverage",
+        "",
+        f"- Dataset: `{provenance.get('dataset_id')}` at revision `{provenance.get('dataset_revision')}`.",
+        f"- Split manifest SHA-256: `{provenance.get('split_manifest_sha256')}`.",
+        f"- Tokenizer SHA-256: `{provenance.get('tokenizer_sha256')}`.",
+        f"- Selected modules: {', '.join(provenance.get('selected_modules', []))}.",
+        "- OOD examples by module:",
+        "",
+        "| OOD split | Module example counts |",
+        "|---|---|",
+    ]
+    for split in ("number_length_ood", "expression_length_ood"):
+        counts = provenance["ood_module_counts"].get(split, {})
+        listed = "; ".join(f"{module}: {count:,}" for module, count in sorted(counts.items()))
+        lines.append(f"| {split} | {listed or 'No eligible examples'} |")
+
+    extrapolate = provenance.get("source_extrapolate_counts", {})
+    sources = provenance.get("ood_source_by_module", {})
+    if extrapolate and not any(extrapolate.values()):
+        lines.extend(
+            [
+                "",
+                "No official `extrapolate` examples were present in the selected source modules. "
+                "Controlled OOD examples were reserved from training categories and kept out of "
+                "the SFT and RLVR pools.",
+            ]
+        )
+    elif any("controlled fallback" in source for source in sources.values()):
+        fallback_modules = [
+            module for module, source in sources.items() if "controlled fallback" in source
+        ]
+        lines.extend(
+            [
+                "",
+                "Controlled OOD examples for these modules were reserved from training categories: "
+                + ", ".join(fallback_modules)
+                + ".",
+            ]
+        )
+    return lines
+
+
 def _read_training_metrics(path: Path) -> list[dict[str, str]]:
     if not path.is_file():
         return []
@@ -466,6 +549,8 @@ def _markdown_report(
         f"Seed: `{seed}`" if seed is not None else "Seed filter: all available seeds",
         f"Evaluation coverage: {actual_combinations}/{len(MODELS) * len(ARMS) * len(SPLITS)} model/arm/split measurements.",
         "Only saved evaluation results are included; `Missing` means no result file was available.",
+        "",
+        *_data_provenance_markdown(report.get("data_provenance")),
         "",
         "## Decoding protocol",
         "",
@@ -597,7 +682,12 @@ def _markdown_report(
 
 
 def make_report(
-    *, runs_dir: Path, experiment: str, output_dir: Path, seed: int | None = None
+    *,
+    runs_dir: Path,
+    experiment: str,
+    output_dir: Path,
+    seed: int | None = None,
+    data_bundle_dir: Path | None = None,
 ) -> tuple[dict[str, Any], list[Path]]:
     output_dir.mkdir(parents=True, exist_ok=True)
     rows, coverage = collect_results(runs_dir, experiment, seed)
@@ -630,6 +720,7 @@ def make_report(
         "seed": seed,
         "available_measurements": rows,
         "coverage": coverage,
+        "data_provenance": _data_provenance(data_bundle_dir),
         "compute_estimate": "SFT uses 6PN; GRPO counts no-cache rollout prefix positions and policy/reference token positions with dense 2N/6N multipliers",
         "limitations": [
             "Compute uses a dense-transformer token-position approximation; it is not hardware-counter FLOPs.",

@@ -28,6 +28,9 @@ def main(config: DictConfig) -> None:
             experiment=str(config.experiment.name),
             output_dir=output_dir,
             seed=int(config.seed),
+            data_bundle_dir=(
+                workspace_path(str(config.data_bundle)) if config.data_bundle else None
+            ),
         )
         run.log({"comparison/available_evaluations": report["coverage"]["available_evaluations"]})
         for artifact in outputs:
