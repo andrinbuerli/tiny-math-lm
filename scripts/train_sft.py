@@ -14,9 +14,8 @@ from omegaconf import DictConfig
 from tinymath.config import workspace_path
 from tinymath.data.load import SELECTED_MODULES
 from tinymath.model.gpt import GPTConfig, TinyMathGPT
-from tinymath.repro import seed_everything
 from tinymath.tracking.provenance import read_wandb_run_id
-from tinymath.tracking.wandb import finish_wandb, initialize_wandb
+from tinymath.tracking.wandb import finish_wandb, initialize_tracked_run
 from tinymath.train.runner import train_sft
 
 LOGGER = logging.getLogger(__name__)
@@ -50,14 +49,13 @@ def _bundle_dir(config: DictConfig) -> Path:
 def main(config: DictConfig) -> None:
     if set(config.data.modules) != set(SELECTED_MODULES):
         raise ValueError(f"The experiment is restricted to exactly these modules: {SELECTED_MODULES}")
-    seed_everything(int(config.seed), cpu_threads=int(config.runtime.cpu_threads))
     bundle_dir = _bundle_dir(config)
     manifest = __import__("json").loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
     run_dir = workspace_path(
         "runs", str(config.experiment.name), str(config.model.name),
         str(config.trainer.name), f"seed{int(config.seed)}",
     )
-    run = initialize_wandb(config, run_dir, job_type=str(config.trainer.name))
+    run = initialize_tracked_run(config, run_dir, job_type=str(config.trainer.name))
     try:
         init_checkpoint = (
             workspace_path(str(config.init_checkpoint)) if config.init_checkpoint else None

@@ -14,7 +14,7 @@ from dotenv import dotenv_values, load_dotenv
 from omegaconf import DictConfig
 
 from tinymath.config import persist_resolved_config, read_saved_resolved_config, sanitized_config
-from tinymath.repro import runtime_info
+from tinymath.repro import runtime_info, seed_everything
 
 
 class TrackingError(RuntimeError):
@@ -184,6 +184,17 @@ def initialize_wandb(config: DictConfig, run_dir: str | Path, *, job_type: str) 
             LOGGER.warning("Could not save failed W&B initialization state at %s: %s", state_path, state_exc)
         message = str(exc).replace(os.environ.get("WANDB_API_KEY", "\0"), "<redacted>")
         raise TrackingError(f"W&B initialization failed ({mode} mode): {message}") from None
+
+
+def initialize_tracked_run(config: DictConfig, run_dir: str | Path, *, job_type: str) -> Any:
+    """Start W&B before seeding CUDA, then seed before any training/evaluation work."""
+    run = initialize_wandb(config, run_dir, job_type=job_type)
+    try:
+        seed_everything(int(config.seed), cpu_threads=int(config.runtime.cpu_threads))
+    except BaseException:
+        finish_wandb(run, exit_code=1)
+        raise
+    return run
 
 
 def finish_wandb(run: Any, *, exit_code: int = 0) -> None:

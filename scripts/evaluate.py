@@ -13,9 +13,8 @@ from omegaconf import DictConfig
 from tinymath.config import workspace_path
 from tinymath.data.load import SELECTED_MODULES
 from tinymath.eval.evaluate import evaluate_checkpoint
-from tinymath.repro import seed_everything
 from tinymath.tracking.provenance import read_wandb_run_id
-from tinymath.tracking.wandb import finish_wandb, initialize_wandb
+from tinymath.tracking.wandb import finish_wandb, initialize_tracked_run
 
 LOGGER = logging.getLogger(__name__)
 
@@ -42,7 +41,6 @@ def main(config: DictConfig) -> None:
         raise ValueError(f"The experiment is restricted to exactly these modules: {SELECTED_MODULES}")
     if not config.checkpoint:
         raise ValueError("Set checkpoint= to the model checkpoint to evaluate")
-    seed_everything(int(config.seed), cpu_threads=int(config.runtime.cpu_threads))
     checkpoint = workspace_path(str(config.checkpoint))
     if not checkpoint.is_file():
         raise FileNotFoundError(f"Evaluation checkpoint not found: {checkpoint}")
@@ -52,7 +50,7 @@ def main(config: DictConfig) -> None:
         "runs", str(config.experiment.name), str(config.model.name), "evaluation",
         checkpoint.parent.parent.name, checkpoint.stem, f"seed{int(config.seed)}",
     )
-    run = initialize_wandb(config, run_dir, job_type="evaluation")
+    run = initialize_tracked_run(config, run_dir, job_type="evaluation")
     try:
         run.config.update(
             {

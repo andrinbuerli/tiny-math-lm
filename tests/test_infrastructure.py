@@ -365,3 +365,37 @@ def test_environment_credential_takes_precedence_over_legacy_assignment(monkeypa
     )
     tracking._load_workspace_credentials()
     assert os.environ["WANDB_API_KEY"] == "environment-placeholder"
+
+
+def test_tracked_run_initializes_wandb_before_seeding_and_finishes_on_seed_error(monkeypatch):
+    events = []
+    run = object()
+    config = types.SimpleNamespace(seed=29, runtime=types.SimpleNamespace(cpu_threads=1))
+    monkeypatch.setattr(
+        tracking,
+        "initialize_wandb",
+        lambda current, run_dir, *, job_type: events.append(("wandb", job_type)) or run,
+    )
+    monkeypatch.setattr(
+        tracking,
+        "seed_everything",
+        lambda seed, *, cpu_threads: events.append(("seed", seed, cpu_threads)),
+    )
+    assert tracking.initialize_tracked_run(config, "/tmp/run", job_type="unit") is run
+    assert events == [("wandb", "unit"), ("seed", 29, 1)]
+
+    events.clear()
+
+    def fail_seed(seed, *, cpu_threads):
+        events.append(("seed", seed, cpu_threads))
+        raise RuntimeError("seeding failed")
+
+    monkeypatch.setattr(tracking, "seed_everything", fail_seed)
+    monkeypatch.setattr(
+        tracking,
+        "finish_wandb",
+        lambda current, *, exit_code: events.append(("finish", exit_code)),
+    )
+    with pytest.raises(RuntimeError, match="seeding failed"):
+        tracking.initialize_tracked_run(config, "/tmp/run", job_type="unit")
+    assert events == [("wandb", "unit"), ("seed", 29, 1), ("finish", 1)]

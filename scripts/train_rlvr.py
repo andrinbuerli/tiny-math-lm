@@ -12,9 +12,8 @@ from omegaconf import DictConfig
 
 from tinymath.config import workspace_path
 from tinymath.data.load import SELECTED_MODULES
-from tinymath.repro import seed_everything
 from tinymath.tracking.provenance import read_wandb_run_id
-from tinymath.tracking.wandb import finish_wandb, initialize_wandb
+from tinymath.tracking.wandb import finish_wandb, initialize_tracked_run
 from tinymath.train.grpo_runner import train_grpo
 
 LOGGER = logging.getLogger(__name__)
@@ -41,7 +40,6 @@ def main(config: DictConfig) -> None:
         raise ValueError(f"The experiment is restricted to exactly these modules: {SELECTED_MODULES}")
     if not config.init_checkpoint:
         raise ValueError("Set init_checkpoint to the corresponding SFT checkpoint")
-    seed_everything(int(config.seed), cpu_threads=int(config.runtime.cpu_threads))
     init_checkpoint = workspace_path(str(config.init_checkpoint))
     if not init_checkpoint.is_file():
         raise FileNotFoundError(f"SFT checkpoint not found: {init_checkpoint}")
@@ -51,7 +49,7 @@ def main(config: DictConfig) -> None:
     run_dir = workspace_path(
         "runs", str(config.experiment.name), str(config.model.name), "grpo", f"seed{int(config.seed)}"
     )
-    run = initialize_wandb(config, run_dir, job_type="grpo")
+    run = initialize_tracked_run(config, run_dir, job_type="grpo")
     try:
         run.config.update(
             {
