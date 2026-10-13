@@ -30,6 +30,7 @@ def test_comparison_report_marks_missing_runs_without_fabricating_values(workspa
     markdown = (output / "report.md").read_text(encoding="utf-8")
     assert "Evaluation coverage: 0/27" in markdown
     assert "Missing" in markdown
+    assert "four-way gradient accumulation" in markdown
 
 
 def test_report_documents_dataset_revision_and_limited_controlled_ood_coverage(workspace_tmpdir):

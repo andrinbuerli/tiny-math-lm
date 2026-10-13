@@ -52,6 +52,17 @@ def test_hydra_composes_all_experiment_groups_and_overrides():
     assert 'tracking.tags=["pilot", "100m"]' in overrides
 
 
+def test_continued_sft_config_approximately_matches_grpo_compute():
+    with initialize_config_dir(version_base="1.3", config_dir="/workspace/configs"):
+        config = compose(
+            config_name="config",
+            overrides=["trainer=continued_sft", "experiment=10_restarted_100k_greedy"],
+        )
+    assert config.trainer.max_steps == 100000
+    assert config.trainer.batch_size == 32
+    assert config.trainer.gradient_accumulation == 4
+
+
 def test_experiment_presets_are_contiguously_numbered_and_documented():
     experiment_dir = Path(__file__).parents[1] / "configs" / "experiment"
     header_pattern = re.compile(
