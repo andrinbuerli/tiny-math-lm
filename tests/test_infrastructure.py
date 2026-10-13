@@ -53,6 +53,20 @@ def test_hydra_composes_all_experiment_groups_and_overrides():
     assert 'tracking.tags=["pilot", "100m"]' in overrides
 
 
+def test_parallel_gpu_admission_requires_utilization_and_vram_headroom():
+    with initialize_config_dir(version_base="1.3", config_dir="/workspace/configs"):
+        config = compose(config_name="config")
+    script = Path(__file__).parents[1] / "scripts" / "run_all.py"
+    spec = spec_from_file_location("tinymath_run_all_gpu", script)
+    assert spec is not None and spec.loader is not None
+    run_all = module_from_spec(spec)
+    spec.loader.exec_module(run_all)
+
+    assert run_all._gpu_capacity_available(config, "100m", 75, 10 * 1024)
+    assert not run_all._gpu_capacity_available(config, "100m", 76, 20 * 1024)
+    assert not run_all._gpu_capacity_available(config, "100m", 50, 10 * 1024 - 1)
+
+
 def test_continued_sft_config_approximately_matches_grpo_compute():
     with initialize_config_dir(version_base="1.3", config_dir="/workspace/configs"):
         config = compose(

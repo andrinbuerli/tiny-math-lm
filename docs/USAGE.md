@@ -51,6 +51,8 @@ To compare examples over time, open a run's W&B History and select `qualitative/
 
 `run_all.py experiment=02_pilot` prepares data once and runs SFT, GRPO, continued-SFT and their evaluations for the configured model list. Override `orchestration.models=[1m]` to run one size. The default `01_smoke` preset is data-only for orchestration; direct stage commands can still run short optimization checks by setting `trainer.max_steps` or `rlvr.updates`.
 
+Model pipelines run serially by default. To allow overlap, set `orchestration.parallel_models=true`; before each training or evaluation process, the orchestrator checks GPU utilization and free VRAM with `nvidia-smi`. It waits until utilization is at most 75% and free VRAM covers the configured model reserve plus 2 GiB, then waits 15 seconds after launch for telemetry to reflect the new process. Thresholds and polling interval are in `configs/runtime/default.yaml`. If GPU telemetry cannot be read, the orchestrator fails instead of starting an unchecked optimization process.
+
 The 100k-step restart presets use the same prepared bundle and can start from fresh random initialization:
 
 ```bash

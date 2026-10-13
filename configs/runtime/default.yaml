@@ -1,1 +1,9 @@
 cpu_threads: 4
+parallel_gpu_max_utilization: 75
+parallel_gpu_min_free_vram_gb: 2
+parallel_model_vram_gb:
+  1m: 1
+  10m: 3
+  100m: 8
+parallel_gpu_poll_seconds: 10
+parallel_gpu_launch_settle_seconds: 15

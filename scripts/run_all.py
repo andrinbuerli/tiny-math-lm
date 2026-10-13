@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import threading
+import time
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 
@@ -16,6 +18,63 @@ from tinymath.config import workspace_path
 from tinymath.data.load import SELECTED_MODULES
 
 LOGGER = logging.getLogger(__name__)
+_GPU_LAUNCH_LOCK = threading.Lock()
+
+
+def _gpu_load() -> tuple[int, int]:
+    """Return utilization percent and free MiB for the single configured GPU."""
+    result = subprocess.run(
+        [
+            "nvidia-smi",
+            "--query-gpu=utilization.gpu,memory.free",
+            "--format=csv,noheader,nounits",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    first_gpu = result.stdout.splitlines()[0]
+    utilization, free_mib = (int(value.strip()) for value in first_gpu.split(",", maxsplit=1))
+    return utilization, free_mib
+
+
+def _gpu_capacity_available(
+    config: DictConfig, model: str, utilization: int, free_mib: int
+) -> bool:
+    """Require low active utilization and headroom for the next model."""
+    runtime = config.runtime
+    reserve_gb = float(runtime.parallel_model_vram_gb[model])
+    headroom_gb = float(runtime.parallel_gpu_min_free_vram_gb)
+    required_mib = (reserve_gb + headroom_gb) * 1024
+    return (
+        utilization <= int(runtime.parallel_gpu_max_utilization)
+        and free_mib >= required_mib
+    )
+
+
+def _wait_for_gpu_capacity(config: DictConfig, model: str) -> None:
+    while True:
+        try:
+            utilization, free_mib = _gpu_load()
+        except (OSError, subprocess.CalledProcessError, ValueError, IndexError) as error:
+            raise RuntimeError(
+                "Cannot verify GPU utilization and VRAM before launching training or evaluation"
+            ) from error
+        if _gpu_capacity_available(config, model, utilization, free_mib):
+            LOGGER.info(
+                "GPU admits model=%s (utilization=%d%%, free_vram=%.1f GiB)",
+                model,
+                utilization,
+                free_mib / 1024,
+            )
+            return
+        LOGGER.info(
+            "Waiting for GPU capacity for model=%s (utilization=%d%%, free_vram=%.1f GiB)",
+            model,
+            utilization,
+            free_mib / 1024,
+        )
+        time.sleep(float(config.runtime.parallel_gpu_poll_seconds))
 
 
 def _overrides(
@@ -87,7 +146,19 @@ def _run(
         ),
     ]
     LOGGER.info("Running %s model=%s trainer=%s", script, model, trainer)
-    subprocess.run(command, cwd="/workspace", check=True)
+    needs_gpu = script in {"train_sft.py", "train_rlvr.py", "evaluate.py"}
+    if not needs_gpu:
+        subprocess.run(command, cwd="/workspace", check=True)
+        return
+    # Serialize admission and allow telemetry to reflect each new process before
+    # another worker considers starting a model on the same GPU.
+    with _GPU_LAUNCH_LOCK:
+        _wait_for_gpu_capacity(config, model)
+        process = subprocess.Popen(command, cwd="/workspace")
+        time.sleep(float(config.runtime.parallel_gpu_launch_settle_seconds))
+    return_code = process.wait()
+    if return_code:
+        raise subprocess.CalledProcessError(return_code, command)
 
 
 def _run_model(config: DictConfig, model_name: str, experiment_choice: str) -> None:

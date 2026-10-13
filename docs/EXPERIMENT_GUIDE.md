@@ -30,6 +30,8 @@ For the complete three-size SFT, GRPO, continued-SFT, evaluation, and comparison
 uv run python scripts/run_all.py experiment=03_main seed=17
 ```
 
+The default orchestrator is serial. Set `orchestration.parallel_models=true` only when concurrent model pipelines are useful; each training/evaluation launch checks `nvidia-smi` and waits for utilization and free-VRAM thresholds configured in `configs/runtime/default.yaml`. A missing GPU telemetry command is an error for optimization launches.
+
 The main preset uses 500k unique SFT training examples and 50k SFT steps. The 100k-step scratch restart preset also logs fixed train, validation, and test qualitative examples with greedy accuracy every 5k steps:
 
 ```bash
