@@ -147,11 +147,11 @@ def initialize_wandb(config: DictConfig, run_dir: str | Path, *, job_type: str) 
         },
     )
     metadata = {
-        "runtime": runtime_info().as_dict(),
         "resolved_config_path": str(config_path),
         "protocol": "tinymath-r1",
         "resolved_config": sanitized_config(config),
     }
+    run = None
     try:
         run = wandb.init(
             project=str(tracking.get("project", "tinymath-rl")),
@@ -168,8 +168,22 @@ def initialize_wandb(config: DictConfig, run_dir: str | Path, *, job_type: str) 
             settings=wandb.Settings(code_dir="/workspace"),
         )
         _ACTIVE_STATE_PATHS[str(getattr(run, "id", run_id))] = state_path
+        # runtime_info probes CUDA. Collect it after W&B has started its service
+        # threads so constrained process quotas do not block W&B initialization.
+        run.config.update({"runtime": runtime_info().as_dict()}, allow_val_change=True)
         return run
-    except (wandb.errors.Error, requests.exceptions.RequestException, OSError, ValueError) as exc:
+    except (
+        wandb.errors.Error,
+        requests.exceptions.RequestException,
+        OSError,
+        ValueError,
+        RuntimeError,
+    ) as exc:
+        if run is not None:
+            try:
+                finish_wandb(run, exit_code=1)
+            except (wandb.errors.Error, requests.exceptions.RequestException, OSError, RuntimeError):
+                LOGGER.warning("Could not flush W&B run after initialization failure")
         failed_state = {
             **state,
             "id": run_id,

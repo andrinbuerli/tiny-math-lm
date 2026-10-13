@@ -152,6 +152,7 @@ def test_wandb_offline_initialization_reuses_id(workspace_tmpdir, monkeypatch):
             self.id = run_id
             self.settings = types.SimpleNamespace(mode=mode)
             self.summary = {}
+            self.config = types.SimpleNamespace(update=lambda *_args, **_kwargs: None)
             self.finished = False
 
         def finish(self, *, exit_code=None):
@@ -160,6 +161,7 @@ def test_wandb_offline_initialization_reuses_id(workspace_tmpdir, monkeypatch):
 
     fake_wandb = types.SimpleNamespace(
         Settings=lambda **kwargs: kwargs,
+        errors=types.SimpleNamespace(Error=RuntimeError),
         init=lambda **kwargs: captured.append(kwargs) or FakeRun(kwargs["id"], kwargs["mode"]),
     )
     monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
@@ -301,6 +303,7 @@ def test_wandb_resume_accepts_safe_config_extensions(workspace_tmpdir, monkeypat
             self.id = run_id
             self.settings = types.SimpleNamespace(mode=mode)
             self.summary = {}
+            self.config = types.SimpleNamespace(update=lambda *_args, **_kwargs: None)
 
         def finish(self, *, exit_code=None):
             pass
@@ -365,6 +368,50 @@ def test_environment_credential_takes_precedence_over_legacy_assignment(monkeypa
     )
     tracking._load_workspace_credentials()
     assert os.environ["WANDB_API_KEY"] == "environment-placeholder"
+
+
+def test_wandb_starts_before_cuda_runtime_metadata(workspace_tmpdir, monkeypatch):
+    events = []
+
+    class FakeConfig:
+        def update(self, values, *, allow_val_change=False):
+            events.append(("config", values, allow_val_change))
+
+    class FakeRun:
+        id = "ordered-run"
+        settings = types.SimpleNamespace(mode="offline")
+
+        def __init__(self):
+            self.config = FakeConfig()
+            self.summary = {}
+
+        def finish(self, *, exit_code=None):
+            events.append(("finish", exit_code))
+
+    def fake_init(**kwargs):
+        events.append(("init", kwargs["config"]))
+        return FakeRun()
+
+    fake_wandb = types.SimpleNamespace(
+        Settings=lambda **kwargs: kwargs,
+        errors=types.SimpleNamespace(Error=RuntimeError),
+        init=fake_init,
+    )
+    monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
+    monkeypatch.setattr(tracking, "_load_workspace_credentials", lambda: None)
+    monkeypatch.setattr(
+        tracking,
+        "runtime_info",
+        lambda: events.append(("runtime_info",)) or types.SimpleNamespace(as_dict=lambda: {"cuda": True}),
+    )
+    with initialize_config_dir(version_base="1.3", config_dir="/workspace/configs"):
+        config = compose(config_name="config", overrides=["tracking.mode=offline"])
+
+    run = tracking.initialize_wandb(config, workspace_tmpdir, job_type="unit")
+    assert [event[0] for event in events] == ["init", "runtime_info", "config"]
+    assert "runtime" not in events[0][1]
+    assert events[2][1] == {"runtime": {"cuda": True}}
+    tracking.finish_wandb(run)
 
 
 def test_tracked_run_initializes_wandb_before_seeding_and_finishes_on_seed_error(monkeypatch):
