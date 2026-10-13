@@ -673,7 +673,7 @@ def _markdown_report(
         [
             "- OOD results describe the fixed prepared number-length and expression-length pools; unavailable pools remain missing.",
             "- SFT token counts include processed input positions; GRPO token counts include generated completion tokens, so token efficiency is descriptive within each arm, not a strictly matched cross-arm measure.",
-            "- Continued SFT keeps 100k optimizer updates and uses four-way gradient accumulation to approximate the GRPO arm's additional compute; compare logged FLOP estimates because rollout lengths vary and the effective batch differs.",
+            "- Continued SFT keeps the configured optimizer-step count and uses four-way gradient accumulation to approximate the GRPO arm's additional compute; compare logged FLOP estimates because rollout lengths vary and the effective batch differs.",
             "- FLOP and token efficiency are descriptive proxies tied to the logged counters; they are not hardware energy or latency measurements.",
             "- Accuracy differences are descriptive for this protocol and seed; they do not establish a general scaling or RLVR effect beyond these runs.",
             "",
