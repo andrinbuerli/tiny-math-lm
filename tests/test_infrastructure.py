@@ -36,6 +36,7 @@ def test_hydra_composes_all_experiment_groups_and_overrides():
     assert config.data.revision == "d9f78d0665b3a13dad21c6830b9b358c8a25ae74"
     assert config.tracking.project == "unit-test"
     assert config.tracking.name == "pilot-10m-seed23"
+    assert config.orchestration.parallel_models is False
     script = Path(__file__).parents[1] / "scripts" / "run_all.py"
     spec = spec_from_file_location("tinymath_run_all", script)
     assert spec is not None and spec.loader is not None
