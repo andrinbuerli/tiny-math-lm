@@ -170,6 +170,18 @@ def initialize_wandb(config: DictConfig, run_dir: str | Path, *, job_type: str) 
         _ACTIVE_STATE_PATHS[str(getattr(run, "id", run_id))] = state_path
         return run
     except (wandb.errors.Error, requests.exceptions.RequestException, OSError, ValueError) as exc:
+        failed_state = {
+            **state,
+            "id": run_id,
+            "mode": mode,
+            "sync_status": "unsynced" if mode == "offline" else "pending",
+            "run_status": "failed",
+            "exit_code": 1,
+        }
+        try:
+            _write_tracking_state(state_path, failed_state)
+        except OSError as state_exc:
+            LOGGER.warning("Could not save failed W&B initialization state at %s: %s", state_path, state_exc)
         message = str(exc).replace(os.environ.get("WANDB_API_KEY", "\0"), "<redacted>")
         raise TrackingError(f"W&B initialization failed ({mode} mode): {message}") from None
 

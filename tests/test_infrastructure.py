@@ -264,6 +264,35 @@ def test_tracking_state_write_failure_preserves_existing_id(workspace_tmpdir, mo
     assert not path.with_name("wandb_run.json.tmp").exists()
 
 
+def test_wandb_initialization_failure_preserves_id_and_marks_failed(
+    workspace_tmpdir, monkeypatch
+):
+    class WandbError(Exception):
+        pass
+
+    def fail_init(**_kwargs):
+        raise WandbError("simulated service startup failure")
+
+    fake_wandb = types.SimpleNamespace(
+        Settings=lambda **kwargs: kwargs,
+        errors=types.SimpleNamespace(Error=WandbError),
+        init=fail_init,
+    )
+    monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
+    monkeypatch.setattr(tracking, "_load_workspace_credentials", lambda: None)
+    with initialize_config_dir(version_base="1.3", config_dir="/workspace/configs"):
+        config = compose(config_name="config", overrides=["tracking.mode=offline"])
+
+    with pytest.raises(tracking.TrackingError, match="simulated service startup failure"):
+        tracking.initialize_wandb(config, workspace_tmpdir, job_type="unit")
+
+    state = json.loads((workspace_tmpdir / "wandb_run.json").read_text())
+    assert state["id"]
+    assert state["run_status"] == "failed"
+    assert state["exit_code"] == 1
+    assert state["sync_status"] == "unsynced"
+
+
 def test_wandb_resume_accepts_safe_config_extensions(workspace_tmpdir, monkeypatch):
     captured = []
 
