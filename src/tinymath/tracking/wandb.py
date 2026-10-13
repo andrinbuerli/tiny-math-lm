@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import secrets
 from pathlib import Path
@@ -18,6 +19,9 @@ from tinymath.repro import runtime_info
 
 class TrackingError(RuntimeError):
     """Raised when required experiment tracking cannot be initialized."""
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 _ACTIVE_STATE_PATHS: dict[str, Path] = {}
@@ -47,6 +51,20 @@ def _tracking_state(path: Path) -> dict[str, Any]:
     if not isinstance(state, dict) or not isinstance(state.get("id"), str):
         raise TrackingError(f"Invalid W&B resume metadata at {path}")
     return state
+
+
+def _write_tracking_state(path: Path, state: dict[str, Any]) -> None:
+    """Replace local resume metadata atomically so a failed write preserves the run ID."""
+    temp_path = path.with_name(f"{path.name}.tmp")
+    try:
+        with temp_path.open("w", encoding="utf-8") as handle:
+            json.dump(state, handle, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def _compatible_with_runtime_extension(
@@ -119,17 +137,14 @@ def initialize_wandb(config: DictConfig, run_dir: str | Path, *, job_type: str) 
             "no online run was started. Set tracking.mode=offline explicitly to create an "
             "unsynced local run."
         )
-    state_path.write_text(
-        json.dumps(
-            {
-                "id": run_id,
-                "mode": mode,
-                "sync_status": "unsynced" if mode == "offline" else "pending",
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
+    _write_tracking_state(
+        state_path,
+        {
+            "id": run_id,
+            "mode": mode,
+            "sync_status": "unsynced" if mode == "offline" else "pending",
+            "run_status": "running",
+        },
     )
     metadata = {
         "runtime": runtime_info().as_dict(),
@@ -159,8 +174,8 @@ def initialize_wandb(config: DictConfig, run_dir: str | Path, *, job_type: str) 
         raise TrackingError(f"W&B initialization failed ({mode} mode): {message}") from None
 
 
-def finish_wandb(run: Any) -> None:
-    """Flush a run and report explicit offline state in local metadata."""
+def finish_wandb(run: Any, *, exit_code: int = 0) -> None:
+    """Flush a run and record whether its experiment completed successfully."""
     if run is None:
         return
     mode = getattr(getattr(run, "settings", None), "mode", None)
@@ -171,12 +186,20 @@ def finish_wandb(run: Any) -> None:
         # only marked synced after finish() returns without interruption/error.
         if offline and hasattr(run, "summary"):
             run.summary["tracking/sync_status"] = "unsynced"
-        run.finish()
+        run.finish(exit_code=exit_code)
         if not offline and not bool(getattr(run, "_finish_timed_out", False)):
             status = "synced"
+    except BaseException:
+        exit_code = 1
+        raise
     finally:
         state_path = _ACTIVE_STATE_PATHS.pop(str(getattr(run, "id", "")), None)
         if state_path is not None and state_path.exists():
             state = _tracking_state(state_path)
             state["sync_status"] = status
-            state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+            state["run_status"] = "finished" if exit_code == 0 else "failed"
+            state["exit_code"] = int(exit_code)
+            try:
+                _write_tracking_state(state_path, state)
+            except OSError as exc:
+                LOGGER.warning("Could not update W&B resume metadata at %s: %s", state_path, exc)

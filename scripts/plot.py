@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
+import sys
 
 import hydra
-import wandb
 from omegaconf import DictConfig
 
+import wandb
 from tinymath.config import workspace_path
 from tinymath.reporting import make_report
 from tinymath.tracking.wandb import finish_wandb, initialize_wandb
@@ -58,7 +59,7 @@ def main(config: DictConfig) -> None:
         )
         LOGGER.info("Comparison report written to %s", output_dir)
     finally:
-        finish_wandb(run)
+        finish_wandb(run, exit_code=1 if sys.exc_info()[0] else 0)
 
 
 if __name__ == "__main__":

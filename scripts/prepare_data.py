@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import time
 
 import hydra
@@ -110,7 +111,7 @@ def main(config: DictConfig) -> None:
         run.log(metrics)
         LOGGER.info("Prepared data bundle at %s", output_dir)
     finally:
-        finish_wandb(run)
+        finish_wandb(run, exit_code=1 if sys.exc_info()[0] else 0)
 
 
 if __name__ == "__main__":

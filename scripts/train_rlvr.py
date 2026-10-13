@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from pathlib import Path
 
 import hydra
@@ -84,7 +85,7 @@ def main(config: DictConfig) -> None:
         )
         LOGGER.info("GRPO training finished: %s", result)
     finally:
-        finish_wandb(run)
+        finish_wandb(run, exit_code=1 if sys.exc_info()[0] else 0)
 
 
 def torch_load_checkpoint(path: Path) -> dict:

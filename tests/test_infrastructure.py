@@ -154,8 +154,9 @@ def test_wandb_offline_initialization_reuses_id(workspace_tmpdir, monkeypatch):
             self.summary = {}
             self.finished = False
 
-        def finish(self):
+        def finish(self, *, exit_code=None):
             self.finished = True
+            self.exit_code = exit_code
 
     fake_wandb = types.SimpleNamespace(
         Settings=lambda **kwargs: kwargs,
@@ -189,7 +190,8 @@ def test_online_sync_status_requires_successful_finish(workspace_tmpdir):
             self.interrupt = interrupt
             self.summary = {}
 
-        def finish(self):
+        def finish(self, *, exit_code=None):
+            self.exit_code = exit_code
             if self.interrupt:
                 raise KeyboardInterrupt
 
@@ -212,7 +214,54 @@ def test_online_sync_status_requires_successful_finish(workspace_tmpdir):
                 tracking.finish_wandb(run)
         else:
             tracking.finish_wandb(run)
-        assert json.loads(state_path.read_text())["sync_status"] == expected
+        state = json.loads(state_path.read_text())
+        assert state["sync_status"] == expected
+        assert state["run_status"] == ("failed" if interrupt else "finished")
+
+
+def test_failed_run_is_finished_with_nonzero_exit_code(workspace_tmpdir):
+    class FakeRun:
+        id = "failed-run"
+        settings = types.SimpleNamespace(mode="online")
+        _finish_timed_out = False
+
+        def __init__(self):
+            self.summary = {}
+            self.exit_code = None
+
+        def finish(self, *, exit_code=None):
+            self.exit_code = exit_code
+
+    state_path = workspace_tmpdir / "wandb_run.json"
+    state_path.write_text(
+        json.dumps({"id": "failed-run", "mode": "online", "sync_status": "pending"})
+    )
+    tracking._ACTIVE_STATE_PATHS["failed-run"] = state_path
+    run = FakeRun()
+    tracking.finish_wandb(run, exit_code=1)
+
+    state = json.loads(state_path.read_text())
+    assert run.exit_code == 1
+    assert state["id"] == "failed-run"
+    assert state["sync_status"] == "synced"
+    assert state["run_status"] == "failed"
+    assert state["exit_code"] == 1
+
+
+def test_tracking_state_write_failure_preserves_existing_id(workspace_tmpdir, monkeypatch):
+    path = workspace_tmpdir / "wandb_run.json"
+    original = json.dumps({"id": "preserved-run", "mode": "online"})
+    path.write_text(original, encoding="utf-8")
+
+    def fail_replace(_src, _dst):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(tracking.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="no space left"):
+        tracking._write_tracking_state(path, {"id": "new-run"})
+
+    assert path.read_text(encoding="utf-8") == original
+    assert not path.with_name("wandb_run.json.tmp").exists()
 
 
 def test_wandb_resume_accepts_safe_config_extensions(workspace_tmpdir, monkeypatch):
@@ -224,7 +273,7 @@ def test_wandb_resume_accepts_safe_config_extensions(workspace_tmpdir, monkeypat
             self.settings = types.SimpleNamespace(mode=mode)
             self.summary = {}
 
-        def finish(self):
+        def finish(self, *, exit_code=None):
             pass
 
     fake_wandb = types.SimpleNamespace(

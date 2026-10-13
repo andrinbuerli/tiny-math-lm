@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -122,7 +123,7 @@ def main(config: DictConfig) -> None:
         )
         LOGGER.info("Logged %d qualitative examples to the %s run", count, stage)
     finally:
-        finish_wandb(run)
+        finish_wandb(run, exit_code=1 if sys.exc_info()[0] else 0)
 
 
 if __name__ == "__main__":

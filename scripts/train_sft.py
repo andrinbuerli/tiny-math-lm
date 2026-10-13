@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import subprocess
+import sys
 from pathlib import Path
 
 import hydra
@@ -109,7 +110,7 @@ def main(config: DictConfig) -> None:
         )
         LOGGER.info("SFT training finished: %s", result)
     finally:
-        finish_wandb(run)
+        finish_wandb(run, exit_code=1 if sys.exc_info()[0] else 0)
 
 
 if __name__ == "__main__":
