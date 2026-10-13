@@ -1,4 +1,5 @@
 cpu_threads: 4
+wandb_service_gomaxprocs: 2
 parallel_gpu_max_utilization: 75
 parallel_gpu_min_free_vram_gb: 2
 parallel_model_vram_gb:

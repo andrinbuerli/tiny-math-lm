@@ -41,6 +41,15 @@ def _load_workspace_credentials() -> None:
         os.environ["WANDB_API_KEY"] = legacy_key
 
 
+def _configure_wandb_service_threads(config: DictConfig) -> None:
+    """Bound W&B's Go service thread pool for containers with tight PID limits."""
+    runtime = config.get("runtime", {})
+    max_procs = max(1, int(runtime.get("wandb_service_gomaxprocs", 2)))
+    # Respect an explicit runtime environment override. GOMAXPROCS is read by
+    # wandb-core when the SDK starts its Go service subprocess.
+    os.environ.setdefault("GOMAXPROCS", str(max_procs))
+
+
 def _tracking_state(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -108,6 +117,7 @@ def _compatible_with_runtime_extension(
 
 def initialize_wandb(config: DictConfig, run_dir: str | Path, *, job_type: str) -> Any:
     """Create or resume one W&B run, persisting its ID before initialization."""
+    _configure_wandb_service_threads(config)
     import wandb
 
     _load_workspace_credentials()

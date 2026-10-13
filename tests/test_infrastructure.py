@@ -67,6 +67,19 @@ def test_parallel_gpu_admission_requires_utilization_and_vram_headroom():
     assert not run_all._gpu_capacity_available(config, "100m", 50, 10 * 1024 - 1)
 
 
+def test_wandb_go_service_thread_limit_respects_runtime_and_environment(monkeypatch):
+    with initialize_config_dir(version_base="1.3", config_dir="/workspace/configs"):
+        config = compose(config_name="config", overrides=["runtime.wandb_service_gomaxprocs=3"])
+
+    monkeypatch.delenv("GOMAXPROCS", raising=False)
+    tracking._configure_wandb_service_threads(config)
+    assert os.environ["GOMAXPROCS"] == "3"
+
+    monkeypatch.setenv("GOMAXPROCS", "1")
+    tracking._configure_wandb_service_threads(config)
+    assert os.environ["GOMAXPROCS"] == "1"
+
+
 def test_continued_sft_config_approximately_matches_grpo_compute():
     with initialize_config_dir(version_base="1.3", config_dir="/workspace/configs"):
         config = compose(
