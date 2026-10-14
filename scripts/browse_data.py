@@ -10,7 +10,7 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-from tinymath.data.browser import discover_bundles, read_jsonl
+from tinymath.data.browser import count_example_tokens, discover_bundles, read_jsonl
 from tinymath.data.trace_explanations import TRACE_KEY, transcribe_scratchpad
 
 SPLIT_LABELS = {
@@ -62,6 +62,14 @@ def main() -> None:
         st.header("Browse")
         selected_bundle = st.selectbox("Prepared bundle", list(bundle_by_name))
     bundle = bundle_by_name[selected_bundle]
+    tokenizer_path = bundle / "char_tokenizer.json"
+    try:
+        from tinymath.data.char_tokenizer import CharacterTokenizer
+
+        tokenizer = CharacterTokenizer.load(tokenizer_path)
+    except (OSError, ValueError, KeyError) as exc:
+        st.error(f"Could not load this bundle's character tokenizer: {exc}")
+        return
     try:
         manifest = _read_manifest(bundle)
     except (OSError, json.JSONDecodeError) as exc:
@@ -180,6 +188,19 @@ def main() -> None:
             st.markdown(f"**Question**\n\n{selected.get('question', '')}")
             st.markdown(f"**Answer**\n\n{selected.get('answer', '')}")
             st.caption(f"{selected.get('module', '')} · {selected.get('category', '')}")
+            token_counts = count_example_tokens(selected, tokenizer)
+            st.markdown("#### Token counts")
+            count_cols = st.columns(3)
+            count_cols[0].metric("Prompt tokens", token_counts["prompt"])
+            count_cols[1].metric(
+                "Scratchpad tokens",
+                token_counts["scratchpad"] if selected.get("scratchpad") else "—",
+            )
+            count_cols[2].metric("Answer tokens", token_counts["answer"])
+            st.caption(
+                "Counts use the bundle tokenizer and include model boundary tokens "
+                "(BOS, scratchpad markers, and EOS where applicable)."
+            )
             if selected.get("scratchpad"):
                 st.markdown("#### Reasoning trace walkthrough")
                 st.caption(
