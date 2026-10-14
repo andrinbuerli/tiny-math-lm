@@ -104,6 +104,10 @@ def main(config: DictConfig) -> None:
             {
                 "training/optimizer_steps": result["step"],
                 "training/examples_used": result["training_examples"],
+                "training/examples_drawn": result["examples_drawn"],
+                "training/nonpadding_input_tokens": result["nonpadding_input_tokens"],
+                "training/padded_compute_positions": result["padded_compute_positions"],
+                "training/supervised_tokens": result["supervised_tokens"],
                 "training/tokens_seen": result["tokens_seen"],
                 "training/best_validation_loss": result["best_validation_loss"],
                 "training/model_parameters": result["parameters"],

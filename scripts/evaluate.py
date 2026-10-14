@@ -140,13 +140,26 @@ def main(config: DictConfig) -> None:
         logged = {}
         for split, result in summary["splits"].items():
             logged[f"eval/{split}/examples"] = result["examples"]
-            for metric in ("accuracy", "format_validity", "mean_output_tokens"):
+            for metric in (
+                "accuracy",
+                "format_validity",
+                "trace_structure_validity",
+                "trace_reference_exact_match_rate",
+                "mean_output_tokens",
+            ):
                 value = result[metric]
                 if value is not None:
                     logged[f"eval/{split}/{metric}"] = value
             for module, metrics in result["module"].items():
-                logged[f"eval/{split}/module/{module}/accuracy"] = metrics["accuracy"]
-                logged[f"eval/{split}/module/{module}/format_validity"] = metrics["format_validity"]
+                for metric in (
+                    "accuracy",
+                    "format_validity",
+                    "trace_structure_validity",
+                    "trace_reference_exact_match_rate",
+                ):
+                    value = metrics[metric]
+                    if value is not None:
+                        logged[f"eval/{split}/module/{module}/{metric}"] = value
         run.log(logged)
         run.summary.update(
             {

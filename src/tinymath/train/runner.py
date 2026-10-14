@@ -162,6 +162,9 @@ def train_sft(
     start_step = 0
     best_val = math.inf
     tokens_seen = 0
+    examples_drawn = 0
+    nonpadding_input_tokens = 0
+    supervised_tokens = 0
     source_sft_checkpoint: str | None = None
     data_generator = torch.Generator(device="cpu").manual_seed(int(config.seed))
     if init_checkpoint is not None:
@@ -201,6 +204,9 @@ def train_sft(
                 optimizer.load_state_dict(resume_payload["optimizer"])
                 start_step = int(resume_payload["step"])
                 tokens_seen = int(resume_payload.get("tokens_seen", 0))
+                examples_drawn = int(resume_payload.get("examples_drawn", 0))
+                nonpadding_input_tokens = int(resume_payload.get("nonpadding_input_tokens", 0))
+                supervised_tokens = int(resume_payload.get("supervised_tokens", 0))
                 best_val = float(resume_payload.get("best_val_loss", math.inf))
                 best_val = _latest_best_val(run_dir, best_val)
                 restore_rng_state(resume_payload["rng_state"])
@@ -211,6 +217,9 @@ def train_sft(
             optimizer.load_state_dict(payload["optimizer"])
             start_step = int(payload["step"])
             tokens_seen = int(payload.get("tokens_seen", 0))
+            examples_drawn = int(payload.get("examples_drawn", 0))
+            nonpadding_input_tokens = int(payload.get("nonpadding_input_tokens", 0))
+            supervised_tokens = int(payload.get("supervised_tokens", 0))
             best_val = float(payload.get("best_val_loss", math.inf))
             source_sft_checkpoint = payload.get("source_sft_checkpoint")
             if payload.get("rng_state"):
@@ -229,6 +238,9 @@ def train_sft(
         optimizer.load_state_dict(payload["optimizer"])
         start_step = int(payload["step"])
         tokens_seen = int(payload.get("tokens_seen", 0))
+        examples_drawn = int(payload.get("examples_drawn", 0))
+        nonpadding_input_tokens = int(payload.get("nonpadding_input_tokens", 0))
+        supervised_tokens = int(payload.get("supervised_tokens", 0))
         best_val = float(payload.get("best_val_loss", math.inf))
         best_val = _latest_best_val(run_dir, best_val)
         source_sft_checkpoint = payload.get("source_sft_checkpoint")
@@ -246,6 +258,8 @@ def train_sft(
         metrics_file,
         fieldnames=[
             "optimizer_step", "train/loss", "val/loss", "learning_rate", "tokens_seen",
+            "examples_drawn", "nonpadding_input_tokens", "padded_compute_positions",
+            "supervised_tokens",
             "tokens_per_second", "estimated_flops", "wall_seconds", "train/greedy_accuracy",
             "val/greedy_accuracy", "test/greedy_accuracy",
         ],
@@ -281,6 +295,9 @@ def train_sft(
             optimizer.zero_grad(set_to_none=True)
             loss_value = 0.0
             tokens_this_step = 0
+            examples_this_step = batch_size * accumulation
+            nonpadding_tokens_this_step = 0
+            supervised_tokens_this_step = 0
             amp_enabled = bool(config.trainer.bf16 and device.type == "cuda")
             for _ in range(accumulation):
                 inputs, targets, mask = _batch(
@@ -293,6 +310,8 @@ def train_sft(
                 )
                 # Count all model input positions, including prompt and padding compute.
                 tokens_this_step += inputs.numel()
+                nonpadding_tokens_this_step += int(inputs.ne(tokenizer.pad_id).sum().item())
+                supervised_tokens_this_step += int(mask.sum().item())
                 with torch.autocast("cuda", dtype=torch.bfloat16, enabled=amp_enabled):
                     logits = model(inputs)
                     loss = completion_only_loss(logits, targets, mask) / accumulation
@@ -301,6 +320,9 @@ def train_sft(
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), float(config.trainer.grad_clip))
             optimizer.step()
             tokens_seen += tokens_this_step
+            examples_drawn += examples_this_step
+            nonpadding_input_tokens += nonpadding_tokens_this_step
+            supervised_tokens += supervised_tokens_this_step
             val_loss: float | None = None
             if step % eval_every == 0 or step == target_steps:
                 val_loss = _evaluate_loss(
@@ -320,6 +342,9 @@ def train_sft(
                         optimizer=optimizer,
                         step=step,
                         tokens_seen=tokens_seen,
+                        examples_drawn=examples_drawn,
+                        nonpadding_input_tokens=nonpadding_input_tokens,
+                        supervised_tokens=supervised_tokens,
                         best_val=best_val,
                         tokenizer=tokenizer,
                         model_config=model_config,
@@ -335,6 +360,10 @@ def train_sft(
                 "val/loss": "" if val_loss is None else val_loss,
                 "learning_rate": lr,
                 "tokens_seen": tokens_seen,
+                "examples_drawn": examples_drawn,
+                "nonpadding_input_tokens": nonpadding_input_tokens,
+                "padded_compute_positions": tokens_seen,
+                "supervised_tokens": supervised_tokens,
                 "tokens_per_second": tokens_seen / max(1e-9, elapsed),
                 "estimated_flops": 6 * model.count_parameters() * tokens_seen,
                 "wall_seconds": elapsed,
@@ -342,6 +371,10 @@ def train_sft(
             values = {
                 "optimizer_step": step,
                 "tokens_seen": tokens_seen,
+                "train/examples_drawn": examples_drawn,
+                "train/nonpadding_input_tokens": nonpadding_input_tokens,
+                "train/padded_compute_positions": tokens_seen,
+                "train/supervised_tokens": supervised_tokens,
                 "train/loss": loss_value,
                 "train/grad_norm": float(grad_norm.item()),
                 "train/learning_rate": lr,
@@ -360,6 +393,9 @@ def train_sft(
                     optimizer=optimizer,
                     step=step,
                     tokens_seen=tokens_seen,
+                    examples_drawn=examples_drawn,
+                    nonpadding_input_tokens=nonpadding_input_tokens,
+                    supervised_tokens=supervised_tokens,
                     best_val=best_val,
                     tokenizer=tokenizer,
                     model_config=model_config,
@@ -423,6 +459,10 @@ def train_sft(
     return {
         "step": target_steps,
         "tokens_seen": tokens_seen,
+        "examples_drawn": examples_drawn,
+        "nonpadding_input_tokens": nonpadding_input_tokens,
+        "padded_compute_positions": tokens_seen,
+        "supervised_tokens": supervised_tokens,
         "training_examples": len(train_examples),
         "best_validation_loss": best_val,
         "metrics_path": str(metrics_path),
@@ -441,6 +481,9 @@ def _save_state(
     optimizer: torch.optim.Optimizer,
     step: int,
     tokens_seen: int,
+    examples_drawn: int,
+    nonpadding_input_tokens: int,
+    supervised_tokens: int,
     best_val: float,
     tokenizer: CharacterTokenizer,
     model_config: GPTConfig,
@@ -456,6 +499,10 @@ def _save_state(
             "optimizer": optimizer.state_dict(),
             "step": step,
             "tokens_seen": tokens_seen,
+            "examples_drawn": examples_drawn,
+            "nonpadding_input_tokens": nonpadding_input_tokens,
+            "padded_compute_positions": tokens_seen,
+            "supervised_tokens": supervised_tokens,
             "best_val_loss": best_val,
             "rng_state": capture_rng_state(),
             "data_generator_state": data_generator_state,

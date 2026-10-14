@@ -43,18 +43,19 @@ def _load_rows(path: Path) -> list[dict[str, str]]:
 
 def _score_completion(
     token_ids: list[int], tokenizer: CharacterTokenizer, row: dict[str, str]
-) -> tuple[bool, bool, str | None]:
-    """Return answer correctness, protocol/format validity, and any parsed trace."""
+) -> tuple[bool, bool, str | None, bool | None]:
+    """Return reward validity and diagnostic trace/reference comparison."""
     if tokenizer.protocol == "reasoning_v1":
         try:
             parsed = parse_reasoning_completion(token_ids, tokenizer)
         except ValueError:
-            return False, False, None
+            return False, False, None, False
         correct, valid = verify_answer(parsed.answer, row["answer"], question=row["question"])
-        return correct and valid, valid, parsed.scratchpad
+        reference_match = parsed.scratchpad == row.get("scratchpad")
+        return correct and valid, valid, parsed.scratchpad, reference_match
     text = tokenizer.decode(token_ids, skip_special=True).strip()
     correct, valid = verify_answer(text, row["answer"], question=row["question"])
-    return correct and valid, valid, None
+    return correct and valid, valid, None, None
 
 
 def train_grpo(
@@ -126,6 +127,9 @@ def train_grpo(
     latest_path = run_dir / "latest.pt"
     start_update = 0
     tokens_seen = 0
+    examples_drawn = 0
+    nonpadding_input_tokens = 0
+    padded_compute_positions = 0
     estimated_flops_seen = 0
     parameter_count = model.count_parameters()
     if latest_path.exists():
@@ -142,6 +146,9 @@ def train_grpo(
         optimizer.load_state_dict(resumed["optimizer"])
         start_update = int(resumed["update"])
         tokens_seen = int(resumed.get("tokens_seen", 0))
+        examples_drawn = int(resumed.get("examples_drawn", 0))
+        nonpadding_input_tokens = int(resumed.get("nonpadding_input_tokens", 0))
+        padded_compute_positions = int(resumed.get("padded_compute_positions", 0))
         estimated_flops_seen = int(
             resumed.get("estimated_flops", 6 * parameter_count * tokens_seen)
         )
@@ -173,9 +180,12 @@ def train_grpo(
     metrics_file = metrics_path.open(mode, newline="", encoding="utf-8")
     fields = [
         "update", "reward/mean", "reward/format_valid_rate", "reward/verifier_failure_rate",
-        "reward/trace_valid_rate", "reward/capped_rate", "reward/malformed_rate",
+        "reward/trace_valid_rate", "reward/trace_reference_exact_match_rate",
+        "reward/capped_rate", "reward/malformed_rate",
         "group/mixed_rate", "group/all_correct_rate", "group/all_wrong_rate", "loss",
-        "policy_loss", "kl", "entropy", "clip_fraction", "grad_norm", "tokens_seen", "wall_seconds",
+        "policy_loss", "kl", "entropy", "clip_fraction", "grad_norm", "tokens_seen",
+        "generated_tokens", "examples_drawn", "nonpadding_input_tokens",
+        "padded_compute_positions", "wall_seconds",
         "tokens_per_second", "estimated_flops", "peak_gpu_memory_bytes",
         "flops_estimator_version", "train/greedy_accuracy", "val/greedy_accuracy",
         "test/greedy_accuracy",
@@ -190,13 +200,15 @@ def train_grpo(
             optimizer.zero_grad(set_to_none=True)
             metric_groups: list[dict[str, torch.Tensor]] = []
             batch_correct = batch_valid = batch_total = token_total = 0
-            batch_capped = batch_malformed = batch_trace_valid = 0
+            batch_capped = batch_malformed = batch_trace_valid = batch_trace_reference_match = 0
             optimized_groups = 0
             policy_losses: list[float] = []
             kl_values: list[float] = []
             entropy_values: list[float] = []
             clip_values: list[float] = []
             estimated_flops_update = 0
+            nonpadding_input_tokens_update = 0
+            padded_compute_positions_update = 0
             for row in chosen:
                 prompt_text = format_prompt(row["question"], protocol=tokenizer.protocol)
                 prompt_ids = torch.tensor(
@@ -222,11 +234,11 @@ def train_grpo(
                 ]
                 outcomes = [_score_completion(ids, tokenizer, row) for ids in generated_ids]
                 rewards = torch.tensor(
-                    [int(correct) for correct, _valid, _trace in outcomes],
+                    [int(correct) for correct, _valid, _trace, _reference_match in outcomes],
                     dtype=torch.float32,
                     device=device,
                 )
-                valid_count = sum(int(valid) for _correct, valid, _trace in outcomes)
+                valid_count = sum(int(valid) for _correct, valid, _trace, _match in outcomes)
                 batch_capped += sum(
                     int(len(ids) >= min(max_completion, room) and (not ids or ids[-1] != tokenizer.eos_id))
                     for ids in generated_ids
@@ -234,12 +246,17 @@ def train_grpo(
                 batch_malformed += group_size - valid_count
                 batch_trace_valid += sum(
                     int(trace is not None) if tokenizer.protocol == "reasoning_v1" else int(valid)
-                    for _correct, valid, trace in outcomes
+                    for _correct, valid, trace, _match in outcomes
+                )
+                batch_trace_reference_match += sum(
+                    int(reference_match is True)
+                    for _correct, _valid, _trace, reference_match in outcomes
                 )
                 batch_correct += int(rewards.sum().item())
                 batch_valid += valid_count
                 batch_total += group_size
                 token_total += int(rollouts.completion_mask.sum().item())
+                nonpadding_input_tokens_update += prompt_ids.numel() * group_size
                 advantages = group_relative_advantages(rewards.unsqueeze(0))
                 metric_groups.append(group_outcome_rates(rewards.unsqueeze(0)))
                 with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_bf16):
@@ -270,6 +287,10 @@ def train_grpo(
                     + completion_length * (completion_length - 1) // 2
                 )
                 policy_positions = group_size * (prompt_ids.shape[1] + completion_length)
+                padded_compute_positions_update += (
+                    rollout_positions
+                    + policy_positions * (1 + int(reference is not None))
+                )
                 policy_factor = 6 if torch.any(advantages) else 2
                 reference_factor = 2 if reference is not None else 0
                 estimated_flops_update += parameter_count * (
@@ -287,6 +308,9 @@ def train_grpo(
                 )
                 optimizer.step()
             tokens_seen += token_total
+            examples_drawn += len(chosen)
+            nonpadding_input_tokens += nonpadding_input_tokens_update
+            padded_compute_positions += padded_compute_positions_update
             estimated_flops_seen += estimated_flops_update
             reward_mean = batch_correct / batch_total
 
@@ -301,6 +325,7 @@ def train_grpo(
                 "reward/format_valid_rate": batch_valid / batch_total,
                 "reward/verifier_failure_rate": 1 - batch_valid / batch_total,
                 "reward/trace_valid_rate": batch_trace_valid / batch_total,
+                "reward/trace_reference_exact_match_rate": batch_trace_reference_match / batch_total,
                 "reward/capped_rate": batch_capped / batch_total,
                 "reward/malformed_rate": batch_malformed / batch_total,
                 "group/mixed_rate": mixed,
@@ -313,6 +338,10 @@ def train_grpo(
                 "clip_fraction": mean(clip_values),
                 "grad_norm": grad_norm_value,
                 "tokens_seen": tokens_seen,
+                "examples_drawn": examples_drawn,
+                "nonpadding_input_tokens": nonpadding_input_tokens,
+                "generated_tokens": tokens_seen,
+                "padded_compute_positions": padded_compute_positions,
                 "wall_seconds": time.monotonic() - started,
                 "tokens_per_second": tokens_seen / max(1e-9, time.monotonic() - started),
                 "estimated_flops": estimated_flops_seen,
@@ -329,6 +358,9 @@ def train_grpo(
                         "optimizer": optimizer.state_dict(),
                         "update": update,
                         "tokens_seen": tokens_seen,
+                        "examples_drawn": examples_drawn,
+                        "nonpadding_input_tokens": nonpadding_input_tokens,
+                        "padded_compute_positions": padded_compute_positions,
                         "estimated_flops": estimated_flops_seen,
                         "flops_estimator_version": "dense_position_v2",
                         "rng_state": capture_rng_state(),
@@ -406,6 +438,10 @@ def train_grpo(
         "update": updates,
         "prompt_examples": len(prompts),
         "tokens_seen": tokens_seen,
+        "generated_tokens": tokens_seen,
+        "examples_drawn": examples_drawn,
+        "nonpadding_input_tokens": nonpadding_input_tokens,
+        "padded_compute_positions": padded_compute_positions,
         "estimated_flops": estimated_flops_seen,
         "checkpoint": str(latest_path),
         "inference_checkpoint": str(run_dir / "latest_inference.pt"),

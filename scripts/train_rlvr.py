@@ -80,6 +80,10 @@ def main(config: DictConfig) -> None:
             {
                 "grpo/updates": result["update"],
                 "grpo/prompt_examples": result["prompt_examples"],
+                "grpo/examples_drawn": result["examples_drawn"],
+                "grpo/nonpadding_input_tokens": result["nonpadding_input_tokens"],
+                "grpo/generated_tokens": result["generated_tokens"],
+                "grpo/padded_compute_positions": result["padded_compute_positions"],
                 "grpo/tokens_seen": result["tokens_seen"],
                 "grpo/estimated_flops": result["estimated_flops"],
                 "grpo/final_reward": result["final_reward"],

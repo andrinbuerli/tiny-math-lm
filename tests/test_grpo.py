@@ -46,7 +46,11 @@ def test_reasoning_grpo_reward_requires_structure_and_correct_final_scalar():
         ],
         protocol="reasoning_v1",
     )
-    row = {"question": "1 + 1", "answer": "2"}
+    row = {
+        "question": "1 + 1",
+        "answer": "2",
+        "scratchpad": "+(1,1)\n1,1,0:2,0",
+    }
     valid_correct = tokenizer.encode_completion("2", scratchpad="+(1,1)\n1,1,0:2,0")
     valid_wrong = tokenizer.encode_completion("3", scratchpad="+(1,1)\n1,1,0:2,0")
     missing_eos = valid_correct[:-1]
@@ -55,13 +59,20 @@ def test_reasoning_grpo_reward_requires_structure_and_correct_final_scalar():
         True,
         True,
         "+(1,1)\n1,1,0:2,0",
+        True,
     )
     assert grpo_runner._score_completion(valid_wrong, tokenizer, row) == (
         False,
         True,
         "+(1,1)\n1,1,0:2,0",
+        True,
     )
-    assert grpo_runner._score_completion(missing_eos, tokenizer, row) == (False, False, None)
+    assert grpo_runner._score_completion(missing_eos, tokenizer, row) == (
+        False,
+        False,
+        None,
+        False,
+    )
 
 
 def test_clipped_policy_loss_masks_padding_and_has_finite_gradients():
@@ -193,6 +204,9 @@ def test_grpo_runner_scores_mixed_group_and_applies_gradient(workspace_tmpdir, m
     assert saved["training_arm"] == "grpo"
     assert saved["compatibility"]["protocol"] == "answer_only"
     assert saved["compatibility"]["context_length"] == 64
+    assert saved["examples_drawn"] == 1
+    assert saved["nonpadding_input_tokens"] > 0
+    assert saved["padded_compute_positions"] > 0
     before = initial_model.state_dict()
     assert result["final_reward"] == 0.5
     assert result["qualitative_examples"] == 3
@@ -202,6 +216,8 @@ def test_grpo_runner_scores_mixed_group_and_applies_gradient(workspace_tmpdir, m
     assert inference["compatibility"] == saved["compatibility"]
     assert inference["model"]
     assert "qualitative/examples" in run.logged[-1]
+    assert run.logged[-1]["grpo/examples_drawn"] == 1
+    assert run.logged[-1]["grpo/generated_tokens"] == result["generated_tokens"]
     assert "train/greedy_accuracy" in run.logged[-1]
     assert "val/greedy_accuracy" in run.logged[-1]
     assert "test/greedy_accuracy" in run.logged[-1]
@@ -210,6 +226,9 @@ def test_grpo_runner_scores_mixed_group_and_applies_gradient(workspace_tmpdir, m
         metrics = next(csv.DictReader(handle))
     assert float(metrics["grad_norm"]) > 0
     assert float(metrics["group/mixed_rate"]) == 1.0
+    assert int(metrics["examples_drawn"]) == 1
+    assert int(metrics["generated_tokens"]) == result["generated_tokens"]
+    assert int(metrics["padded_compute_positions"]) > 0
     prompt_length = len(tokenizer.encode(format_prompt("1 + 1"), add_bos=True))
     expected_flops = initial_model.count_parameters() * (20 * prompt_length + 28)
     assert int(metrics["estimated_flops"]) == expected_flops
@@ -228,6 +247,7 @@ def test_grpo_runner_scores_mixed_group_and_applies_gradient(workspace_tmpdir, m
     )
     resumed_checkpoint = torch.load(resumed["checkpoint"], map_location="cpu", weights_only=False)
     assert resumed["update"] == resumed_checkpoint["update"] == 2
+    assert resumed_checkpoint["examples_drawn"] == 2
     with (run_dir / "metrics.csv").open(encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
         assert [int(row["update"]) for row in rows] == [1, 2]

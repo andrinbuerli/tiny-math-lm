@@ -1024,6 +1024,11 @@ def make_exp11_report(
                     "baseline_question_count": base_id[1], "exp11_question_count": exp_id[1],
                     "examples": split_data.get("examples") if split_data else None,
                     "format_validity": split_data.get("format_validity") if split_data else None,
+                    "trace_structure_validity": split_data.get("trace_structure_validity") if split_data else None,
+                    "trace_reference_exact_match_rate": (
+                        split_data.get("trace_reference_exact_match_rate") if split_data else None
+                    ),
+                    "module_metrics": split_data.get("module", {}) if split_data else {},
                     "capped_completions": split_data.get("capped_completions") if split_data else None,
                     "mean_output_tokens": split_data.get("mean_output_tokens") if split_data else None,
                     "checkpoint_step": (result or {}).get("checkpoint_step"),
@@ -1037,7 +1042,9 @@ def make_exp11_report(
                 }
                 rows.append(row)
 
-    annotation_bundle_dir = annotation_bundle_dir or Path("data/processed/d9f78d0665b3-main-seed18-reasoning-v1")
+    annotation_bundle_dir = annotation_bundle_dir or Path(
+        "data/processed/exp11_reasoning_500k_100k-seed18"
+    )
     annotation_manifest = _json_file(annotation_bundle_dir / "manifest.json") or {}
     diagnostics = {
         "protocol": annotation_manifest.get("tokenizer", {}).get("protocol", "reasoning_v1"),
@@ -1056,8 +1063,8 @@ def make_exp11_report(
                     if not line.strip():
                         continue
                     record = json.loads(line)
-                    for category in record.get("collapsed_categories", []):
-                        collapsed_counts[category] = collapsed_counts.get(category, 0) + 1
+                    for category, count in record.get("collapsed_categories", {}).items():
+                        collapsed_counts[category] = collapsed_counts.get(category, 0) + int(count)
     diagnostics["collapsed_categories"] = collapsed_counts or diagnostics["collapsed_categories"]
     # Summarize prediction completion and visible trace lengths as output data arrives.
     for (model, arm), (result_path, result) in raw_results.items():
@@ -1070,6 +1077,8 @@ def make_exp11_report(
             lengths: list[int] = []
             trace_chars: list[int] = []
             trace_nonempty = 0
+            structure_scored = structure_valid = 0
+            reference_scored = reference_matches = 0
             with pred_path.open(encoding="utf-8", newline="") as handle:
                 for record in csv.DictReader(handle):
                     try:
@@ -1077,6 +1086,14 @@ def make_exp11_report(
                         trace = record.get("scratchpad") or ""
                         trace_chars.append(len(trace))
                         trace_nonempty += int(bool(trace))
+                        structure = (record.get("trace_structure_valid") or "").lower()
+                        if structure in {"true", "false", "1", "0"}:
+                            structure_scored += 1
+                            structure_valid += int(structure in {"true", "1"})
+                        reference = (record.get("trace_reference_exact_match") or "").lower()
+                        if reference in {"true", "false", "1", "0"}:
+                            reference_scored += 1
+                            reference_matches += int(reference in {"true", "1"})
                     except ValueError:
                         continue
             if lengths:
@@ -1086,6 +1103,12 @@ def make_exp11_report(
                     "mean_scratchpad_characters": sum(trace_chars) / len(trace_chars),
                     "mean_scratchpad_tokens": sum(trace_chars) / len(trace_chars),
                     "nonempty_trace_fraction": trace_nonempty / len(lengths),
+                    "trace_structure_validity": (
+                        structure_valid / structure_scored if structure_scored else None
+                    ),
+                    "trace_reference_exact_match_rate": (
+                        reference_matches / reference_scored if reference_scored else None
+                    ),
                 }
     report = {
         "experiment": experiment, "seed": seed,
@@ -1113,8 +1136,8 @@ def make_exp11_report(
         f"Rows: {len(rows)} (expected 27: 3 models × 3 arms × 3 splits).",
         "Statuses distinguish missing baseline results, not-run, running, partial, failed, and complete evaluations.",
         "Accuracy deltas are reported only for complete evaluations with identical ordered question identities.", "",
-        "| Model | Arm | Split | Baseline status | Baseline accuracy | Exp11 status | Exp11 accuracy | Delta (pp) | Examples | Format valid | Capped | Mean output tokens | Baseline train tokens | Exp11 train tokens | Additional tokens | Baseline FLOPs | Exp11 FLOPs | Additional FLOPs | Identity match |",
-        "|---|---|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+        "| Model | Arm | Split | Baseline status | Baseline accuracy | Exp11 status | Exp11 accuracy | Delta (pp) | Examples | Format valid | Trace structure | Reference trace match | Capped | Mean output tokens | Baseline train tokens | Exp11 train tokens | Additional tokens | Baseline FLOPs | Exp11 FLOPs | Additional FLOPs | Identity match |",
+        "|---|---|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for row in rows:
         delta = "Missing" if row["delta_accuracy"] is None else f"{100 * row['delta_accuracy']:+.2f}"
@@ -1122,13 +1145,30 @@ def make_exp11_report(
             f"| {row['model']} | {row['arm']} | {row['split']} | {row['baseline_status']} | "
             f"{_exp11_accuracy(row['baseline_accuracy'])} | {row['exp11_status']} | "
             f"{_exp11_accuracy(row['exp11_accuracy'])} | {delta} | {_format_count(row['examples'])} | "
-            f"{_exp11_accuracy(row['format_validity'])} | {_format_count(row['capped_completions'])} | "
+            f"{_exp11_accuracy(row['format_validity'])} | "
+            f"{_exp11_accuracy(row['trace_structure_validity'])} | "
+            f"{_exp11_accuracy(row['trace_reference_exact_match_rate'])} | "
+            f"{_format_count(row['capped_completions'])} | "
             f"{row['mean_output_tokens'] if row['mean_output_tokens'] is not None else 'Missing'} | "
             f"{_format_count(row['baseline_logged_tokens'])} | {_format_count(row['logged_tokens'])} | "
             f"{_format_count(row['additional_tokens'])} | {_format_count(row['baseline_estimated_flops'])} | "
             f"{_format_count(row['estimated_flops'])} | {_format_count(row['additional_flops'])} | "
             f"{'yes' if row['same_question_identity'] else 'unverified'} |"
         )
+    lines.extend([
+        "", "## Evaluation accuracy and format by module", "",
+        "| Model | Arm | Split | Module | Examples | Accuracy | Format valid | Trace structure | Reference trace match |",
+        "|---|---|---|---|---:|---:|---:|---:|---:|",
+    ])
+    for row in rows:
+        for module, metrics in sorted(row["module_metrics"].items()):
+            lines.append(
+                f"| {row['model']} | {row['arm']} | {row['split']} | {module} | "
+                f"{_format_count(metrics.get('examples'))} | {_exp11_accuracy(metrics.get('accuracy'))} | "
+                f"{_exp11_accuracy(metrics.get('format_validity'))} | "
+                f"{_exp11_accuracy(metrics.get('trace_structure_validity'))} | "
+                f"{_exp11_accuracy(metrics.get('trace_reference_exact_match_rate'))} |"
+            )
     lines.extend([
         "", "## Format, trace, length, and collapse diagnostics", "",
         f"Annotation protocol: `{diagnostics['protocol']}`; annotation hash: `{diagnostics['annotation_sha256'] or 'unavailable'}`.",

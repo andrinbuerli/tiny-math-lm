@@ -162,10 +162,16 @@ def test_sft_loop_trains_and_saves_reloadable_checkpoint(workspace_tmpdir):
     assert checkpoint["tokenizer_sha256"] == tokenizer.sha256
     assert checkpoint["compatibility"]["protocol"] == "answer_only"
     assert checkpoint["compatibility"]["context_length"] == 64
+    assert checkpoint["examples_drawn"] == 4
+    assert checkpoint["nonpadding_input_tokens"] > 0
+    assert checkpoint["padded_compute_positions"] == checkpoint["tokens_seen"]
+    assert checkpoint["supervised_tokens"] > 0
     assert checkpoint["data_generator_state"].numel() > 0
     assert checkpoint["model"]
     assert len(run.logged) == 2
     assert "qualitative/examples" in run.logged[-1]
+    assert run.logged[-1]["train/examples_drawn"] == 4
+    assert run.logged[-1]["train/supervised_tokens"] > 0
     assert "train/greedy_accuracy" in run.logged[-1]
     assert "val/greedy_accuracy" in run.logged[-1]
     assert "test/greedy_accuracy" in run.logged[-1]
@@ -179,6 +185,9 @@ def test_sft_loop_trains_and_saves_reloadable_checkpoint(workspace_tmpdir):
     assert Path(result["metrics_path"]).exists()
     with Path(result["metrics_path"]).open(encoding="utf-8") as existing:
         fieldnames = next(csv.reader(existing))
+    assert {
+        "examples_drawn", "nonpadding_input_tokens", "padded_compute_positions", "supervised_tokens"
+    }.issubset(fieldnames)
     with Path(result["metrics_path"]).open("a", encoding="utf-8", newline="") as handle:
         csv.DictWriter(handle, fieldnames=fieldnames).writerow(
             {"optimizer_step": 2, "train/loss": "duplicate"}

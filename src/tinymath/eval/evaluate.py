@@ -92,7 +92,8 @@ def _atomic_json(path: Path, value: Any) -> None:
 def _atomic_predictions(path: Path, records: list[dict[str, Any]]) -> None:
     fields = [
         "module", "question", "target", "prediction", "scratchpad", "correct",
-        "format_valid", "capped", "output_tokens", "digit_width", "operator_count",
+        "format_valid", "trace_structure_valid", "trace_reference_exact_match",
+        "capped", "output_tokens", "digit_width", "operator_count",
     ]
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
@@ -111,7 +112,16 @@ def _atomic_predictions(path: Path, records: list[dict[str, Any]]) -> None:
 
 def _summarize(records: list[dict[str, Any]], prediction_path: str) -> dict[str, Any]:
     module_counts: dict[str, dict[str, int]] = defaultdict(
-        lambda: {"examples": 0, "correct": 0, "format_valid": 0, "capped": 0}
+        lambda: {
+            "examples": 0,
+            "correct": 0,
+            "format_valid": 0,
+            "trace_structure_valid": 0,
+            "trace_structure_scored": 0,
+            "trace_reference_exact_match": 0,
+            "trace_reference_scored": 0,
+            "capped": 0,
+        }
     )
     digit_counts: dict[int, list[int]] = defaultdict(lambda: [0, 0])
     expression_counts: dict[int, list[int]] = defaultdict(lambda: [0, 0])
@@ -120,6 +130,12 @@ def _summarize(records: list[dict[str, Any]], prediction_path: str) -> dict[str,
         counts["examples"] += 1
         counts["correct"] += int(record["correct"])
         counts["format_valid"] += int(record["format_valid"])
+        if record["trace_structure_valid"] is not None:
+            counts["trace_structure_scored"] += 1
+            counts["trace_structure_valid"] += int(record["trace_structure_valid"])
+        if record["trace_reference_exact_match"] is not None:
+            counts["trace_reference_scored"] += 1
+            counts["trace_reference_exact_match"] += int(record["trace_reference_exact_match"])
         counts["capped"] += int(record["capped"])
         digit_counts[int(record["digit_width"])][0] += 1
         digit_counts[int(record["digit_width"])][1] += int(record["correct"])
@@ -131,6 +147,16 @@ def _summarize(records: list[dict[str, Any]], prediction_path: str) -> dict[str,
         "scored_examples": count,
         "accuracy": sum(int(row["correct"]) for row in records) / count if count else None,
         "format_validity": sum(int(row["format_valid"]) for row in records) / count if count else None,
+        "trace_structure_validity": (
+            sum(int(row["trace_structure_valid"]) for row in records if row["trace_structure_valid"] is not None)
+            / sum(row["trace_structure_valid"] is not None for row in records)
+            if any(row["trace_structure_valid"] is not None for row in records) else None
+        ),
+        "trace_reference_exact_match_rate": (
+            sum(int(row["trace_reference_exact_match"]) for row in records if row["trace_reference_exact_match"] is not None)
+            / sum(row["trace_reference_exact_match"] is not None for row in records)
+            if any(row["trace_reference_exact_match"] is not None for row in records) else None
+        ),
         "capped_completions": sum(int(row["capped"]) for row in records),
         "mean_output_tokens": sum(int(row["output_tokens"]) for row in records) / count if count else None,
         "module": {
@@ -138,6 +164,14 @@ def _summarize(records: list[dict[str, Any]], prediction_path: str) -> dict[str,
                 **counts,
                 "accuracy": counts["correct"] / counts["examples"] if counts["examples"] else 0.0,
                 "format_validity": counts["format_valid"] / counts["examples"] if counts["examples"] else 0.0,
+                "trace_structure_validity": (
+                    counts["trace_structure_valid"] / counts["trace_structure_scored"]
+                    if counts["trace_structure_scored"] else None
+                ),
+                "trace_reference_exact_match_rate": (
+                    counts["trace_reference_exact_match"] / counts["trace_reference_scored"]
+                    if counts["trace_reference_scored"] else None
+                ),
             }
             for module, counts in sorted(module_counts.items())
         },
@@ -314,14 +348,22 @@ def evaluate_checkpoint(
             capped = not saw_eos and len(generated) >= generation_cap
             prediction = tokenizer.decode(generated, skip_special=True).strip()
             scratchpad = ""
+            trace_structure_valid: bool | None = None
+            trace_reference_exact_match: bool | None = None
             if tokenizer.protocol == "reasoning_v1":
                 try:
                     parsed = parse_reasoning_completion(generated, tokenizer)
                     scratchpad = parsed.scratchpad
+                    trace_structure_valid = True
+                    if row.get("scratchpad") is not None:
+                        trace_reference_exact_match = scratchpad == row["scratchpad"]
                     correct, valid = verify_answer(
                         parsed.answer, row["answer"], question=row["question"]
                     )
                 except ValueError:
+                    trace_structure_valid = False
+                    if row.get("scratchpad") is not None:
+                        trace_reference_exact_match = False
                     correct, valid = False, False
             else:
                 correct, valid = verify_answer(prediction, row["answer"], question=row["question"])
@@ -334,7 +376,10 @@ def evaluate_checkpoint(
                     "module": row["module"], "question": row["question"],
                     "target": row["answer"], "prediction": prediction,
                     "scratchpad": scratchpad, "correct": int(correct),
-                    "format_valid": int(valid), "capped": int(capped),
+                    "format_valid": int(valid),
+                    "trace_structure_valid": trace_structure_valid,
+                    "trace_reference_exact_match": trace_reference_exact_match,
+                    "capped": int(capped),
                     "output_tokens": len(generated), "digit_width": digit_width,
                     "operator_count": operator_count,
                 }
