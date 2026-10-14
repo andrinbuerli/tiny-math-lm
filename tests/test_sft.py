@@ -25,6 +25,24 @@ def test_loss_mask_begins_at_first_answer_target_and_includes_eos():
     assert targets[0, -1].item() == tokenizer.eos_id
 
 
+def test_reasoning_loss_mask_includes_boundary_tokens_and_answer_eos():
+    prompt = "Q: Calculate 47 + 28.\n"
+    example = {
+        "prompt": prompt,
+        "completion": "75",
+        "scratchpad": "+(47,28)\n7,8,0:5,1\n4,2,1:7,0",
+    }
+    tokenizer = CharacterTokenizer.from_texts(
+        [prompt, example["scratchpad"], "\nA: 75"], protocol="reasoning_v1"
+    )
+    _inputs, targets, mask = build_completion_batch([example], tokenizer, context_length=128)
+    prompt_size = len(tokenizer.encode(prompt, add_bos=True))
+    assert mask[0, : prompt_size - 1].sum().item() == 0
+    assert mask[0, prompt_size - 1 :].all()
+    assert targets[0, prompt_size - 1].item() == tokenizer.scp_id
+    assert targets[0, -1].item() == tokenizer.eos_id
+
+
 def test_completion_loss_ignores_prompt_and_padding_logits():
     examples = [
         {"prompt": "Q: 1\nA: ", "completion": "2"},

@@ -1,4 +1,5 @@
 defaults:
+  - _self_
   - model: 1m
   - data: default
   - trainer: sft
@@ -9,7 +10,6 @@ defaults:
   - reporting: default
   - tracking: wandb
   - experiment: 01_smoke
-  - _self_
 
 seed: 17
 init_checkpoint: null

@@ -1,0 +1,53 @@
+"""Structural parsing for the reasoning_v1 generated completion protocol."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from tinymath.data.char_tokenizer import CharacterTokenizer
+from tinymath.rewards.verify import AnswerFormatError, parse_answer
+
+
+@dataclass(frozen=True)
+class ReasoningCompletion:
+    scratchpad: str
+    answer: str
+
+
+def parse_reasoning_completion(
+    token_ids: list[int] | tuple[int, ...], tokenizer: CharacterTokenizer
+) -> ReasoningCompletion:
+    """Parse exactly one complete scratchpad, scalar answer line, and terminal EOS.
+
+    The parser operates on reserved structural IDs before decoding ordinary text so
+    question text that happens to spell a marker cannot affect completion structure.
+    """
+    if tokenizer.protocol != "reasoning_v1":
+        raise ValueError("Reasoning completions require the reasoning_v1 tokenizer")
+    ids = list(token_ids)
+    if not ids or ids[-1] != tokenizer.eos_id:
+        raise ValueError("Reasoning completion must end with EOS")
+    body = ids[:-1]
+    if any(token in (tokenizer.pad_id, tokenizer.bos_id, tokenizer.unk_id) for token in body):
+        raise ValueError("Reasoning completion contains a reserved token outside its protocol")
+    starts = [i for i, token in enumerate(body) if token == tokenizer.scp_id]
+    ends = [i for i, token in enumerate(body) if token == tokenizer.scp_end_id]
+    if len(starts) != 1 or len(ends) != 1 or starts[0] >= ends[0]:
+        raise ValueError("Reasoning completion must contain exactly one ordered scratchpad block")
+    start, end = starts[0], ends[0]
+    if start != 0 or any(
+        token in (tokenizer.scp_id, tokenizer.scp_end_id) for token in body[start + 1 : end]
+    ):
+        raise ValueError("Reasoning completion contains duplicate or misplaced scratchpad markers")
+    scratchpad = tokenizer.decode(body[start + 1 : end]).strip()
+    suffix = tokenizer.decode(body[end + 1 :])
+    if not scratchpad or not suffix.startswith("\nA: "):
+        raise ValueError("Reasoning completion needs a nonempty scratchpad and terminal A: line")
+    answer = suffix[len("\nA: ") :]
+    if not answer or answer != answer.strip() or "\n" in answer or "\r" in answer:
+        raise ValueError("Reasoning completion has a missing, multiline, or trailing answer")
+    try:
+        parse_answer(answer)
+    except AnswerFormatError as exc:
+        raise ValueError("Reasoning completion answer is not a valid scalar") from exc
+    return ReasoningCompletion(scratchpad=scratchpad, answer=answer)

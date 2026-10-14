@@ -33,3 +33,38 @@ def test_batch_padding_and_tokenizer_persistence(workspace_tmpdir):
     restored = CharacterTokenizer.load(path)
     assert restored.sha256 == tokenizer.sha256
     assert restored.encode("abc") == tokenizer.encode("abc")
+
+
+def test_reasoning_tokenizer_has_six_reserved_ids_and_keeps_markers_visible(workspace_tmpdir):
+    tokenizer = CharacterTokenizer.from_texts(
+        ["Q: Calculate 47 + 28.\n", "+(47,28)\n7,8,0:5,1\nA: 75"], protocol="reasoning_v1"
+    )
+    assert [
+        tokenizer.pad_id,
+        tokenizer.bos_id,
+        tokenizer.eos_id,
+        tokenizer.unk_id,
+        tokenizer.scp_id,
+        tokenizer.scp_end_id,
+    ] == [0, 1, 2, 3, 4, 5]
+    prompt = "Q: Calculate 47 + 28.\n"
+    completion = tokenizer.encode_completion("75", scratchpad="+(47,28)\n7,8,0:5,1")
+    assert tokenizer.encode(prompt, add_bos=True)[0] == tokenizer.bos_id
+    visible = tokenizer.decode(completion)
+    assert visible.startswith("<scp>\n+(47,28)")
+    assert "\n</scp>\nA: 75" in visible
+    path = workspace_tmpdir / "reasoning-tokenizer.json"
+    tokenizer.save(path)
+    restored = CharacterTokenizer.load(path)
+    assert restored.protocol == "reasoning_v1"
+    assert restored.sha256 == tokenizer.sha256
+    assert restored.scp_id == 4 and restored.scp_end_id == 5
+
+
+def test_marker_text_in_question_is_encoded_as_ordinary_characters():
+    tokenizer = CharacterTokenizer.from_texts(
+        ["Q: write <scp> literally\n", "trace\nA: 1"], protocol="reasoning_v1"
+    )
+    question_ids = tokenizer.encode("Q: write <scp> literally\n")
+    assert tokenizer.scp_id not in question_ids
+    assert tokenizer.scp_end_id not in question_ids

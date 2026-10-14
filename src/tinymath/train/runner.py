@@ -25,11 +25,12 @@ def read_jsonl(path: Path) -> list[dict[str, str]]:
         return [json.loads(line) for line in handle if line.strip()]
 
 
-def _examples(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+def _examples(rows: list[dict[str, str]], *, protocol: str = "answer_only") -> list[dict[str, str]]:
     return [
         {
-            "prompt": format_prompt(row["question"]),
+            "prompt": format_prompt(row["question"], protocol=protocol),
             "completion": format_completion(row["answer"]),
+            **({"scratchpad": row["scratchpad"]} if protocol == "reasoning_v1" else {}),
             "module": row["module"],
         }
         for row in rows
@@ -92,8 +93,8 @@ def train_sft(
     tokenizer = CharacterTokenizer.load(bundle_dir / "char_tokenizer.json")
     train_rows = read_jsonl(bundle_dir / "sft_train.jsonl")
     validation_rows = read_jsonl(bundle_dir / "sft_validation.jsonl")
-    train_examples = _examples(train_rows)
-    validation_examples = _examples(validation_rows)
+    train_examples = _examples(train_rows, protocol=tokenizer.protocol)
+    validation_examples = _examples(validation_rows, protocol=tokenizer.protocol)
     if not train_examples:
         raise ValueError("SFT training split is empty")
 

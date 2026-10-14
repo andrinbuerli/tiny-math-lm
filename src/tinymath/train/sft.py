@@ -23,7 +23,9 @@ def build_completion_batch(
         if not prompt or not completion:
             raise ValueError("Each training example needs a nonempty prompt and completion")
         prompt_ids = tokenizer.encode(prompt, add_bos=True)
-        completion_ids = tokenizer.encode(completion, add_eos=True)
+        completion_ids = tokenizer.encode_completion(
+            completion, scratchpad=example.get("scratchpad")
+        )
         row = prompt_ids + completion_ids
         if len(row) > context_length:
             raise ValueError(
