@@ -31,9 +31,9 @@ uv run streamlit run scripts/browse_data.py
 
 The browser discovers bundles under `data/processed/` and displays the
 manifest counts, split examples, and module/category breakdowns. For annotated
-reasoning bundles, it also walks through each reference trace in plain language
-and shows the compact trace notation alongside it. Prepare a bundle first if
-the browser reports that none are available.
+reasoning v1 and v2 bundles, it transcribes each reference scratchpad into
+plain-language steps and shows the original trace with its notation key.
+Prepare a bundle first if the browser reports that none are available.
 
 To run the configured three-size workflow, including SFT, GRPO, continued SFT,
 evaluation and comparison reporting:

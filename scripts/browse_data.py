@@ -11,7 +11,7 @@ import pandas as pd
 import streamlit as st
 
 from tinymath.data.browser import discover_bundles, read_jsonl
-from tinymath.data.trace_explanations import TRACE_KEY, explain_reasoning_trace
+from tinymath.data.trace_explanations import TRACE_KEY, transcribe_scratchpad
 
 SPLIT_LABELS = {
     "sft_train": "SFT train",
@@ -186,7 +186,12 @@ def main() -> None:
                     "A plain-language reading of the verified reference trace for this example."
                 )
                 for index, step in enumerate(
-                    explain_reasoning_trace(selected["scratchpad"]), start=1
+                    transcribe_scratchpad(
+                        selected["scratchpad"],
+                        version=selected.get("trace_version")
+                        or manifest.get("tokenizer", {}).get("protocol"),
+                    ),
+                    start=1,
                 ):
                     st.markdown(f"**Step {index}.** {step}")
                 st.markdown("#### Original reasoning / scratchpad trace")
