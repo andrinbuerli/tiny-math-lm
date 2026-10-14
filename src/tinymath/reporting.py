@@ -923,6 +923,93 @@ def _exp11_accuracy(value: Any) -> str:
     return "Missing" if value is None else f"{100 * float(value):.2f}%"
 
 
+def _mean_training_metric(metrics: list[dict[str, str]], column: str) -> tuple[float | None, int]:
+    values: list[float] = []
+    for row in metrics:
+        value = row.get(column)
+        if value in (None, ""):
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(number):
+            values.append(number)
+    return (sum(values) / len(values), len(values)) if values else (None, 0)
+
+
+def _efficiency_score(accuracy: Any, counter: Any, scale: float) -> float | None:
+    """Return exact-accuracy percentage points per scaled token/FLOP counter."""
+    if accuracy in (None, "") or counter in (None, ""):
+        return None
+    try:
+        acc_value = float(accuracy)
+        counter_value = float(counter)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(acc_value) or not math.isfinite(counter_value) or counter_value <= 0:
+        return None
+    return 100.0 * acc_value / (counter_value / scale)
+
+
+def _baseline_wandb_provenance(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Copy the baseline evaluation identities needed to audit its snapshot."""
+    saved = snapshot.get("provenance", {}).get("baseline_evaluation_wandb_runs", {})
+    output: dict[str, Any] = {}
+    for model, arms in saved.items():
+        output[model] = {}
+        for arm, run in arms.items():
+            output[model][arm] = {
+                key: run.get(key)
+                for key in (
+                    "id", "path", "mode", "sync_status", "run_status", "exit_code",
+                    "checkpoint_selector", "checkpoint_step", "splits",
+                )
+                if run.get(key) is not None
+            }
+    return output
+
+
+def _exp11_rlvr_gains(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Compare GRPO with SFT only when both split measurements share identities."""
+    by_key = {(row["model"], row["arm"], row["split"]): row for row in rows}
+    gains: list[dict[str, Any]] = []
+    for model in MODELS:
+        for split in EXP11_SPLITS:
+            sft = by_key.get((model, "sft", split), {})
+            grpo = by_key.get((model, "grpo", split), {})
+            status = "pending"
+            delta = None
+            reason = "Both SFT and GRPO evaluations must be complete and use the same questions."
+            if sft.get("exp11_status") == "failed" or grpo.get("exp11_status") == "failed":
+                status = "failed"
+                reason = "At least one required evaluation failed."
+            elif sft.get("exp11_status") == "complete" and grpo.get("exp11_status") == "complete":
+                sft_identity = sft.get("exp11_question_identity_sha256")
+                grpo_identity = grpo.get("exp11_question_identity_sha256")
+                if sft_identity and grpo_identity and sft_identity == grpo_identity:
+                    sft_accuracy = sft.get("exp11_accuracy")
+                    grpo_accuracy = grpo.get("exp11_accuracy")
+                    if sft_accuracy is not None and grpo_accuracy is not None:
+                        status = "measured"
+                        delta = float(grpo_accuracy) - float(sft_accuracy)
+                        reason = "Complete results share the same ordered module/question/target identities."
+                    else:
+                        reason = "Complete evaluations lack accuracy values."
+                else:
+                    status = "identity-unverified"
+                    reason = "Complete evaluations do not have matching ordered question identities."
+            gains.append({
+                "model": model,
+                "split": split,
+                "status": status,
+                "grpo_minus_sft_accuracy_delta": delta,
+                "grpo_minus_sft_percentage_points": 100.0 * delta if delta is not None else None,
+                "reason": reason,
+            })
+    return gains
+
+
 def _exp11_charts(rows: list[dict[str, Any]], output_dir: Path) -> list[Path]:
     outputs: list[Path] = []
     for split, filename, title in (
@@ -974,6 +1061,66 @@ def _exp11_charts(rows: list[dict[str, Any]], output_dir: Path) -> list[Path]:
     return outputs
 
 
+def _exp11_grpo_sample_efficiency_chart(
+    *, runs_dir: Path, experiment: str, output_dir: Path, seed: int
+) -> list[Path]:
+    """Plot per-update GRPO reward and informative-group rate against generated tokens."""
+    fig, axis = plt.subplots(figsize=(8, 5))
+    plotted = False
+    colors = plt.get_cmap("tab10")
+    for index, model in enumerate(MODELS):
+        metrics_path = runs_dir / experiment / model / "grpo" / f"seed{seed}" / "metrics.csv"
+        reward_points: list[tuple[float, float]] = []
+        informative_points: list[tuple[float, float]] = []
+        for row in _read_training_metrics(metrics_path):
+            try:
+                tokens = float(row["tokens_seen"])
+                reward = float(row["reward/mean"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not math.isfinite(tokens) or tokens < 0 or not math.isfinite(reward):
+                continue
+            reward_points.append((tokens, reward))
+            mixed_value = row.get("group/mixed_rate")
+            if mixed_value not in (None, ""):
+                try:
+                    informative = float(mixed_value)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(informative):
+                    informative_points.append((tokens, informative))
+        if not reward_points:
+            continue
+        plotted = True
+        color = colors(index)
+        axis.plot(
+            [point[0] for point in reward_points],
+            [point[1] for point in reward_points],
+            color=color,
+            label=f"{model} reward/mean",
+        )
+        if informative_points:
+            axis.plot(
+                [point[0] for point in informative_points],
+                [point[1] for point in informative_points],
+                color=color,
+                linestyle="--",
+                alpha=0.8,
+                label=f"{model} informative-group rate",
+            )
+    if plotted:
+        axis.set_xlabel("Cumulative generated tokens (tokens_seen; symlog scale)")
+        axis.set_xscale("symlog", linthresh=1_000)
+        axis.set_ylabel("Rate")
+        axis.set_ylim(0, 1.05)
+        axis.set_title("GRPO reward and informative groups versus generated tokens")
+        axis.grid(alpha=0.25)
+        axis.legend(fontsize=8)
+    else:
+        _no_data(axis, "GRPO sample efficiency (no per-update reward/token metrics)")
+    return _save(fig, output_dir, "grpo_sample_efficiency")
+
+
 def make_exp11_report(
     *,
     runs_dir: Path,
@@ -988,7 +1135,12 @@ def make_exp11_report(
     output_dir.mkdir(parents=True, exist_ok=True)
     baseline_snapshot = baseline_snapshot or Path("baselines/exp10_restarted_100k_greedy_restart_2/seed18/snapshot.json")
     snapshot = _json_file(baseline_snapshot) or {}
+    try:
+        baseline_snapshot_sha256 = hashlib.sha256(baseline_snapshot.read_bytes()).hexdigest()
+    except OSError:
+        baseline_snapshot_sha256 = None
     baseline_name = str(snapshot.get("experiment", {}).get("canonical_name", "restarted_100k_greedy_restart_2"))
+    baseline_wandb_runs = _baseline_wandb_provenance(snapshot)
     baseline_runs_dir = baseline_runs_dir or runs_dir
     baseline_records = {
         (item.get("model"), item.get("arm"), item.get("split")): item
@@ -1098,6 +1250,8 @@ def make_exp11_report(
                     "delta_accuracy": delta,
                     "delta_status": "comparable" if delta is not None else "identity-unverified-or-incomplete",
                     "same_question_identity": identity_matches,
+                    "baseline_question_identity_sha256": base_id[0],
+                    "exp11_question_identity_sha256": exp_id[0],
                     "baseline_question_count": base_id[1], "exp11_question_count": exp_id[1],
                     "examples": split_data.get("examples") if split_data else None,
                     "format_validity": split_data.get("format_validity") if split_data else None,
@@ -1190,7 +1344,32 @@ def make_exp11_report(
                     ),
                 }
     compute_matching = {}
+    grpo_diagnostics: dict[str, dict[str, Any]] = {}
     for model in MODELS:
+        grpo_run_dir = runs_dir / experiment / model / "grpo" / f"seed{seed}"
+        grpo_metrics_all = _read_training_metrics(grpo_run_dir / "metrics.csv")
+        mixed_rate, mixed_updates = _mean_training_metric(grpo_metrics_all, "group/mixed_rate")
+        all_correct_rate, all_correct_updates = _mean_training_metric(
+            grpo_metrics_all, "group/all_correct_rate"
+        )
+        all_wrong_rate, all_wrong_updates = _mean_training_metric(
+            grpo_metrics_all, "group/all_wrong_rate"
+        )
+        update_values = [
+            row.get("update") for row in grpo_metrics_all if row.get("update") not in (None, "")
+        ]
+        grpo_diagnostics[model] = {
+            "updates": len(update_values),
+            "latest_update": update_values[-1] if update_values else None,
+            "informative_group_rate": mixed_rate,
+            "informative_group_rate_updates": mixed_updates,
+            "mixed_group_rate": mixed_rate,
+            "mixed_group_rate_updates": mixed_updates,
+            "all_correct_group_rate": all_correct_rate,
+            "all_correct_group_rate_updates": all_correct_updates,
+            "all_wrong_group_rate": all_wrong_rate,
+            "all_wrong_group_rate_updates": all_wrong_updates,
+        }
         grpo_metrics = training_metrics_by_arm.get((model, "grpo"), {})
         control_metrics = training_metrics_by_arm.get((model, "continued_sft"), {})
         sft_metrics = training_metrics_by_arm.get((model, "sft"), {})
@@ -1226,11 +1405,72 @@ def make_exp11_report(
             "status": "measured" if ratio is not None else "pending",
         }
 
+    rlvr_gains = _exp11_rlvr_gains(rows)
+    sample_efficiency: list[dict[str, Any]] = []
+    for model in MODELS:
+        for arm in ARMS:
+            row = next(
+                item for item in rows
+                if item["model"] == model and item["arm"] == arm and item["split"] == "test"
+            )
+            # A partial test-split accuracy is real but is not an endpoint for
+            # sample-efficiency comparisons, so leave its normalized score blank.
+            exp11_test_accuracy = (
+                row["exp11_accuracy"] if row["exp11_status"] == "complete" else None
+            )
+            baseline_per_million_tokens = _efficiency_score(
+                row["baseline_accuracy"], row["baseline_logged_tokens"], 1_000_000
+            )
+            exp11_per_million_tokens = _efficiency_score(
+                exp11_test_accuracy, row["logged_tokens"], 1_000_000
+            )
+            baseline_per_trillion_flops = _efficiency_score(
+                row["baseline_accuracy"], row["baseline_estimated_flops"], 1_000_000_000_000
+            )
+            exp11_per_trillion_flops = _efficiency_score(
+                exp11_test_accuracy, row["estimated_flops"], 1_000_000_000_000
+            )
+            sample_efficiency.append({
+                "model": model,
+                "arm": arm,
+                "split": "test",
+                "exp11_status": row["exp11_status"],
+                "same_question_identity": row["same_question_identity"],
+                "baseline_accuracy_pp_per_million_tokens": baseline_per_million_tokens,
+                "exp11_accuracy_pp_per_million_tokens": exp11_per_million_tokens,
+                "delta_accuracy_pp_per_million_tokens": (
+                    exp11_per_million_tokens - baseline_per_million_tokens
+                    if row["same_question_identity"]
+                    and exp11_per_million_tokens is not None
+                    and baseline_per_million_tokens is not None
+                    else None
+                ),
+                "baseline_accuracy_pp_per_trillion_flops": baseline_per_trillion_flops,
+                "exp11_accuracy_pp_per_trillion_flops": exp11_per_trillion_flops,
+                "delta_accuracy_pp_per_trillion_flops": (
+                    exp11_per_trillion_flops - baseline_per_trillion_flops
+                    if row["same_question_identity"]
+                    and exp11_per_trillion_flops is not None
+                    and baseline_per_trillion_flops is not None
+                    else None
+                ),
+            })
+
     report = {
         "experiment": experiment, "seed": seed,
         "baseline_snapshot": str(baseline_snapshot),
+        "baseline_provenance": {
+            "canonical_name": baseline_name,
+            "snapshot_path": str(baseline_snapshot),
+            "snapshot_sha256": baseline_snapshot_sha256,
+            "frozen_at_utc": snapshot.get("frozen_at_utc"),
+            "evaluation_wandb_runs": baseline_wandb_runs,
+        },
         "row_count": len(rows), "rows": rows, "diagnostics": diagnostics,
         "compute_matching": compute_matching,
+        "grpo_diagnostics": grpo_diagnostics,
+        "rlvr_gains": rlvr_gains,
+        "sample_efficiency": sample_efficiency,
         "statuses": list(EXP11_STATUS),
         "limitations": [
             "Training token counts and FLOPs are read from the latest checkpoint-aligned metric row when available; FLOPs are dense-position estimates, not hardware counters.",
@@ -1238,6 +1478,7 @@ def make_exp11_report(
             "Accuracy deltas require complete results and identical ordered module/question/target identities in baseline and Experiment 11 prediction CSVs. Aggregate snapshot accuracy alone cannot prove question identity.",
             "The handwritten scratchpad is additional supervised target text in the Experiment 11 SFT data. The current training objective does not separately mask or weight scratchpad tokens, so this is not answer-only supervision with an auxiliary trace loss.",
             "Missing baseline snapshot cells are preserved as missing; unavailable measurements are never treated as zero.",
+            "Sample-efficiency ratios are endpoint exact-accuracy percentages normalized by logged tokens or estimated FLOPs; token semantics differ by arm and FLOPs are estimated, so they are descriptive rather than causal comparisons.",
         ],
     }
     report_path = output_dir / "comparison.json"
@@ -1272,6 +1513,56 @@ def make_exp11_report(
             f"{_format_count(row['additional_tokens'])} | {_format_count(row['baseline_estimated_flops'])} | "
             f"{_format_count(row['estimated_flops'])} | {_format_count(row['additional_flops'])} | "
             f"{'yes' if row['same_question_identity'] else 'unverified'} |"
+        )
+    lines.extend([
+        "", "## RLVR gains versus SFT", "",
+        "A gain is measured only when both Experiment 11 evaluations are complete and their ordered module/question/target identities match. Positive values favor GRPO.",
+    ])
+    measured_gains = sum(item["status"] == "measured" for item in rlvr_gains)
+    lines.extend([
+        f"Measured RLVR gains: {measured_gains}/{len(rlvr_gains)} model/split comparisons; pending, failed, and identity-unverified cells do not imply a gain or loss.",
+        "", "| Model | Split | Status | GRPO minus SFT (pp) | Status detail |",
+        "|---|---|---|---:|---|",
+    ])
+    for item in rlvr_gains:
+        gain = item["grpo_minus_sft_percentage_points"]
+        gain_text = f"{gain:+.2f}" if gain is not None else "Missing"
+        lines.append(
+            f"| {item['model']} | {item['split']} | {item['status']} | {gain_text} | {item['reason']} |"
+        )
+    lines.extend([
+        "", "## GRPO informative-group rates", "",
+        "Informative groups are mixed-correctness rollout groups: at least one completion is correct and at least one is incorrect. This matches the nonzero binary-reward advantage criterion in the GRPO trainer. Rates are arithmetic means over logged updates.",
+        "", "| Model | Updates | Informative / mixed groups | All correct | All wrong |",
+        "|---|---:|---:|---:|---:|",
+    ])
+    for model, metrics in grpo_diagnostics.items():
+        informative = metrics["informative_group_rate"]
+        all_correct = metrics["all_correct_group_rate"]
+        all_wrong = metrics["all_wrong_group_rate"]
+        lines.append(
+            f"| {model} | {_format_count(metrics['updates'])} | "
+            f"{_exp11_accuracy(informative)} ({_format_count(metrics['informative_group_rate_updates'])} updates) | "
+            f"{_exp11_accuracy(all_correct)} | {_exp11_accuracy(all_wrong)} |"
+        )
+    lines.extend([
+        "", "## Endpoint sample efficiency", "",
+        "Exact ID test accuracy normalized by logged training tokens and estimated FLOPs. These endpoint ratios are descriptive; they are not learning-curve or causal efficiency estimates.",
+        "", "| Model | Arm | Exp11 status | Identity match | Baseline pp / 1M tokens | Exp11 pp / 1M tokens | Delta | Baseline pp / 1T FLOPs | Exp11 pp / 1T FLOPs | Delta |",
+        "|---|---|---|---|---:|---:|---:|---:|---:|---:|",
+    ])
+    for item in sample_efficiency:
+        def efficiency_cell(value: Any) -> str:
+            return f"{value:.4g}" if value is not None else "Missing"
+        lines.append(
+            f"| {item['model']} | {item['arm']} | {item['exp11_status']} | "
+            f"{'yes' if item['same_question_identity'] else 'unverified'} | "
+            f"{efficiency_cell(item['baseline_accuracy_pp_per_million_tokens'])} | "
+            f"{efficiency_cell(item['exp11_accuracy_pp_per_million_tokens'])} | "
+            f"{efficiency_cell(item['delta_accuracy_pp_per_million_tokens'])} | "
+            f"{efficiency_cell(item['baseline_accuracy_pp_per_trillion_flops'])} | "
+            f"{efficiency_cell(item['exp11_accuracy_pp_per_trillion_flops'])} | "
+            f"{efficiency_cell(item['delta_accuracy_pp_per_trillion_flops'])} |"
         )
     lines.extend([
         "", "## Approximate compute matching", "",
@@ -1315,6 +1606,27 @@ def make_exp11_report(
             f"| {model} | {arm} | {tracking_cell(row['training_wandb'])} | "
             f"{tracking_cell(row['evaluation_wandb'])} |"
         )
+    baseline_meta = report["baseline_provenance"]
+    lines.extend([
+        "", "## Frozen Experiment 10 baseline provenance", "",
+        f"- Snapshot: `{baseline_meta['snapshot_path']}`.",
+        f"- Snapshot SHA-256: `{baseline_meta['snapshot_sha256'] or 'unavailable'}`.",
+        f"- Frozen at UTC: `{baseline_meta['frozen_at_utc'] or 'unavailable'}`.",
+        f"- Canonical baseline: `{baseline_meta['canonical_name']}`.",
+        "", "| Model | Arm | W&B run ID | Mode / sync | Status | Checkpoint selector / step | Local metadata path |",
+        "|---|---|---|---|---|---|---|",
+    ])
+    for model, arm_map in sorted(baseline_meta["evaluation_wandb_runs"].items()):
+        for arm, provenance in sorted(arm_map.items()):
+            checkpoint = provenance.get("checkpoint_selector") or "Missing"
+            if provenance.get("checkpoint_step") is not None:
+                checkpoint += f" / {provenance['checkpoint_step']}"
+            lines.append(
+                f"| {model} | {arm} | {provenance.get('id', 'Missing')} | "
+                f"{provenance.get('mode', 'unknown')} / {provenance.get('sync_status', 'unknown')} | "
+                f"{provenance.get('run_status', 'unknown')} | {checkpoint} | "
+                f"`{provenance.get('path', 'Missing')}` |"
+            )
     lines.extend([
         "", "## Evaluation accuracy and format by module", "",
         "| Model | Arm | Split | Module | Examples | Accuracy | Format valid | Trace structure | Reference trace match |",
@@ -1356,5 +1668,10 @@ def make_exp11_report(
         "",
     ])
     markdown_path.write_text("\n".join(lines), encoding="utf-8")
-    figures = _exp11_charts(rows, output_dir)
+    figures = [
+        *_exp11_charts(rows, output_dir),
+        *_exp11_grpo_sample_efficiency_chart(
+            runs_dir=runs_dir, experiment=experiment, output_dir=output_dir, seed=seed
+        ),
+    ]
     return report, [markdown_path, report_path, csv_path, *figures]
