@@ -12,6 +12,8 @@ from typing import Any
 import numpy as np
 import torch
 
+from tinymath.config import WORKSPACE
+
 COMPATIBILITY_FIELDS = (
     "protocol",
     "annotation_sha256",
@@ -30,11 +32,11 @@ def compatibility_metadata(
     context_length: int,
 ) -> dict[str, Any]:
     """Build the immutable dataset/protocol identity stored in checkpoints."""
-    if protocol not in {"answer_only", "reasoning_v1", "reasoning_v2"}:
+    if protocol not in {"answer_only", "reasoning_v1", "reasoning_v2", "reasoning_v3"}:
         raise ValueError(f"Unsupported checkpoint protocol: {protocol}")
     if not tokenizer_sha256 or not bundle_sha256 or context_length < 1:
         raise ValueError("Checkpoint compatibility metadata is incomplete")
-    if protocol in {"reasoning_v1", "reasoning_v2"} and not annotation_sha256:
+    if protocol != "answer_only" and not annotation_sha256:
         raise ValueError("Reasoning checkpoints require an annotation identity")
     return {
         "protocol": protocol,
@@ -78,7 +80,7 @@ def validate_checkpoint_compatibility(
         raise ValueError("Checkpoint is missing required compatibility metadata")
     required_fields = (
         COMPATIBILITY_FIELDS
-        if expected["protocol"] in {"reasoning_v1", "reasoning_v2"}
+        if expected["protocol"] != "answer_only"
         else tuple(field for field in COMPATIBILITY_FIELDS if field != "annotation_sha256")
     )
     missing = [field for field in required_fields if field not in actual or actual[field] is None]
@@ -123,8 +125,8 @@ def restore_rng_state(state: dict[str, Any]) -> None:
 def save_checkpoint(path: str | Path, payload: dict[str, Any]) -> None:
     """Atomically save a resumable checkpoint under the workspace."""
     destination = Path(path).resolve()
-    if Path("/workspace") not in destination.parents:
-        raise ValueError("Checkpoint path must be inside /workspace")
+    if WORKSPACE not in destination.parents:
+        raise ValueError(f"Checkpoint path must be inside {WORKSPACE}")
     destination.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
     os.close(fd)

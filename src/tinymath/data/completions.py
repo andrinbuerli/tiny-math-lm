@@ -31,9 +31,13 @@ def parse_reasoning_completion(
     if any(token in (tokenizer.pad_id, tokenizer.bos_id, tokenizer.unk_id) for token in body):
         raise ValueError("Reasoning completion contains a reserved token outside its protocol")
     if tokenizer.protocol == "reasoning_v3":
+        if tokenizer.eos_id in body:
+            raise ValueError("Reasoning completion contains an interior EOS")
         rendered = tokenizer.decode(body)
         prefix, separator, suffix = rendered.partition("\n</scp>\nA: ")
-        if not separator or not prefix.startswith("<scp>\n") or prefix.count("<scp>") != 1:
+        if (not separator or not prefix.startswith("<scp>\n")
+                or rendered.count("<scp>") != 1 or rendered.count("</scp>") != 1
+                or "A:" in prefix):
             raise ValueError("reasoning_v3 completion needs one character-encoded scratchpad block")
         scratchpad = prefix[len("<scp>\n"):]
         answer = suffix
