@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import re
 from copy import deepcopy
 from fractions import Fraction
 
@@ -89,6 +90,11 @@ def test_multiplication_has_partial_products_zero_rows_and_golden_budget_reducti
     assert "M6789@2=8641500" in annotated["scratchpad"]
     assert "M6789@3=74070000" in annotated["scratchpad"]
     assert "t2=t1+p3=83810205" in annotated["scratchpad"]
+    assert "t2=t1+p3 ->" not in annotated["scratchpad"]
+    assert "t1=" in annotated["scratchpad"] and "p3=" in annotated["scratchpad"]
+    definitions = set(re.findall(r"(?m)^(?:t|p)\d+(?==)", annotated["scratchpad"]))
+    references = set(re.findall(r"\b(?:t|p)\d+\b", annotated["scratchpad"]))
+    assert references <= definitions
     assert annotated["collapsed_categories"] == {"addition": 1}
     assert (annotated["full_length"], annotated["retained_length"]) == (554, 480)
     zero = annotate_row(row("What is the product of 0 and 1559?", "0", "arithmetic__mul"))
