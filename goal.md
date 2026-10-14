@@ -36,3 +36,9 @@ Validation: 607,000 rows written and checked; 500,000 `sft_train`, 25,000 `sft_v
 W&B annotation run `e96ed0e74ca4078f` finished online and synced (`exit_code=0`): https://wandb.ai/andi-mueller-csem-sa/tinymath-rl/runs/e96ed0e74ca4078f. No training or evaluation jobs were started. The complete repository test suite still cannot collect because `/workspace/scripts/run_all.py` is absent; focused tests pass.
 
 Implementation commit: `6aa7243 feat(data): add forward reasoning v2 annotations`. Workspace-root fix and final status are recorded in the follow-up commit.
+
+## Linear trace completeness follow-up
+
+The first `reasoning_v2` bundle omitted the divide and substitution-verification steps from linear-equation traces. The converter now preserves the collect and move steps, shows division by the isolated coefficient, and keeps a nonnumeric verification step while suppressing the explicit solution and numeric substitution result. The corrected full-steps bundle is `data/processed/exp12_reasoning_forward_fullsteps_500k_100k-seed18`, generated as a separate Experiment 12 annotation run; the earlier bundle remains unchanged.
+
+W&B annotation run `83a858ec50c206f6` finished online and synced. It wrote and verified 607,000 rows with the original split counts and reasoning_v2 provenance. No model-training or evaluation runs were started.

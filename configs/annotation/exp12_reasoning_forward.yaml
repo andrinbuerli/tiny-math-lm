@@ -1,14 +1,14 @@
 # Experiment 12 corrected forward trace annotation. This is a data-only run.
-name: exp12_reasoning_forward_500k_100k
+name: exp12_reasoning_forward_fullsteps_500k_100k
 source_bundle: ${oc.env:WORKSPACE_ROOT,/workspace}/data/processed/d9f78d0665b3-main-seed18
-output_bundle: ${oc.env:WORKSPACE_ROOT,/workspace}/data/processed/exp12_reasoning_forward_500k_100k-seed18
+output_bundle: ${oc.env:WORKSPACE_ROOT,/workspace}/data/processed/exp12_reasoning_forward_fullsteps_500k_100k-seed18
 max_tokens: 512
 seed: 18
 protocol: reasoning_v2
 experiment:
   number: 12
-  name: exp12_reasoning_forward_500k_100k
-  title: "Experiment 12 — Forward derivation scratchpads, corrected annotation"
+  name: exp12_reasoning_forward_fullsteps_500k_100k
+  title: "Experiment 12 — Forward derivations with complete equation steps"
   phase: data-annotation
   protocol: reasoning_v2
   seed: 18
@@ -21,8 +21,8 @@ model:
 tracking:
   project: tinymath-rl
   entity: ${oc.env:WANDB_ENTITY,andi-mueller-csem-sa}
-  group: exp12-reasoning-forward-seed18
-  name: exp12-reasoning-forward-data-annotation-607000-rows-seed18
+  group: exp12-reasoning-forward-fullsteps-seed18
+  name: exp12-reasoning-forward-fullsteps-data-annotation-607000-rows-seed18
   mode: online
   tags: [exp12_reasoning_forward, data-annotation, reasoning_v2]
   resume: true
