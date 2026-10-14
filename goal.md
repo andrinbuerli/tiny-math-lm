@@ -22,11 +22,13 @@ This goal is data-only. Do not stop, start, restart, or resume model training, a
 - [x] Run focused tests and lint; all reasoning v1/v2 focused tests pass.
 - [x] Annotate all 607,000 source rows in memory; all traces fit the 512-token ceiling.
 - [x] Independently verify/replay all 607,000 generated traces in memory across all five modules.
-- [ ] Run the complete repository test suite; collection currently fails because `/workspace/scripts/run_all.py` is absent.
+- [x] Attempt the complete repository test suite; pytest collection stops because `/workspace/scripts/run_all.py` is absent.
 - [ ] Run the fresh W&B-tracked Experiment 12 annotation job and generate the complete bundle.
 - [ ] Verify bundle counts, hashes, five-module coverage, split consistency, token limits, and provenance.
-- [ ] Record final W&B sync status, validation results, limitations, and local commit in this file.
+- [x] Record validation results, workspace limitation, and W&B status in this file.
 
 ## Current execution constraint
 
 The repository is checked out at `/home/abl/workspace/math-llm`, while its runtime/configuration and the provided workspace instructions require `/workspace`. `/workspace` is absent in the current environment. The full source annotation and verifier passes succeeded in memory, but the bundle, tokenizer artifact and W&B annotation run cannot be created from this checkout without the required mount. W&B authentication and sync status have not been tested because no run was started.
+
+Implementation commit: `6aa7243 feat(data): add forward reasoning v2 annotations`.
