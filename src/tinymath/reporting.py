@@ -793,32 +793,62 @@ def _question_identity(path: Path) -> tuple[str | None, int]:
 
 
 def _exp11_result_path(
-    runs_dir: Path, experiment: str, model: str, arm: str, seed: int, selector: str | None = None
+    runs_dir: Path, experiment: str, model: str, arm: str, seed: int,
+    selector: str | None = None, expected_checkpoint: Path | None = None,
 ) -> Path | None:
     root = runs_dir / experiment / model / "evaluation" / arm
     if selector is not None:
-        direct = root / selector / f"seed{seed}" / "results.json"
-        if direct.is_file():
-            return direct
-        matches = sorted((root / selector).glob(f"*/seed{seed}/results.json"))
-        return matches[-1] if matches else None
-    matches = sorted(root.glob(f"*/*/seed{seed}/results.json"))
-    return matches[-1] if matches else None
+        search_root = root / selector
+        matches = [search_root / f"seed{seed}" / "results.json"]
+        matches.extend(sorted(search_root.glob(f"*/seed{seed}/results.json")))
+    else:
+        matches = sorted(root.glob(f"*/*/seed{seed}/results.json"))
+    for result_path in reversed(matches):
+        if not result_path.is_file():
+            continue
+        if expected_checkpoint is None or _evaluation_matches_checkpoint(
+            result_path.parent, expected_checkpoint
+        ):
+            return result_path
+    return None
+
+
+def _evaluation_matches_checkpoint(evaluation_dir: Path, checkpoint: Path) -> bool:
+    """Keep phase-specific pilot evaluations out of the main experiment rows."""
+    expected = checkpoint.resolve()
+    for filename in ("results.json", "resolved_config.json"):
+        value = _json_file(evaluation_dir / filename)
+        saved = value.get("checkpoint") if value else None
+        if saved:
+            try:
+                return Path(str(saved)).resolve() == expected
+            except (OSError, RuntimeError):
+                return False
+    return False
 
 
 def _exp11_eval_dir(
-    runs_dir: Path, experiment: str, model: str, arm: str, seed: int, selector: str | None
+    runs_dir: Path, experiment: str, model: str, arm: str, seed: int,
+    selector: str | None, expected_checkpoint: Path | None = None,
 ) -> Path:
     root = runs_dir / experiment / model / "evaluation" / arm
+    candidates: list[Path] = []
     if selector:
         selected = root / selector / f"seed{seed}"
-        if selected.exists():
-            return selected
-        candidates = sorted((root / selector).glob(f"*/seed{seed}"))
-        if candidates:
-            return candidates[-1]
-    candidates = sorted(root.glob(f"*/*/seed{seed}"))
-    return candidates[-1] if candidates else root / str(selector or "best") / f"seed{seed}"
+        candidates.append(selected)
+        candidates.extend(sorted((root / selector).glob(f"*/seed{seed}")))
+    else:
+        candidates.extend(sorted(root.glob(f"*/*/seed{seed}")))
+    if expected_checkpoint is not None:
+        candidates = [
+            path for path in candidates
+            if path.is_dir() and _evaluation_matches_checkpoint(path, expected_checkpoint)
+        ]
+    else:
+        candidates = [path for path in candidates if path.exists()]
+    if candidates:
+        return candidates[-1]
+    return root / str(selector or "best") / f"seed{seed}"
 
 
 def _exp11_selector(
@@ -954,9 +984,21 @@ def make_exp11_report(
                 baseline_runs_dir, baseline_name, model, arm, seed, baseline_selector
             )
             selector = EXP11_SELECTORS[arm]
+            main_checkpoint_name = "latest.pt" if arm == "grpo" else "best.pt"
+            main_checkpoint = (
+                runs_dir / experiment / model / arm / f"seed{seed}" / main_checkpoint_name
+            )
+            # Each main row is tied to the canonical full-run checkpoint path.
+            # This excludes smoke and pilot checkpoints even before the main
+            # checkpoint has been created.
+            expected_main_checkpoint = main_checkpoint
             exp_result_path = _exp11_result_path(
-                runs_dir, experiment, model, arm, seed, selector
-            ) or _exp11_result_path(runs_dir, experiment, model, arm, seed)
+                runs_dir, experiment, model, arm, seed, selector,
+                expected_checkpoint=expected_main_checkpoint,
+            ) or _exp11_result_path(
+                runs_dir, experiment, model, arm, seed,
+                expected_checkpoint=expected_main_checkpoint,
+            )
             if exp_result_path is not None:
                 result = _json_file(exp_result_path)
                 selector = exp_result_path.parents[1].name
@@ -987,8 +1029,19 @@ def make_exp11_report(
                 except (TypeError, ValueError):
                     return None
 
-            additional_tokens = numeric_delta(train_metrics.get("tokens_seen"), baseline_train_metrics.get("tokens_seen"))
-            additional_flops = numeric_delta(train_metrics.get("estimated_flops"), baseline_train_metrics.get("estimated_flops"))
+            step_key = "update" if arm == "grpo" else "optimizer_step"
+            update_matched = (
+                train_metrics.get(step_key) not in (None, "")
+                and train_metrics.get(step_key) == baseline_train_metrics.get(step_key)
+            )
+            additional_tokens = (
+                numeric_delta(train_metrics.get("tokens_seen"), baseline_train_metrics.get("tokens_seen"))
+                if update_matched else None
+            )
+            additional_flops = (
+                numeric_delta(train_metrics.get("estimated_flops"), baseline_train_metrics.get("estimated_flops"))
+                if update_matched else None
+            )
             for split in EXP11_SPLITS:
                 key = (model, arm, split)
                 baseline = baseline_records.get(key)
@@ -999,7 +1052,8 @@ def make_exp11_report(
                             baseline_runs_dir / baseline_name / model / "evaluation" / arm / str(baseline_selector or "") / f"seed{seed}")
                 base_id = _question_identity(base_dir / f"{split}_predictions.csv")
                 eval_root = exp_result_path.parent if exp_result_path else _exp11_eval_dir(
-                    runs_dir, experiment, model, arm, seed, selector
+                    runs_dir, experiment, model, arm, seed, selector,
+                    expected_checkpoint=expected_main_checkpoint,
                 )
                 expected = int(baseline.get("examples") or 0) if baseline else None
                 status, result, split_data = _exp11_state(exp_result_path, eval_root, split, expected)

@@ -82,6 +82,9 @@ def test_exp11_delta_requires_complete_same_question_identity(workspace_tmpdir):
         ],
     )
     runs = workspace_tmpdir / "runs"
+    main_checkpoint = runs / "exp11_reasoning_500k_100k" / "1m" / "sft" / "seed18" / "best.pt"
+    main_checkpoint.parent.mkdir(parents=True)
+    main_checkpoint.write_bytes(b"main")
     baseline_csv = (
         runs / "baseline" / "1m" / "evaluation" / "sft" / "best" / "seed18" / "test_predictions.csv"
     )
@@ -94,6 +97,7 @@ def test_exp11_delta_requires_complete_same_question_identity(workspace_tmpdir):
     (evaluation / "results.json").write_text(
         json.dumps(
             {
+                "checkpoint": str(main_checkpoint.resolve()),
                 "checkpoint_step": 4,
                 "splits": {
                     "test": {
@@ -145,9 +149,17 @@ def test_exp11_running_and_partial_states_are_visible(workspace_tmpdir):
     runs = workspace_tmpdir / "runs"
     running = runs / "exp11_reasoning_500k_100k" / "1m" / "evaluation" / "sft" / "best" / "seed18"
     running.mkdir(parents=True)
+    main_sft_checkpoint = runs / "exp11_reasoning_500k_100k" / "1m" / "sft" / "seed18" / "best.pt"
+    (running / "resolved_config.json").write_text(
+        json.dumps({"checkpoint": str(main_sft_checkpoint.resolve())}), encoding="utf-8"
+    )
     (running / "wandb_run.json").write_text(json.dumps({"run_status": "running"}), encoding="utf-8")
     partial = runs / "exp11_reasoning_500k_100k" / "10m" / "evaluation" / "grpo" / "latest" / "seed18"
     partial.mkdir(parents=True)
+    main_grpo_checkpoint = runs / "exp11_reasoning_500k_100k" / "10m" / "grpo" / "seed18" / "latest.pt"
+    (partial / "resolved_config.json").write_text(
+        json.dumps({"checkpoint": str(main_grpo_checkpoint.resolve())}), encoding="utf-8"
+    )
     (partial / "progress.json").write_text(
         json.dumps({"scored": {"test": [{"row_index": 0}]}}), encoding="utf-8"
     )
@@ -162,6 +174,55 @@ def test_exp11_running_and_partial_states_are_visible(workspace_tmpdir):
     states = {(row["model"], row["arm"], row["split"]): row["exp11_status"] for row in report["rows"]}
     assert states[("1m", "sft", "test")] == "running"
     assert states[("10m", "grpo", "test")] == "partial"
+
+
+def test_main_report_does_not_promote_pilot_evaluation(workspace_tmpdir):
+    baseline = _snapshot(workspace_tmpdir / "baseline.json")
+    runs = workspace_tmpdir / "runs"
+    main_checkpoint = (
+        runs / "exp11_reasoning_500k_100k" / "1m" / "sft" / "seed18" / "best.pt"
+    )
+    main_checkpoint.parent.mkdir(parents=True)
+    main_checkpoint.write_bytes(b"main")
+    (main_checkpoint.parent / "metrics.csv").write_text(
+        "optimizer_step,tokens_seen,estimated_flops\n10,100,1000\n", encoding="utf-8"
+    )
+    baseline_metrics = runs / "baseline" / "1m" / "sft" / "seed18" / "metrics.csv"
+    baseline_metrics.parent.mkdir(parents=True)
+    baseline_metrics.write_text(
+        "optimizer_step,tokens_seen,estimated_flops\n100,1000,10000\n", encoding="utf-8"
+    )
+    pilot_checkpoint = main_checkpoint.parent / "pilot-2000-examples-10-updates" / "seed18" / "best.pt"
+    pilot_checkpoint.parent.mkdir(parents=True)
+    pilot_checkpoint.write_bytes(b"pilot")
+    pilot_eval = (
+        runs / "exp11_reasoning_500k_100k" / "1m" / "evaluation" / "sft" / "best"
+        / "step10-pilot" / "seed18"
+    )
+    pilot_eval.mkdir(parents=True)
+    (pilot_eval / "resolved_config.json").write_text(
+        json.dumps({"checkpoint": str(pilot_checkpoint.resolve())}), encoding="utf-8"
+    )
+    (pilot_eval / "results.json").write_text(
+        json.dumps({"checkpoint": str(pilot_checkpoint.resolve()), "splits": {"test": {"examples": 20}}}),
+        encoding="utf-8",
+    )
+
+    report, _outputs = make_exp11_report(
+        runs_dir=runs,
+        output_dir=workspace_tmpdir / "reports",
+        baseline_snapshot=baseline,
+        baseline_runs_dir=runs,
+        annotation_bundle_dir=workspace_tmpdir / "annotation",
+    )
+    row = next(
+        row for row in report["rows"]
+        if (row["model"], row["arm"], row["split"]) == ("1m", "sft", "test")
+    )
+    assert row["exp11_status"] == "not-run"
+    assert row["examples"] is None
+    assert row["additional_tokens"] is None
+    assert row["additional_flops"] is None
 
 
 def test_exp11_report_measures_continued_sft_to_grpo_flop_ratio(workspace_tmpdir):
