@@ -125,7 +125,13 @@ def _compatible_with_runtime_extension(
     return saved_normalized == normalized
 
 
-def initialize_wandb(config: DictConfig, run_dir: str | Path, *, job_type: str) -> Any:
+def initialize_wandb(
+    config: DictConfig,
+    run_dir: str | Path,
+    *,
+    job_type: str,
+    job_metadata: dict[str, Any] | None = None,
+) -> Any:
     """Create or resume one W&B run, persisting its ID before initialization."""
     _configure_wandb_service_threads(config)
     import wandb
@@ -151,6 +157,30 @@ def initialize_wandb(config: DictConfig, run_dir: str | Path, *, job_type: str) 
         )
     config_path = persist_resolved_config(config, run_path)
     run_id = state.get("id") or secrets.token_hex(8)
+    from tinymath.tracking.naming import build_run_naming
+
+    job_metadata = dict(job_metadata or {})
+    experiment = config.get("experiment", {})
+    is_exp11 = int(experiment.get("number", 0) or 0) == 11
+    phase = str(job_metadata.get("phase", experiment.get("phase", "main")))
+    naming = build_run_naming(
+        config,
+        job_type=(phase if is_exp11 and phase in {"smoke", "pilot"} else job_type),
+        phase=phase,
+        model=str(job_metadata.get("model", config.model.name)),
+        arm=str(job_metadata.get("arm", job_metadata.get("source_arm", job_type))),
+        source_arm=job_metadata.get("source_arm"),
+        examples=job_metadata.get("examples"),
+        updates=job_metadata.get("updates"),
+        checkpoint_selector=job_metadata.get("checkpoint_selector"),
+        checkpoint_step=job_metadata.get("checkpoint_step"),
+        checkpoint_hash=job_metadata.get("checkpoint_hash"),
+    )
+    if state.get("identity") is not None and state["identity"] != naming:
+        raise TrackingError(
+            "This W&B run directory already has a different experiment identity; "
+            "resume with the original job metadata or choose a separate run directory."
+        )
     if mode != "offline" and not os.environ.get("WANDB_API_KEY"):
         raise TrackingError(
             "W&B online tracking requires WANDB_API_KEY in the environment or /workspace/.env; "
@@ -164,20 +194,22 @@ def initialize_wandb(config: DictConfig, run_dir: str | Path, *, job_type: str) 
             "mode": mode,
             "sync_status": "unsynced" if mode == "offline" else "pending",
             "run_status": "running",
+            "identity": naming,
         },
     )
     metadata = {
         "resolved_config_path": str(config_path),
         "protocol": "tinymath-r1",
         "resolved_config": sanitized_config(config),
+        "job_identity": naming.get("metadata", {}),
     }
     run = None
     try:
         run = wandb.init(
-            project=str(tracking.get("project", "tinymath-rl")),
+            project=str(naming["project"]),
             entity=tracking.get("entity"),
-            group=str(tracking.get("group", "default")),
-            name=str(tracking.get("name", run_id)),
+            group=str(naming["group"]),
+            name=str(naming["name"]),
             tags=list(tracking.get("tags", [])),
             mode=mode,
             id=run_id,
@@ -220,9 +252,15 @@ def initialize_wandb(config: DictConfig, run_dir: str | Path, *, job_type: str) 
         raise TrackingError(f"W&B initialization failed ({mode} mode): {message}") from None
 
 
-def initialize_tracked_run(config: DictConfig, run_dir: str | Path, *, job_type: str) -> Any:
+def initialize_tracked_run(
+    config: DictConfig,
+    run_dir: str | Path,
+    *,
+    job_type: str,
+    job_metadata: dict[str, Any] | None = None,
+) -> Any:
     """Start W&B before seeding CUDA, then seed before any training/evaluation work."""
-    run = initialize_wandb(config, run_dir, job_type=job_type)
+    run = initialize_wandb(config, run_dir, job_type=job_type, job_metadata=job_metadata)
     try:
         seed_everything(int(config.seed), cpu_threads=int(config.runtime.cpu_threads))
     except BaseException:

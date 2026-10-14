@@ -1,0 +1,40 @@
+# Experiment 11 reference annotation. This is a standalone Hydra config group
+# so annotation can be configured without changing legacy experiment defaults.
+name: exp11_reasoning_500k_100k
+source_bundle: /workspace/data/processed/d9f78d0665b3-main-seed18
+output_bundle: /workspace/data/processed/exp11_reasoning_500k_100k-seed18
+max_tokens: 512
+seed: 18
+protocol: reasoning_v1
+experiment:
+  number: 11
+  name: exp11_reasoning_500k_100k
+  title: "Experiment 11 — Compact handwritten reasoning, 500k examples, 100k updates"
+  baseline: restarted_100k_greedy_restart_2
+  lineage: restarted_100k_greedy_restart_2
+  phase: data-annotation
+  protocol: reasoning_v1
+  seed: 18
+  data_budget: 500000
+  annotation_rows: 607000
+  updates: 100000
+  context_length: 512
+model:
+  name: annotation
+  context_length: 512
+tracking:
+  project: tinymath-rl
+  entity: ${oc.env:WANDB_ENTITY,null}
+  group: exp11-reasoning-500k-100k-seed18
+  name: exp11-reasoning-500k-100k-data-annotation-seed18
+  mode: online
+  tags: [exp11_reasoning_500k_100k, data-annotation, reasoning_v1]
+  resume: true
+runtime:
+  wandb_service_gomaxprocs: 2
+hydra:
+  run:
+    dir: /workspace/outputs/${name}/annotation/seed${seed}
+  job:
+    chdir: false
+  output_subdir: hydra

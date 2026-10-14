@@ -8,8 +8,10 @@ import sys
 from pathlib import Path
 
 import hydra
+import torch
 from omegaconf import DictConfig
 
+from tinymath.checkpoint import sha256_file
 from tinymath.config import workspace_path
 from tinymath.data.load import SELECTED_MODULES
 from tinymath.eval.evaluate import evaluate_checkpoint
@@ -46,11 +48,33 @@ def main(config: DictConfig) -> None:
         raise FileNotFoundError(f"Evaluation checkpoint not found: {checkpoint}")
     bundle_dir = _bundle_dir(config)
     manifest = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
+    checkpoint_payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    checkpoint_step = int(checkpoint_payload.get("step", 0))
+    checkpoint_arm = str(
+        checkpoint_payload.get("training_arm")
+        or checkpoint_payload.get("stage")
+        or "unknown-arm"
+    )
+    checkpoint_selector = checkpoint.stem
+    checkpoint_hash = sha256_file(checkpoint)
     run_dir = workspace_path(
         "runs", str(config.experiment.name), str(config.model.name), "evaluation",
-        checkpoint.parent.parent.name, checkpoint.stem, f"seed{int(config.seed)}",
+        checkpoint.parent.parent.name, checkpoint.stem, checkpoint_hash[:12], f"seed{int(config.seed)}",
     )
-    run = initialize_tracked_run(config, run_dir, job_type="evaluation")
+    run = initialize_tracked_run(
+        config,
+        run_dir,
+        job_type="evaluation",
+        job_metadata={
+            "phase": "evaluation",
+            "model": str(config.model.name),
+            "arm": checkpoint_arm,
+            "source_arm": checkpoint_arm,
+            "checkpoint_selector": checkpoint_selector,
+            "checkpoint_step": checkpoint_step,
+            "checkpoint_hash": checkpoint_hash,
+        },
+    )
     try:
         run.config.update(
             {
@@ -58,6 +82,10 @@ def main(config: DictConfig) -> None:
                 "split_manifest_sha256": manifest["split_manifest_sha256"],
                 "tokenizer_sha256": manifest["tokenizer"]["sha256"],
                 "evaluated_checkpoint": str(checkpoint),
+                "evaluated_checkpoint_sha256": checkpoint_hash,
+                "protocol": manifest.get("annotation", {}).get("protocol", "answer_only"),
+                "annotation_sha256": manifest.get("annotation", {}).get("annotation_sha256"),
+                "bundle_sha256": sha256_file(bundle_dir / "manifest.json"),
                 "evaluation_splits": list(config.eval.splits),
                 "source_training_run_dir": str(checkpoint.parent),
                 "source_training_wandb_run_id": read_wandb_run_id(checkpoint.parent),
@@ -89,6 +117,10 @@ def main(config: DictConfig) -> None:
                 ),
                 "checkpoint_step": summary["checkpoint_step"],
                 "model_parameters": summary["model_parameters"],
+                "protocol": summary["protocol"],
+                "annotation_sha256": summary["annotation_sha256"],
+                "bundle_sha256": summary["bundle_sha256"],
+                "checkpoint_sha256": summary["checkpoint_sha256"],
             },
             allow_val_change=True,
         )

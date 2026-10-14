@@ -222,6 +222,46 @@ def test_wandb_offline_initialization_reuses_id(workspace_tmpdir, monkeypatch):
         tracking.initialize_wandb(config, workspace_tmpdir, job_type="unit")
 
 
+def test_exp11_wandb_uses_canonical_group_and_training_name(workspace_tmpdir, monkeypatch):
+    captured = []
+
+    class FakeRun:
+        id = "stable-run"
+        settings = types.SimpleNamespace(mode="offline")
+
+        def __init__(self):
+            self.summary = {}
+            self.config = types.SimpleNamespace(update=lambda *_args, **_kwargs: None)
+
+        def finish(self, *, exit_code=None):
+            self.exit_code = exit_code
+
+    monkeypatch.setitem(
+        sys.modules,
+        "wandb",
+        types.SimpleNamespace(
+            Settings=lambda **kwargs: kwargs,
+            errors=types.SimpleNamespace(Error=RuntimeError),
+            init=lambda **kwargs: captured.append(kwargs) or FakeRun(),
+        ),
+    )
+    monkeypatch.setattr(tracking, "_load_workspace_credentials", lambda: None)
+    with initialize_config_dir(version_base="1.3", config_dir="/workspace/configs"):
+        config = compose(
+            config_name="config",
+            overrides=["experiment=11_reasoning_500k_100k", "model=10m", "tracking.mode=offline"],
+        )
+
+    run_dir = workspace_tmpdir / "exp11-grpo"
+    tracking.initialize_wandb(config, run_dir, job_type="grpo", job_metadata={"phase": "main"})
+
+    assert captured[0]["project"] == "tinymath-rl"
+    assert captured[0]["group"] == "exp11-reasoning-500k-100k-seed18"
+    assert captured[0]["name"] == "exp11-reasoning-500k-100k-main-10m-grpo-seed18"
+    state = json.loads((run_dir / "wandb_run.json").read_text())
+    assert state["identity"]["name"] == captured[0]["name"]
+
+
 def test_online_sync_status_requires_successful_finish(workspace_tmpdir):
     class FakeRun:
         id = "online-run"
@@ -460,7 +500,10 @@ def test_tracked_run_initializes_wandb_before_seeding_and_finishes_on_seed_error
     monkeypatch.setattr(
         tracking,
         "initialize_wandb",
-        lambda current, run_dir, *, job_type: events.append(("wandb", job_type)) or run,
+        lambda current, run_dir, *, job_type, job_metadata=None: events.append(
+            ("wandb", job_type, job_metadata)
+        )
+        or run,
     )
     monkeypatch.setattr(
         tracking,
@@ -468,7 +511,7 @@ def test_tracked_run_initializes_wandb_before_seeding_and_finishes_on_seed_error
         lambda seed, *, cpu_threads: events.append(("seed", seed, cpu_threads)),
     )
     assert tracking.initialize_tracked_run(config, "/tmp/run", job_type="unit") is run
-    assert events == [("wandb", "unit"), ("seed", 29, 1)]
+    assert events == [("wandb", "unit", None), ("seed", 29, 1)]
 
     events.clear()
 
@@ -484,4 +527,4 @@ def test_tracked_run_initializes_wandb_before_seeding_and_finishes_on_seed_error
     )
     with pytest.raises(RuntimeError, match="seeding failed"):
         tracking.initialize_tracked_run(config, "/tmp/run", job_type="unit")
-    assert events == [("wandb", "unit"), ("seed", 29, 1), ("finish", 1)]
+    assert events == [("wandb", "unit", None), ("seed", 29, 1), ("finish", 1)]

@@ -1,0 +1,37 @@
+# @package _global_
+# Experiment 11 — compact handwritten reasoning with 500k examples and 100k updates.
+# Origin: add verified handwritten traces to the Experiment 10 source bundle and compare all three training arms at matched updates.
+experiment:
+  number: 11
+  name: exp11_reasoning_500k_100k
+  title: "Experiment 11 — Compact handwritten reasoning, 500k examples, 100k updates"
+  baseline: restarted_100k_greedy_restart_2
+  lineage: restarted_100k_greedy_restart_2
+  protocol: reasoning_v1
+  seed: 18
+  source_bundle: data/processed/d9f78d0665b3-main-seed18
+  data_budget: 500000
+  ood_examples_per_module: 1000
+  validation_examples: 25000
+  rlvr_examples: 25000
+  test_examples: 50000
+  ood_number_length_examples: 5000
+  ood_expression_length_examples: 2000
+  annotation_rows: 607000
+  context_length: 512
+  updates: 100000
+  max_steps: 100000
+  run_optimization: true
+seed: 18
+data_bundle: data/processed/exp11_reasoning_500k_100k-seed18
+
+# The root model group is composed before this experiment config, so this
+# override applies uniformly to 1m, 10m, and 100m model choices.
+model:
+  context_length: 512
+
+data:
+  context_length: 512
+
+rlvr:
+  max_completion_tokens: 512
