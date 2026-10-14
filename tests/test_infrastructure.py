@@ -160,7 +160,16 @@ def test_experiment_presets_are_contiguously_numbered_and_documented():
         numbered_presets.append((int(match.group("number")), path.name))
 
     numbers = [number for number, _ in sorted(numbered_presets)]
-    assert numbers == list(range(1, len(numbered_presets) + 1))
+    annotation_dir = experiment_dir.parent / "annotation"
+    annotation_only_numbers = {
+        int(config.experiment.number)
+        for path in annotation_dir.glob("*.yaml")
+        if (config := OmegaConf.load(path)).get("experiment")
+        and config.experiment.get("number") is not None
+        and not any(experiment_dir.glob(f"{int(config.experiment.number):02d}_*.yaml"))
+    }
+    expected = [number for number in range(1, max(numbers) + 1) if number not in annotation_only_numbers]
+    assert numbers == expected
 
 
 def test_resolved_config_is_sanitized_and_saved(workspace_tmpdir):

@@ -37,3 +37,19 @@ def test_orchestrator_emits_hydra_valid_mapping_overrides_and_pilot_budgets():
     assert "experiment.max_steps=10" in values
     assert "runtime.parallel_model_vram_gb={1m:1,10m:3,100m:8}" in values
     assert "tracking.mode=\"offline\"" in values
+
+
+def test_orchestrator_propagates_reasoning_v3_rollout_to_child_runs():
+    with initialize_config_dir(version_base="1.3", config_dir=str(Path(__file__).resolve().parents[1] / "configs")):
+        config = compose(
+            config_name="reasoning_v3",
+            overrides=["experiment=13_reasoning_v3_arithmetic_subtasks"],
+        )
+    values = run_all._overrides(
+        config,
+        model="10m",
+        trainer="grpo",
+        experiment_choice="13_reasoning_v3_arithmetic_subtasks",
+    )
+    assert 'rollout.executor="exact"' in values
+    assert "rollout.token_accounting=\"transcript_includes_executor_v1\"" in values

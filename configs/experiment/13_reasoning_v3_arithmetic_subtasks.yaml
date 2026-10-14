@@ -1,6 +1,9 @@
 # @package _global_
-# Experiment 13 — compare SFT, GRPO/RLVR, and continued-SFT with the
-# reasoning-v3 arithmetic and subtask bundle.
+# Experiment 13 — reasoning-v3 arithmetic subtask comparison
+# Origin: compare SFT, GRPO/RLVR, and continued-SFT on the reasoning-v3 bundle.
+defaults:
+  - override /rollout: v3_exact
+
 experiment:
   number: 13
   name: exp13_reasoning_v3_arithmetic_subtasks
