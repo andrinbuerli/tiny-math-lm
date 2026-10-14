@@ -63,8 +63,23 @@ Update this file as work proceeds. At completion record:
 
 ## Status
 
-- [ ] Verify repository instructions, current worktree, active jobs, W&B state, and the requested reasoning-v3 bundle.
-- [ ] Verify baseline and reasoning evaluation identity/question overlap.
+- [x] Verify repository instructions, current worktree, active jobs, W&B state, and the requested reasoning-v3 bundle.
+- [x] Verify baseline and reasoning evaluation identity/question overlap.
 - [ ] Complete required evaluations or record exact blockers and statuses.
 - [ ] Generate and validate the comparison report, CSV/JSON results, and required charts.
 - [ ] Record tests, W&B sync, provenance, limitations, local commits, and final working-tree state here.
+
+## Progress record (2026-10-14 19:52 UTC)
+
+- No TinyMath experiment processes were active during the initial process inspection, so no old-format run was stopped. No Experiment 13 model checkpoints or evaluation outputs existed before the new launch. Historical Experiment 11 files were left untouched.
+- The RTX 4090 was initially idle (0% utilization, 41 MiB used). All three Experiment 13 SFT runs have since started concurrently under the orchestrator's GPU utilization/VRAM gate. Current observed steps: 1M 699, 10M 99, 100M 399; the counters will advance while the runs continue.
+- W&B project/entity: `andi-mueller-csem-sa/tinymath-rl`; online auth verified without exposing credentials. Training runs are active and currently have pending live sync state:
+  - 1M SFT: run `a93c5a0c07a37bbb`, [W&B run](https://wandb.ai/andi-mueller-csem-sa/tinymath-rl/runs/a93c5a0c07a37bbb).
+  - 10M SFT: run `acd0e19f9cbab401`, [W&B run](https://wandb.ai/andi-mueller-csem-sa/tinymath-rl/runs/acd0e19f9cbab401).
+  - 100M SFT: run `1fbcb5d43712cbaa`, [W&B run](https://wandb.ai/andi-mueller-csem-sa/tinymath-rl/runs/1fbcb5d43712cbaa).
+- Frozen baseline snapshot: `baselines/exp10_restarted_100k_greedy_restart_2/seed18/snapshot.json`; 27 baseline measurements are available. For each of the 3 splits, parent rows in the reasoning-v3 bundle match all 9 baseline prediction-file identities exactly: 50,000 `test`, 5,000 `number_length_ood`, and 2,000 `expression_length_ood`. Standalone subtask rows are excluded by the evaluator’s parent-only population.
+- Bundle: `data/processed/exp13_reasoning_v3_arithmetic_subtasks-seed18`; manifest SHA256 `d13993417ebdaa0e75665f1aac6d2e2c45e7f8c27564a198b65344e3ea9665d5`; protocol `reasoning_v3`; annotation SHA256 `bc53869610e445a67022140a5c984d6b3d2e43467ae165b7109f3d5207f9c0aa`.
+- A first orchestrator attempt exited during Hydra composition because the Experiment 13 config omitted `ood_examples_per_module`; it created no training W&B run or checkpoint. The config was fixed and child composition revalidated before the successful launch.
+- Partial report artifacts have been generated under `reports/exp13_reasoning_v3_arithmetic_subtasks/seed18/`: `intermediate_results.md`, `comparison.csv`, `comparison.json`, and `accuracy_comparison.png/.svg`. All 27 rows currently have baseline scores and `not-run` reasoning status because training/evaluation has not completed. The comparison W&B run is online and synced at `6e13b3b7addee8be`; its available-evaluation summary is corrected to 0.
+- Targeted validation: `uv run --locked pytest tests/test_exp13_reporting.py tests/test_exp11_reporting.py tests/test_reporting.py -q` — 15 passed. Hydra composition was checked for `run_all.py` and `plot.py`; `git diff --check` passed before implementation commits.
+- Implementation commits: `ec25586` adds the Experiment 13 Hydra preset; `b4b5b45` fixes its child-config OOD field; `c327c4e` adds the comparison report and tests. Latest observed unrelated untracked files remain `.devcontainer/`, `AGENTS.md`, and `IMPLEMENTATION_PLAN.md`.
