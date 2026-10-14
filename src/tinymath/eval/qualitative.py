@@ -32,6 +32,26 @@ def _selected_rows(
     return selected
 
 
+def _predicted_scratchpad(
+    generated: Sequence[int], tokenizer: CharacterTokenizer
+) -> str:
+    """Return generated scratchpad text for inspection, even when parsing fails."""
+    if tokenizer.protocol != "reasoning_v1":
+        return ""
+    try:
+        start = generated.index(tokenizer.scp_id)
+    except ValueError:
+        return ""
+    try:
+        end = generated.index(tokenizer.scp_end_id, start + 1)
+    except ValueError:
+        end = next(
+            (index for index in range(start + 1, len(generated)) if generated[index] == tokenizer.eos_id),
+            len(generated),
+        )
+    return tokenizer.decode(generated[start + 1 : end], skip_special=True).strip()
+
+
 @torch.no_grad()
 def build_qualitative_table(
     *,
@@ -86,12 +106,12 @@ def build_qualitative_table(
                 if tokenizer.eos_id in generated:
                     generated = generated[: generated.index(tokenizer.eos_id) + 1]
                 completion = tokenizer.decode(generated, skip_special=True).strip()
-                trace = ""
+                predicted_scratchpad = _predicted_scratchpad(generated, tokenizer)
                 trace_structure_valid: bool | None = None
                 if tokenizer.protocol == "reasoning_v1":
                     try:
                         parsed = parse_reasoning_completion(generated, tokenizer)
-                        trace = parsed.scratchpad
+                        predicted_scratchpad = parsed.scratchpad
                         prediction = parsed.answer
                         correct, valid = verify_answer(
                             prediction, example["answer"], question=example["question"]
@@ -100,6 +120,7 @@ def build_qualitative_table(
                     except ValueError:
                         prediction = ""
                         correct, valid = False, False
+                        trace_structure_valid = False
                 else:
                     prediction = completion
                     correct, valid = verify_answer(
@@ -118,7 +139,7 @@ def build_qualitative_table(
                         example["answer"],
                         prediction,
                         completion,
-                        trace,
+                        predicted_scratchpad,
                         trace_structure_valid,
                         correct,
                         valid,
@@ -144,7 +165,7 @@ def build_qualitative_table(
             "target",
             "prediction",
             "completion",
-            "scratchpad",
+            "predicted_scratchpad",
             "trace_structure_valid",
             "correct",
             "format_valid",

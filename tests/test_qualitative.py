@@ -96,7 +96,7 @@ def test_qualitative_table_covers_each_split_and_balances_modules(monkeypatch):
     table = run.logs[0][0]["qualitative/examples"]
     assert set(table.columns) == {
         "training_arm", "seed", "split", "module", "question", "target",
-        "prediction", "completion", "scratchpad", "trace_structure_valid",
+        "prediction", "completion", "predicted_scratchpad", "trace_structure_valid",
         "correct", "format_valid", "output_tokens", "capped",
     }
     assert {row[2] for row in table.data} == {"train", "validation", "test"}
@@ -155,3 +155,49 @@ def test_reasoning_qualitative_uses_unprefixed_prompt_and_full_context_cap(monke
     assert all(prompt == "Q: 1 + 1\n" for prompt, _cap in observed)
     assert all(cap == 64 - len(tokenizer.encode("Q: 1 + 1\n", add_bos=True)) for _, cap in observed)
     assert table.data[0][8] == trace
+
+
+def test_reasoning_qualitative_retains_predicted_scratchpad_when_answer_is_malformed(monkeypatch):
+    rows = {
+        split: [{"question": "1 + 1", "answer": "2", "module": "arithmetic__add_or_sub"}]
+        for split in ("train", "validation", "test")
+    }
+    trace = "+(1,1)\n1,1,0:2,0"
+    tokenizer = CharacterTokenizer.from_texts(
+        ["Q: 1 + 1\n", trace, "\nA: nope"], protocol="reasoning_v1"
+    )
+
+    class FixedModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.anchor = torch.nn.Parameter(torch.zeros(()))
+            self.config = types.SimpleNamespace(context_length=64)
+
+        def generate(self, input_ids, **_kwargs):
+            malformed = (
+                [tokenizer.scp_id]
+                + tokenizer.encode("\n" + trace + "\n")
+                + [tokenizer.scp_end_id]
+                + tokenizer.encode("\nA: nope")
+                + [tokenizer.eos_id]
+            )
+            return torch.cat(
+                (input_ids, torch.tensor([malformed], device=input_ids.device)), dim=1
+            )
+
+    class Table:
+        def __init__(self, *, columns, data):
+            self.columns = columns
+            self.data = data
+
+    monkeypatch.setitem(sys.modules, "wandb", types.SimpleNamespace(Table=Table))
+    table, count, _accuracy = build_qualitative_table(
+        model=FixedModel(), tokenizer=tokenizer, split_rows=rows, training_arm="sft",
+        seed=18, max_new_tokens=128, examples_per_module=1,
+    )
+
+    assert count == 3
+    scratchpad_column = table.columns.index("predicted_scratchpad")
+    validity_column = table.columns.index("trace_structure_valid")
+    assert all(row[scratchpad_column] == trace for row in table.data)
+    assert all(row[validity_column] is False for row in table.data)
