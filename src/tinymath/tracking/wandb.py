@@ -85,6 +85,15 @@ def _compatible_with_runtime_extension(
     normalized = copy.deepcopy(current)
     saved_normalized = copy.deepcopy(saved)
 
+    # Tracking mode changes do not alter the experiment or its checkpoint.
+    # This permits an exact resume to move an offline run online (or vice
+    # versa) while keeping the same local W&B identity and scientific config.
+    saved_tracking = saved_normalized.get("tracking", {})
+    current_tracking = normalized.get("tracking", {})
+    if "mode" in saved_tracking and "mode" in current_tracking:
+        saved_tracking.pop("mode")
+        current_tracking.pop("mode")
+
     # This group was added to cap thread usage on resume. It does not change the
     # model, batches, optimizer, or objective.
     if "runtime" not in saved_normalized and "runtime" in normalized:
