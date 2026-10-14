@@ -45,27 +45,30 @@ def _bundle_dir(config: DictConfig) -> tuple[Path, dict[str, Any]]:
 def main(config: DictConfig) -> None:
     seed_everything(int(config.seed), cpu_threads=int(config.runtime.cpu_threads))
     bundle_dir, manifest = _bundle_dir(config)
+    checkpoint_override = config.get("checkpoint")
     if config.trainer.name == "continued_sft":
         stage = "continued_sft"
-        training_split = "sft_train"
-        checkpoint_path = workspace_path(
+        default_checkpoint_path = workspace_path(
             "runs", config.experiment.name, config.model.name, stage,
             f"seed{int(config.seed)}", "best.pt",
         )
     elif config.init_checkpoint:
         stage = "grpo"
-        training_split = "rlvr"
-        checkpoint_path = workspace_path(
+        default_checkpoint_path = workspace_path(
             "runs", config.experiment.name, config.model.name, stage,
             f"seed{int(config.seed)}", "latest.pt",
         )
     else:
         stage = "sft"
-        training_split = "sft_train"
-        checkpoint_path = workspace_path(
+        default_checkpoint_path = workspace_path(
             "runs", config.experiment.name, config.model.name, stage,
             f"seed{int(config.seed)}", "best.pt",
         )
+    checkpoint_path = (
+        workspace_path(str(checkpoint_override))
+        if checkpoint_override else default_checkpoint_path
+    )
+    training_split = "rlvr" if stage == "grpo" else "sft_train"
     if not checkpoint_path.is_file():
         raise FileNotFoundError(f"Training checkpoint not found: {checkpoint_path}")
     run_dir = checkpoint_path.parent
