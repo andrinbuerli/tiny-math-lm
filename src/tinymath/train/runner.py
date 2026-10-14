@@ -165,6 +165,7 @@ def train_sft(
     examples_drawn = 0
     nonpadding_input_tokens = 0
     supervised_tokens = 0
+    source_sft_tokens_seen = 0
     source_sft_checkpoint: str | None = None
     data_generator = torch.Generator(device="cpu").manual_seed(int(config.seed))
     if init_checkpoint is not None:
@@ -181,6 +182,11 @@ def train_sft(
         is_continuation = str(config.trainer.name) == "continued_sft"
         if is_continuation:
             source_sft_checkpoint = str(init_checkpoint.resolve())
+            source_sft_tokens_seen = int(
+                payload.get("source_sft_tokens_seen", 0)
+                if payload.get("training_arm") == "continued_sft"
+                else payload.get("tokens_seen", 0)
+            )
             if latest_path.exists():
                 resume_payload = torch.load(latest_path, map_location="cpu", weights_only=False)
                 if resume_payload.get("tokenizer_sha256") != tokenizer.sha256:
@@ -207,6 +213,9 @@ def train_sft(
                 examples_drawn = int(resume_payload.get("examples_drawn", 0))
                 nonpadding_input_tokens = int(resume_payload.get("nonpadding_input_tokens", 0))
                 supervised_tokens = int(resume_payload.get("supervised_tokens", 0))
+                source_sft_tokens_seen = int(
+                    resume_payload.get("source_sft_tokens_seen", source_sft_tokens_seen)
+                )
                 best_val = float(resume_payload.get("best_val_loss", math.inf))
                 best_val = _latest_best_val(run_dir, best_val)
                 restore_rng_state(resume_payload["rng_state"])
@@ -220,6 +229,7 @@ def train_sft(
             examples_drawn = int(payload.get("examples_drawn", 0))
             nonpadding_input_tokens = int(payload.get("nonpadding_input_tokens", 0))
             supervised_tokens = int(payload.get("supervised_tokens", 0))
+            source_sft_tokens_seen = int(payload.get("source_sft_tokens_seen", 0))
             best_val = float(payload.get("best_val_loss", math.inf))
             source_sft_checkpoint = payload.get("source_sft_checkpoint")
             if payload.get("rng_state"):
@@ -241,6 +251,7 @@ def train_sft(
         examples_drawn = int(payload.get("examples_drawn", 0))
         nonpadding_input_tokens = int(payload.get("nonpadding_input_tokens", 0))
         supervised_tokens = int(payload.get("supervised_tokens", 0))
+        source_sft_tokens_seen = int(payload.get("source_sft_tokens_seen", 0))
         best_val = float(payload.get("best_val_loss", math.inf))
         best_val = _latest_best_val(run_dir, best_val)
         source_sft_checkpoint = payload.get("source_sft_checkpoint")
@@ -259,7 +270,7 @@ def train_sft(
         fieldnames=[
             "optimizer_step", "train/loss", "val/loss", "learning_rate", "tokens_seen",
             "examples_drawn", "nonpadding_input_tokens", "padded_compute_positions",
-            "supervised_tokens",
+            "supervised_tokens", "additional_estimated_flops",
             "tokens_per_second", "estimated_flops", "wall_seconds", "train/greedy_accuracy",
             "val/greedy_accuracy", "test/greedy_accuracy",
         ],
@@ -345,6 +356,7 @@ def train_sft(
                         examples_drawn=examples_drawn,
                         nonpadding_input_tokens=nonpadding_input_tokens,
                         supervised_tokens=supervised_tokens,
+                        source_sft_tokens_seen=source_sft_tokens_seen,
                         best_val=best_val,
                         tokenizer=tokenizer,
                         model_config=model_config,
@@ -366,6 +378,9 @@ def train_sft(
                 "supervised_tokens": supervised_tokens,
                 "tokens_per_second": tokens_seen / max(1e-9, elapsed),
                 "estimated_flops": 6 * model.count_parameters() * tokens_seen,
+                "additional_estimated_flops": (
+                    6 * model.count_parameters() * max(0, tokens_seen - source_sft_tokens_seen)
+                ),
                 "wall_seconds": elapsed,
             }
             values = {
@@ -381,6 +396,9 @@ def train_sft(
                 "train/wall_seconds": elapsed,
                 "train/tokens_per_second": tokens_seen / max(1e-9, elapsed),
                 "train/estimated_flops": 6 * model.count_parameters() * tokens_seen,
+                "train/additional_estimated_flops": (
+                    6 * model.count_parameters() * max(0, tokens_seen - source_sft_tokens_seen)
+                ),
             }
             if val_loss is not None:
                 values["val/loss"] = val_loss
@@ -396,6 +414,7 @@ def train_sft(
                     examples_drawn=examples_drawn,
                     nonpadding_input_tokens=nonpadding_input_tokens,
                     supervised_tokens=supervised_tokens,
+                    source_sft_tokens_seen=source_sft_tokens_seen,
                     best_val=best_val,
                     tokenizer=tokenizer,
                     model_config=model_config,
@@ -463,6 +482,9 @@ def train_sft(
         "nonpadding_input_tokens": nonpadding_input_tokens,
         "padded_compute_positions": tokens_seen,
         "supervised_tokens": supervised_tokens,
+        "additional_estimated_flops": (
+            6 * model.count_parameters() * max(0, tokens_seen - source_sft_tokens_seen)
+        ),
         "training_examples": len(train_examples),
         "best_validation_loss": best_val,
         "metrics_path": str(metrics_path),
@@ -484,6 +506,7 @@ def _save_state(
     examples_drawn: int,
     nonpadding_input_tokens: int,
     supervised_tokens: int,
+    source_sft_tokens_seen: int,
     best_val: float,
     tokenizer: CharacterTokenizer,
     model_config: GPTConfig,
@@ -503,6 +526,7 @@ def _save_state(
             "nonpadding_input_tokens": nonpadding_input_tokens,
             "padded_compute_positions": tokens_seen,
             "supervised_tokens": supervised_tokens,
+            "source_sft_tokens_seen": source_sft_tokens_seen,
             "best_val_loss": best_val,
             "rng_state": capture_rng_state(),
             "data_generator_state": data_generator_state,

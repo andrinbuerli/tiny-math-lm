@@ -276,6 +276,10 @@ def test_continued_sft_resumes_its_own_checkpoint_and_records_source(workspace_t
     assert first["step"] == first_payload["step"] == 2
     assert first_payload["training_arm"] == "continued_sft"
     assert first_payload["source_sft_checkpoint"] == str(source_checkpoint)
+    assert first_payload["source_sft_tokens_seen"] == source_result["tokens_seen"]
+    assert first["additional_estimated_flops"] == 6 * first["parameters"] * (
+        first["tokens_seen"] - source_result["tokens_seen"]
+    )
 
     config.trainer.max_steps = 3
     resumed = train_sft(
@@ -288,5 +292,13 @@ def test_continued_sft_resumes_its_own_checkpoint_and_records_source(workspace_t
     resumed_payload = torch.load(resumed["checkpoint"], map_location="cpu", weights_only=False)
     assert resumed["step"] == resumed_payload["step"] == 3
     assert resumed_payload["source_sft_checkpoint"] == str(source_checkpoint)
+    assert resumed_payload["source_sft_tokens_seen"] == source_result["tokens_seen"]
+    assert resumed["additional_estimated_flops"] == 6 * resumed["parameters"] * (
+        resumed["tokens_seen"] - source_result["tokens_seen"]
+    )
     with Path(resumed["metrics_path"]).open(encoding="utf-8") as handle:
-        assert [int(row["optimizer_step"]) for row in csv.DictReader(handle)] == [1, 2, 3]
+        rows = list(csv.DictReader(handle))
+        assert [int(row["optimizer_step"]) for row in rows] == [1, 2, 3]
+        assert int(float(rows[-1]["additional_estimated_flops"])) == resumed[
+            "additional_estimated_flops"
+        ]

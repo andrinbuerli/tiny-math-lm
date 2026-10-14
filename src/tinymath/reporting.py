@@ -946,6 +946,7 @@ def make_exp11_report(
     }
     rows: list[dict[str, Any]] = []
     raw_results: dict[tuple[str, str], tuple[Path | None, dict[str, Any] | None]] = {}
+    training_metrics_by_arm: dict[tuple[str, str], dict[str, str]] = {}
     for model in MODELS:
         for arm in ARMS:
             baseline_selector = _exp11_selector(snapshot, model, arm, baseline_name)
@@ -967,6 +968,7 @@ def make_exp11_report(
                 arm,
                 (result or {}).get("checkpoint_step"),
             )
+            training_metrics_by_arm[(model, arm)] = train_metrics
             baseline_record_for_training = next(
                 (baseline_records.get((model, arm, split_name)) for split_name in EXP11_SPLITS
                  if baseline_records.get((model, arm, split_name)) is not None),
@@ -1110,13 +1112,52 @@ def make_exp11_report(
                         reference_matches / reference_scored if reference_scored else None
                     ),
                 }
+    compute_matching = {}
+    for model in MODELS:
+        grpo_metrics = training_metrics_by_arm.get((model, "grpo"), {})
+        control_metrics = training_metrics_by_arm.get((model, "continued_sft"), {})
+        sft_metrics = training_metrics_by_arm.get((model, "sft"), {})
+        try:
+            grpo_flops = float(grpo_metrics.get("estimated_flops", ""))
+            control_flops = float(control_metrics.get("estimated_flops", ""))
+            control_additional_flops = float(
+                control_metrics.get("additional_estimated_flops", "")
+            )
+        except (TypeError, ValueError):
+            grpo_flops = control_flops = control_additional_flops = 0.0
+        if control_additional_flops <= 0 and control_flops > 0:
+            try:
+                source_sft_flops = float(sft_metrics.get("estimated_flops", ""))
+            except (TypeError, ValueError):
+                source_sft_flops = 0.0
+            control_additional_flops = max(0.0, control_flops - source_sft_flops)
+        ratio = (
+            control_additional_flops / grpo_flops
+            if grpo_flops > 0 and control_additional_flops > 0 else None
+        )
+        grpo_step_key = "update"
+        control_step_key = "optimizer_step"
+        compute_matching[model] = {
+            "grpo_step": grpo_metrics.get(grpo_step_key),
+            "grpo_estimated_flops": grpo_flops if grpo_flops > 0 else None,
+            "continued_sft_step": control_metrics.get(control_step_key),
+            "continued_sft_total_estimated_flops": control_flops if control_flops > 0 else None,
+            "continued_sft_additional_estimated_flops": (
+                control_additional_flops if control_additional_flops > 0 else None
+            ),
+            "continued_sft_to_grpo_flop_ratio": ratio,
+            "status": "measured" if ratio is not None else "pending",
+        }
+
     report = {
         "experiment": experiment, "seed": seed,
         "baseline_snapshot": str(baseline_snapshot),
         "row_count": len(rows), "rows": rows, "diagnostics": diagnostics,
+        "compute_matching": compute_matching,
         "statuses": list(EXP11_STATUS),
         "limitations": [
             "Training token counts and FLOPs are read from the latest checkpoint-aligned metric row when available; FLOPs are dense-position estimates, not hardware counters.",
+            "Continued SFT uses effective batch 128 as an approximate compute control; its measured FLOP ratio to GRPO is shown when both arm metrics are available.",
             "Accuracy deltas require complete results and identical ordered module/question/target identities in baseline and Experiment 11 prediction CSVs. Aggregate snapshot accuracy alone cannot prove question identity.",
             "The handwritten scratchpad is additional supervised target text in the Experiment 11 SFT data. The current training objective does not separately mask or weight scratchpad tokens, so this is not answer-only supervision with an auxiliary trace loss.",
             "Missing baseline snapshot cells are preserved as missing; unavailable measurements are never treated as zero.",
@@ -1154,6 +1195,22 @@ def make_exp11_report(
             f"{_format_count(row['additional_tokens'])} | {_format_count(row['baseline_estimated_flops'])} | "
             f"{_format_count(row['estimated_flops'])} | {_format_count(row['additional_flops'])} | "
             f"{'yes' if row['same_question_identity'] else 'unverified'} |"
+        )
+    lines.extend([
+        "", "## Approximate compute matching", "",
+        "Continued SFT uses effective batch 128. The ratio below is measured additional continued-SFT estimated FLOPs divided by GRPO estimated FLOPs at the latest checkpoint-aligned metrics; the control is approximate because GRPO rollout lengths vary.",
+        "", "| Model | GRPO step | GRPO estimated FLOPs | Continued-SFT step | Continued-SFT additional FLOPs | Continued-SFT / GRPO | Status |",
+        "|---|---:|---:|---:|---:|---:|---|",
+    ])
+    for model, metrics in compute_matching.items():
+        ratio = metrics["continued_sft_to_grpo_flop_ratio"]
+        ratio_text = f"{ratio:.4f}×" if ratio is not None else "Missing"
+        lines.append(
+            f"| {model} | {_format_count(metrics['grpo_step'])} | "
+            f"{_format_count(metrics['grpo_estimated_flops'])} | "
+            f"{_format_count(metrics['continued_sft_step'])} | "
+            f"{_format_count(metrics['continued_sft_additional_estimated_flops'])} | {ratio_text} | "
+            f"{metrics['status']} |"
         )
     lines.extend([
         "", "## Evaluation accuracy and format by module", "",

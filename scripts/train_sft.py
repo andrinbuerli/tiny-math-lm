@@ -109,6 +109,7 @@ def main(config: DictConfig) -> None:
                 "training/padded_compute_positions": result["padded_compute_positions"],
                 "training/supervised_tokens": result["supervised_tokens"],
                 "training/tokens_seen": result["tokens_seen"],
+                "training/additional_estimated_flops": result["additional_estimated_flops"],
                 "training/best_validation_loss": result["best_validation_loss"],
                 "training/model_parameters": result["parameters"],
                 "training/checkpoint": result["checkpoint"],

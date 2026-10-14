@@ -61,9 +61,11 @@ def test_exp11_report_has_27_rows_and_not_run_states_without_results(workspace_t
     assert {row["exp11_status"] for row in report["rows"]} == {"not-run"}
     assert {row["baseline_status"] for row in report["rows"]} == {"missing"}
     markdown = (report_dir / "intermediate_results.md").read_text(encoding="utf-8")
-    assert markdown.count("| 1m |") == 9
+    main_table = markdown.split("## Approximate compute matching", 1)[0]
+    assert main_table.count("| 1m |") == 9
     assert "not-run" in markdown
     assert "scratchpad tokens" in markdown
+    assert "effective batch 128" in markdown
     assert len([path for path in outputs if path.suffix == ".png"]) == 2
     assert len([path for path in outputs if path.suffix == ".svg"]) == 2
 
@@ -160,3 +162,39 @@ def test_exp11_running_and_partial_states_are_visible(workspace_tmpdir):
     states = {(row["model"], row["arm"], row["split"]): row["exp11_status"] for row in report["rows"]}
     assert states[("1m", "sft", "test")] == "running"
     assert states[("10m", "grpo", "test")] == "partial"
+
+
+def test_exp11_report_measures_continued_sft_to_grpo_flop_ratio(workspace_tmpdir):
+    baseline = _snapshot(workspace_tmpdir / "baseline.json")
+    runs = workspace_tmpdir / "runs"
+    grpo_metrics = runs / "exp11_reasoning_500k_100k" / "1m" / "grpo" / "seed18" / "metrics.csv"
+    control_metrics = (
+        runs / "exp11_reasoning_500k_100k" / "1m" / "continued_sft" / "seed18" / "metrics.csv"
+    )
+    sft_metrics = runs / "exp11_reasoning_500k_100k" / "1m" / "sft" / "seed18" / "metrics.csv"
+    grpo_metrics.parent.mkdir(parents=True)
+    control_metrics.parent.mkdir(parents=True)
+    sft_metrics.parent.mkdir(parents=True)
+    grpo_metrics.write_text("update,estimated_flops\n100000,8000000000000000\n", encoding="utf-8")
+    control_metrics.write_text(
+        "optimizer_step,estimated_flops,additional_estimated_flops\n"
+        "100000,2800000000000000,2000000000000000\n",
+        encoding="utf-8",
+    )
+    sft_metrics.write_text("optimizer_step,estimated_flops\n100000,800000000000000\n", encoding="utf-8")
+
+    report, _outputs = make_exp11_report(
+        runs_dir=runs,
+        output_dir=workspace_tmpdir / "reports",
+        baseline_snapshot=baseline,
+        baseline_runs_dir=runs,
+        annotation_bundle_dir=workspace_tmpdir / "annotation",
+    )
+
+    matching = report["compute_matching"]["1m"]
+    assert matching["status"] == "measured"
+    assert matching["grpo_step"] == "100000"
+    assert matching["continued_sft_step"] == "100000"
+    assert matching["continued_sft_to_grpo_flop_ratio"] == 0.25
+    markdown = (workspace_tmpdir / "reports" / "intermediate_results.md").read_text(encoding="utf-8")
+    assert "0.2500×" in markdown
