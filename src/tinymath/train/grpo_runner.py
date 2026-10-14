@@ -11,8 +11,16 @@ from typing import Any
 
 import torch
 
-from tinymath.checkpoint import capture_rng_state, restore_rng_state, save_checkpoint
+from tinymath.checkpoint import (
+    capture_rng_state,
+    compatibility_metadata,
+    restore_rng_state,
+    save_checkpoint,
+    sha256_file,
+    validate_checkpoint_compatibility,
+)
 from tinymath.data.char_tokenizer import CharacterTokenizer
+from tinymath.data.completions import parse_reasoning_completion
 from tinymath.data.prompts import format_prompt
 from tinymath.eval.qualitative import build_qualitative_table
 from tinymath.model.gpt import GPTConfig, TinyMathGPT
@@ -30,6 +38,22 @@ from tinymath.train.metrics import truncate_csv_after_step
 def _load_rows(path: Path) -> list[dict[str, str]]:
     with path.open(encoding="utf-8") as handle:
         return [json.loads(line) for line in handle if line.strip()]
+
+
+def _score_completion(
+    token_ids: list[int], tokenizer: CharacterTokenizer, row: dict[str, str]
+) -> tuple[bool, bool, str | None]:
+    """Return answer correctness, protocol/format validity, and any parsed trace."""
+    if tokenizer.protocol == "reasoning_v1":
+        try:
+            parsed = parse_reasoning_completion(token_ids, tokenizer)
+        except ValueError:
+            return False, False, None
+        correct, valid = verify_answer(parsed.answer, row["answer"], question=row["question"])
+        return correct and valid, valid, parsed.scratchpad
+    text = tokenizer.decode(token_ids, skip_special=True).strip()
+    correct, valid = verify_answer(text, row["answer"], question=row["question"])
+    return correct and valid, valid, None
 
 
 def train_grpo(
@@ -50,6 +74,27 @@ def train_grpo(
     if initial.get("tokenizer_sha256") != tokenizer.sha256:
         raise ValueError("SFT checkpoint tokenizer does not match the RLVR data bundle")
     model_config = GPTConfig.from_mapping(initial["model_config"])
+    manifest_path = bundle_dir / "manifest.json"
+    compatibility = None
+    if manifest_path.is_file():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if int(manifest.get("context_length", model_config.context_length)) != model_config.context_length:
+            raise ValueError("Model context length does not match the RLVR data bundle")
+        compatibility = compatibility_metadata(
+            protocol=tokenizer.protocol,
+            annotation_sha256=(manifest.get("annotation") or {}).get("annotation_sha256"),
+            tokenizer_sha256=tokenizer.sha256,
+            bundle_sha256=sha256_file(manifest_path),
+            context_length=model_config.context_length,
+        )
+    elif tokenizer.protocol == "reasoning_v1":
+        raise ValueError("Reasoning GRPO requires a provenance-bearing annotated bundle")
+    if compatibility is not None:
+        validate_checkpoint_compatibility(
+            initial,
+            compatibility,
+            allow_legacy_answer_only=(tokenizer.protocol == "answer_only"),
+        )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = TinyMathGPT(model_config).to(device)
     model.load_state_dict(initial["model"])
@@ -76,6 +121,12 @@ def train_grpo(
         resumed = torch.load(latest_path, map_location="cpu", weights_only=False)
         if resumed.get("tokenizer_sha256") != tokenizer.sha256:
             raise ValueError("GRPO checkpoint tokenizer does not match the RLVR data bundle")
+        if compatibility is not None:
+            validate_checkpoint_compatibility(
+                resumed,
+                compatibility,
+                allow_legacy_answer_only=(tokenizer.protocol == "answer_only"),
+            )
         model.load_state_dict(resumed["model"])
         optimizer.load_state_dict(resumed["optimizer"])
         start_update = int(resumed["update"])
@@ -111,6 +162,7 @@ def train_grpo(
     metrics_file = metrics_path.open(mode, newline="", encoding="utf-8")
     fields = [
         "update", "reward/mean", "reward/format_valid_rate", "reward/verifier_failure_rate",
+        "reward/trace_valid_rate", "reward/capped_rate", "reward/malformed_rate",
         "group/mixed_rate", "group/all_correct_rate", "group/all_wrong_rate", "loss",
         "policy_loss", "kl", "entropy", "clip_fraction", "grad_norm", "tokens_seen", "wall_seconds",
         "tokens_per_second", "estimated_flops", "peak_gpu_memory_bytes",
@@ -127,6 +179,7 @@ def train_grpo(
             optimizer.zero_grad(set_to_none=True)
             metric_groups: list[dict[str, torch.Tensor]] = []
             batch_correct = batch_valid = batch_total = token_total = 0
+            batch_capped = batch_malformed = batch_trace_valid = 0
             optimized_groups = 0
             policy_losses: list[float] = []
             kl_values: list[float] = []
@@ -134,7 +187,7 @@ def train_grpo(
             clip_values: list[float] = []
             estimated_flops_update = 0
             for row in chosen:
-                prompt_text = format_prompt(row["question"])
+                prompt_text = format_prompt(row["question"], protocol=tokenizer.protocol)
                 prompt_ids = torch.tensor(
                     [tokenizer.encode(prompt_text, add_bos=True)], dtype=torch.long, device=device
                 )
@@ -152,20 +205,26 @@ def train_grpo(
                         pad_id=tokenizer.pad_id,
                     )
                 completions = rollouts.completion_ids[0]
-                decoded = [
-                    tokenizer.decode(
-                        completion[: int(mask.sum().item())].tolist(), skip_special=True
-                    )
+                generated_ids = [
+                    completion[: int(mask.sum().item())].tolist()
                     for completion, mask in zip(completions, rollouts.completion_mask[0], strict=True)
                 ]
-                outcome_pairs = [
-                    verify_answer(text, row["answer"], question=row["question"])
-                    for text in decoded
-                ]
+                outcomes = [_score_completion(ids, tokenizer, row) for ids in generated_ids]
                 rewards = torch.tensor(
-                    [int(correct) for correct, _valid in outcome_pairs], dtype=torch.float32, device=device
+                    [int(correct) for correct, _valid, _trace in outcomes],
+                    dtype=torch.float32,
+                    device=device,
                 )
-                valid_count = sum(int(valid) for _correct, valid in outcome_pairs)
+                valid_count = sum(int(valid) for _correct, valid, _trace in outcomes)
+                batch_capped += sum(
+                    int(len(ids) >= min(max_completion, room) and (not ids or ids[-1] != tokenizer.eos_id))
+                    for ids in generated_ids
+                )
+                batch_malformed += group_size - valid_count
+                batch_trace_valid += sum(
+                    int(trace is not None) if tokenizer.protocol == "reasoning_v1" else int(valid)
+                    for _correct, valid, trace in outcomes
+                )
                 batch_correct += int(rewards.sum().item())
                 batch_valid += valid_count
                 batch_total += group_size
@@ -230,6 +289,9 @@ def train_grpo(
                 "reward/mean": reward_mean,
                 "reward/format_valid_rate": batch_valid / batch_total,
                 "reward/verifier_failure_rate": 1 - batch_valid / batch_total,
+                "reward/trace_valid_rate": batch_trace_valid / batch_total,
+                "reward/capped_rate": batch_capped / batch_total,
+                "reward/malformed_rate": batch_malformed / batch_total,
                 "group/mixed_rate": mixed,
                 "group/all_correct_rate": all_correct,
                 "group/all_wrong_rate": all_wrong,
@@ -260,6 +322,7 @@ def train_grpo(
                         "flops_estimator_version": "dense_position_v2",
                         "rng_state": capture_rng_state(),
                         "tokenizer_sha256": tokenizer.sha256,
+                        **({"compatibility": compatibility} if compatibility is not None else {}),
                         "model_config": model_config.__dict__,
                         "training_arm": "grpo",
                         "source_sft_checkpoint": str(init_checkpoint),
@@ -271,6 +334,7 @@ def train_grpo(
                         "model": model.state_dict(),
                         "update": update,
                         "tokenizer_sha256": tokenizer.sha256,
+                        **({"compatibility": compatibility} if compatibility is not None else {}),
                         "model_config": model_config.__dict__,
                         "training_arm": "grpo",
                         "source_sft_checkpoint": str(init_checkpoint.resolve()),

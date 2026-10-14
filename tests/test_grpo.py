@@ -36,6 +36,34 @@ def test_reward_group_diagnostics_use_actual_binary_outcomes():
     assert rates["all_wrong_group_rate"].item() == 0.25
 
 
+def test_reasoning_grpo_reward_requires_structure_and_correct_final_scalar():
+    tokenizer = CharacterTokenizer.from_texts(
+        [
+            "\nA: 2",
+            "Q: 1 + 1\n",
+            "+(1,1)\n1,1,0:2,0",
+            "\nA: 3",
+        ],
+        protocol="reasoning_v1",
+    )
+    row = {"question": "1 + 1", "answer": "2"}
+    valid_correct = tokenizer.encode_completion("2", scratchpad="+(1,1)\n1,1,0:2,0")
+    valid_wrong = tokenizer.encode_completion("3", scratchpad="+(1,1)\n1,1,0:2,0")
+    missing_eos = valid_correct[:-1]
+
+    assert grpo_runner._score_completion(valid_correct, tokenizer, row) == (
+        True,
+        True,
+        "+(1,1)\n1,1,0:2,0",
+    )
+    assert grpo_runner._score_completion(valid_wrong, tokenizer, row) == (
+        False,
+        True,
+        "+(1,1)\n1,1,0:2,0",
+    )
+    assert grpo_runner._score_completion(missing_eos, tokenizer, row) == (False, False, None)
+
+
 def test_clipped_policy_loss_masks_padding_and_has_finite_gradients():
     current = torch.tensor([[[0.1, 0.0], [-0.1, 0.15]]], requires_grad=True)
     old = torch.zeros_like(current)
@@ -102,6 +130,10 @@ def test_grpo_runner_scores_mixed_group_and_applies_gradient(workspace_tmpdir, m
     ) + "\n"
     (bundle / "sft_validation.jsonl").write_text(qualitative_row, encoding="utf-8")
     (bundle / "test.jsonl").write_text(qualitative_row, encoding="utf-8")
+    (bundle / "manifest.json").write_text(
+        json.dumps({"context_length": 64, "split_manifest_sha256": "fixture"}),
+        encoding="utf-8",
+    )
     model_config = GPTConfig(
         vocab_size=tokenizer.vocab_size, context_length=64, n_layers=1,
         n_heads=2, d_model=16, d_ff=32,
@@ -159,12 +191,15 @@ def test_grpo_runner_scores_mixed_group_and_applies_gradient(workspace_tmpdir, m
     )
     saved = torch.load(result["checkpoint"], map_location="cpu", weights_only=False)
     assert saved["training_arm"] == "grpo"
+    assert saved["compatibility"]["protocol"] == "answer_only"
+    assert saved["compatibility"]["context_length"] == 64
     before = initial_model.state_dict()
     assert result["final_reward"] == 0.5
     assert result["qualitative_examples"] == 3
     inference = torch.load(result["inference_checkpoint"], map_location="cpu", weights_only=False)
     assert inference["update"] == 1
     assert inference["tokenizer_sha256"] == tokenizer.sha256
+    assert inference["compatibility"] == saved["compatibility"]
     assert inference["model"]
     assert "qualitative/examples" in run.logged[-1]
     assert "train/greedy_accuracy" in run.logged[-1]

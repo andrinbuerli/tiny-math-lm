@@ -7,7 +7,11 @@ import torch
 
 from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.data.prompts import format_prompt
-from tinymath.eval.qualitative import _selected_rows, log_qualitative_examples
+from tinymath.eval.qualitative import (
+    _selected_rows,
+    build_qualitative_table,
+    log_qualitative_examples,
+)
 
 
 def test_qualitative_selection_stays_fixed_across_steps_and_row_order():
@@ -92,7 +96,8 @@ def test_qualitative_table_covers_each_split_and_balances_modules(monkeypatch):
     table = run.logs[0][0]["qualitative/examples"]
     assert set(table.columns) == {
         "training_arm", "seed", "split", "module", "question", "target",
-        "prediction", "correct", "format_valid",
+        "prediction", "completion", "scratchpad", "trace_structure_valid",
+        "correct", "format_valid", "output_tokens", "capped",
     }
     assert {row[2] for row in table.data} == {"train", "validation", "test"}
     assert {row[3] for row in table.data if row[2] == "train"} == {
@@ -104,3 +109,49 @@ def test_qualitative_table_covers_each_split_and_balances_modules(monkeypatch):
     assert run.logs[0][0]["test/greedy_accuracy"] == 0.0
     assert run.logs[0][1] == {}
     assert run.summary["qualitative/example_count"] == 4
+
+
+def test_reasoning_qualitative_uses_unprefixed_prompt_and_full_context_cap(monkeypatch):
+    rows = {
+        split: [
+            {
+                "question": "1 + 1",
+                "answer": "2",
+                "module": "arithmetic__add_or_sub",
+                "scratchpad": "REFERENCE MUST NOT ENTER PROMPT",
+            }
+        ]
+        for split in ("train", "validation", "test")
+    }
+    trace = "+(1,1)\n1,1,0:2,0"
+    tokenizer = CharacterTokenizer.from_texts(
+        ["Q: 1 + 1\n", trace, "\nA: 2"], protocol="reasoning_v1"
+    )
+    observed = []
+
+    class FixedModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.anchor = torch.nn.Parameter(torch.zeros(()))
+            self.config = types.SimpleNamespace(context_length=64)
+
+        def generate(self, input_ids, *, max_new_tokens, **_kwargs):
+            observed.append((tokenizer.decode(input_ids[0].tolist()), max_new_tokens))
+            output = tokenizer.encode_completion("2", scratchpad=trace)
+            return torch.cat((input_ids, torch.tensor([output], device=input_ids.device)), dim=1)
+
+    class Table:
+        def __init__(self, *, columns, data):
+            self.columns = columns
+            self.data = data
+
+    monkeypatch.setitem(sys.modules, "wandb", types.SimpleNamespace(Table=Table))
+    table, count, accuracy = build_qualitative_table(
+        model=FixedModel(), tokenizer=tokenizer, split_rows=rows, training_arm="sft",
+        seed=18, max_new_tokens=128, examples_per_module=1,
+    )
+
+    assert count == 3 and accuracy == {"train": 1.0, "validation": 1.0, "test": 1.0}
+    assert all(prompt == "Q: 1 + 1\n" for prompt, _cap in observed)
+    assert all(cap == 64 - len(tokenizer.encode("Q: 1 + 1\n", add_bos=True)) for _, cap in observed)
+    assert table.data[0][8] == trace

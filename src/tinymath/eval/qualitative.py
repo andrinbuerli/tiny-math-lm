@@ -9,6 +9,7 @@ from typing import Any
 import torch
 
 from tinymath.data.char_tokenizer import CharacterTokenizer
+from tinymath.data.completions import parse_reasoning_completion
 from tinymath.data.prompts import format_prompt
 from tinymath.rewards.verify import verify_answer
 
@@ -59,7 +60,12 @@ def build_qualitative_table(
             )
             for example in examples:
                 prompt = torch.tensor(
-                    [tokenizer.encode(format_prompt(example["question"]), add_bos=True)],
+                    [
+                        tokenizer.encode(
+                            format_prompt(example["question"], protocol=tokenizer.protocol),
+                            add_bos=True,
+                        )
+                    ],
                     dtype=torch.long,
                     device=device,
                 )
@@ -69,16 +75,37 @@ def build_qualitative_table(
                 with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_bf16):
                     generated = model.generate(
                         prompt,
-                        max_new_tokens=min(max_new_tokens, available),
+                        max_new_tokens=(
+                            available
+                            if tokenizer.protocol == "reasoning_v1"
+                            else min(max_new_tokens, available)
+                        ),
                         temperature=0.0,
                         eos_id=tokenizer.eos_id,
                     )[0, prompt.shape[1] :].tolist()
                 if tokenizer.eos_id in generated:
                     generated = generated[: generated.index(tokenizer.eos_id) + 1]
-                prediction = tokenizer.decode(generated, skip_special=True).strip()
-                correct, valid = verify_answer(
-                    prediction, example["answer"], question=example["question"]
-                )
+                completion = tokenizer.decode(generated, skip_special=True).strip()
+                trace = ""
+                trace_structure_valid: bool | None = None
+                if tokenizer.protocol == "reasoning_v1":
+                    try:
+                        parsed = parse_reasoning_completion(generated, tokenizer)
+                        trace = parsed.scratchpad
+                        prediction = parsed.answer
+                        correct, valid = verify_answer(
+                            prediction, example["answer"], question=example["question"]
+                        )
+                        trace_structure_valid = True
+                    except ValueError:
+                        prediction = ""
+                        correct, valid = False, False
+                else:
+                    prediction = completion
+                    correct, valid = verify_answer(
+                        prediction, example["answer"], question=example["question"]
+                    )
+                    trace_structure_valid = None
                 split_correct[split][0] += int(correct)
                 split_correct[split][1] += 1
                 rows.append(
@@ -90,8 +117,16 @@ def build_qualitative_table(
                         example["question"],
                         example["answer"],
                         prediction,
+                        completion,
+                        trace,
+                        trace_structure_valid,
                         correct,
                         valid,
+                        len(generated),
+                        int(
+                            len(generated) >= available
+                            and (not generated or generated[-1] != tokenizer.eos_id)
+                        ),
                     ]
                 )
     finally:
@@ -108,8 +143,13 @@ def build_qualitative_table(
             "question",
             "target",
             "prediction",
+            "completion",
+            "scratchpad",
+            "trace_structure_valid",
             "correct",
             "format_valid",
+            "output_tokens",
+            "capped",
         ],
         data=rows,
     )

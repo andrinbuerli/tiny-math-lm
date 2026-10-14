@@ -115,6 +115,10 @@ def test_sft_loop_trains_and_saves_reloadable_checkpoint(workspace_tmpdir):
         (bundle / filename).write_text(
             "".join(json.dumps(row) + "\n" for row in examples), encoding="utf-8"
         )
+    (bundle / "manifest.json").write_text(
+        json.dumps({"context_length": 64, "split_manifest_sha256": "fixture"}),
+        encoding="utf-8",
+    )
     config = SimpleNamespace(
         seed=17,
         model={
@@ -156,6 +160,8 @@ def test_sft_loop_trains_and_saves_reloadable_checkpoint(workspace_tmpdir):
     assert result["step"] == 2
     assert checkpoint["step"] == 2
     assert checkpoint["tokenizer_sha256"] == tokenizer.sha256
+    assert checkpoint["compatibility"]["protocol"] == "answer_only"
+    assert checkpoint["compatibility"]["context_length"] == 64
     assert checkpoint["data_generator_state"].numel() > 0
     assert checkpoint["model"]
     assert len(run.logged) == 2
@@ -168,6 +174,7 @@ def test_sft_loop_trains_and_saves_reloadable_checkpoint(workspace_tmpdir):
     assert inference["step"] == 2
     assert inference["training_arm"] == "sft"
     assert inference["tokenizer_sha256"] == tokenizer.sha256
+    assert inference["compatibility"] == checkpoint["compatibility"]
     assert inference["model"]
     assert Path(result["metrics_path"]).exists()
     with Path(result["metrics_path"]).open(encoding="utf-8") as existing:

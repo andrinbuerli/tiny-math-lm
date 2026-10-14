@@ -11,7 +11,14 @@ from typing import Any
 
 import torch
 
-from tinymath.checkpoint import capture_rng_state, restore_rng_state, save_checkpoint
+from tinymath.checkpoint import (
+    capture_rng_state,
+    compatibility_metadata,
+    restore_rng_state,
+    save_checkpoint,
+    sha256_file,
+    validate_checkpoint_compatibility,
+)
 from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.data.prompts import format_completion, format_prompt
 from tinymath.eval.qualitative import build_qualitative_table
@@ -51,6 +58,27 @@ def _batch(
         [examples[index] for index in indices], tokenizer, context_length=context_length
     )
     return inputs.to(device), targets.to(device), mask.to(device)
+
+
+def _bundle_compatibility(
+    bundle_dir: Path, tokenizer: CharacterTokenizer, *, context_length: int
+) -> dict[str, Any] | None:
+    manifest_path = bundle_dir / "manifest.json"
+    if not manifest_path.is_file():
+        if tokenizer.protocol == "reasoning_v1":
+            raise ValueError("Reasoning training requires a provenance-bearing annotated bundle")
+        return None
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if int(manifest.get("context_length", context_length)) != context_length:
+        raise ValueError("Model context length does not match the selected data bundle")
+    annotation_sha256 = (manifest.get("annotation") or {}).get("annotation_sha256")
+    return compatibility_metadata(
+        protocol=tokenizer.protocol,
+        annotation_sha256=annotation_sha256,
+        tokenizer_sha256=tokenizer.sha256,
+        bundle_sha256=sha256_file(manifest_path),
+        context_length=context_length,
+    )
 
 
 @torch.no_grad()
@@ -101,6 +129,9 @@ def train_sft(
     model_values = dict(config.model)
     model_values["vocab_size"] = tokenizer.vocab_size
     model_config = GPTConfig.from_mapping(model_values)
+    compatibility = _bundle_compatibility(
+        bundle_dir, tokenizer, context_length=model_config.context_length
+    )
     model = TinyMathGPT(model_config).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -117,6 +148,12 @@ def train_sft(
         payload = torch.load(init_checkpoint, map_location="cpu", weights_only=False)
         if payload.get("tokenizer_sha256") != tokenizer.sha256:
             raise ValueError("Checkpoint tokenizer does not match the prepared data bundle")
+        if compatibility is not None:
+            validate_checkpoint_compatibility(
+                payload,
+                compatibility,
+                allow_legacy_answer_only=(tokenizer.protocol == "answer_only"),
+            )
         model.load_state_dict(payload["model"])
         is_continuation = str(config.trainer.name) == "continued_sft"
         if is_continuation:
@@ -126,6 +163,12 @@ def train_sft(
                 if resume_payload.get("tokenizer_sha256") != tokenizer.sha256:
                     raise ValueError(
                         "Continued-SFT checkpoint tokenizer does not match the data bundle"
+                    )
+                if compatibility is not None:
+                    validate_checkpoint_compatibility(
+                        resume_payload,
+                        compatibility,
+                        allow_legacy_answer_only=(tokenizer.protocol == "answer_only"),
                     )
                 saved_source = resume_payload.get("source_sft_checkpoint")
                 if saved_source and Path(saved_source).resolve() != init_checkpoint.resolve():
@@ -156,6 +199,12 @@ def train_sft(
                 data_generator.set_state(payload["data_generator_state"])
     elif latest_path.exists():
         payload = torch.load(latest_path, map_location="cpu", weights_only=False)
+        if compatibility is not None:
+            validate_checkpoint_compatibility(
+                payload,
+                compatibility,
+                allow_legacy_answer_only=(tokenizer.protocol == "answer_only"),
+            )
         model.load_state_dict(payload["model"])
         optimizer.load_state_dict(payload["optimizer"])
         start_step = int(payload["step"])
@@ -254,7 +303,8 @@ def train_sft(
                         best_val=best_val,
                         tokenizer=tokenizer,
                         model_config=model_config,
-                    data_generator_state=data_generator.get_state(),
+                        compatibility=compatibility,
+                        data_generator_state=data_generator.get_state(),
                         source_sft_checkpoint=source_sft_checkpoint,
                         training_arm=str(config.trainer.name),
                     )
@@ -284,15 +334,27 @@ def train_sft(
             if device.type == "cuda":
                 values["system/peak_gpu_memory_bytes"] = torch.cuda.max_memory_allocated(device)
             if step % save_every == 0 or step == target_steps:
-                _save_state(best_path=latest_path, model=model, optimizer=optimizer,
-                            step=step, tokens_seen=tokens_seen, best_val=best_val,
-                            tokenizer=tokenizer, model_config=model_config,
-                            data_generator_state=data_generator.get_state(),
-                            source_sft_checkpoint=source_sft_checkpoint,
-                            training_arm=str(config.trainer.name))
+                _save_state(
+                    best_path=latest_path,
+                    model=model,
+                    optimizer=optimizer,
+                    step=step,
+                    tokens_seen=tokens_seen,
+                    best_val=best_val,
+                    tokenizer=tokenizer,
+                    model_config=model_config,
+                    compatibility=compatibility,
+                    data_generator_state=data_generator.get_state(),
+                    source_sft_checkpoint=source_sft_checkpoint,
+                    training_arm=str(config.trainer.name),
+                )
                 _save_inference_state(
-                    run_dir / "latest_inference.pt", model=model, step=step,
-                    tokenizer=tokenizer, model_config=model_config,
+                    run_dir / "latest_inference.pt",
+                    model=model,
+                    step=step,
+                    tokenizer=tokenizer,
+                    model_config=model_config,
+                    compatibility=compatibility,
                     training_arm=str(config.trainer.name),
                     source_sft_checkpoint=source_sft_checkpoint,
                 )
@@ -361,6 +423,7 @@ def _save_state(
     best_val: float,
     tokenizer: CharacterTokenizer,
     model_config: GPTConfig,
+    compatibility: dict[str, Any] | None,
     data_generator_state: torch.Tensor,
     source_sft_checkpoint: str | None,
     training_arm: str,
@@ -379,6 +442,7 @@ def _save_state(
             "model_config": model_config.__dict__,
             "source_sft_checkpoint": source_sft_checkpoint,
             "training_arm": training_arm,
+            **({"compatibility": compatibility} if compatibility is not None else {}),
         },
     )
 
@@ -399,6 +463,7 @@ def _save_inference_state(
     step: int,
     tokenizer: CharacterTokenizer,
     model_config: GPTConfig,
+    compatibility: dict[str, Any] | None,
     training_arm: str,
     source_sft_checkpoint: str | None,
 ) -> None:
@@ -411,5 +476,6 @@ def _save_inference_state(
             "model_config": model_config.__dict__,
             "training_arm": training_arm,
             "source_sft_checkpoint": source_sft_checkpoint,
+            **({"compatibility": compatibility} if compatibility is not None else {}),
         },
     )
