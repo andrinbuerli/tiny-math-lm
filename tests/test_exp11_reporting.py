@@ -4,7 +4,7 @@ import csv
 import hashlib
 import json
 
-from tinymath.reporting import make_exp11_report
+from tinymath.reporting import _exp11_state, make_exp11_report
 
 
 def _snapshot(path, *, measurements=None, missing=None):
@@ -89,8 +89,14 @@ def test_exp11_report_has_27_rows_and_not_run_states_without_results(workspace_t
     assert "base-grpo-id" in markdown
     assert "RLVR gains versus SFT" in markdown
     assert "Measured RLVR gains: 0/9" in markdown
-    assert len([path for path in outputs if path.suffix == ".png"]) == 3
-    assert len([path for path in outputs if path.suffix == ".svg"]) == 3
+    pngs = {path.stem for path in outputs if path.suffix == ".png"}
+    svgs = {path.stem for path in outputs if path.suffix == ".svg"}
+    assert pngs == svgs
+    assert {
+        "model_scaling", "training_arm_accuracy", "per_module_accuracy",
+        "accuracy_by_digit_width", "accuracy_by_expression_length", "training_loss",
+        "reward_entropy_kl", "id_vs_ood", "accuracy_vs_compute", "grpo_sample_efficiency",
+    } <= pngs
     sample_efficiency_chart = report_dir / "grpo_sample_efficiency.svg"
     assert sample_efficiency_chart in outputs
     assert "No completed measurements" in sample_efficiency_chart.read_text(encoding="utf-8")
@@ -321,14 +327,17 @@ def test_exp11_reports_informative_groups_rlvr_gain_and_sample_efficiency(worksp
         measurements=[
             {"model": "1m", "arm": arm, "split": "test", "accuracy": 0.5, "examples": 2,
              "checkpoint_step": 100}
-            for arm in ("sft", "grpo")
+            for arm in ("sft", "grpo", "continued_sft")
         ],
     )
     runs = workspace_tmpdir / "runs"
     base_root = runs / "baseline" / "1m"
     current_root = runs / "exp11_reasoning_500k_100k" / "1m"
 
-    for arm, selector, accuracy in (("sft", "best", 0.5), ("grpo", "latest", 0.75)):
+    for arm, selector, accuracy in (
+        ("sft", "best", 0.5), ("grpo", "latest", 0.75),
+        ("continued_sft", "best", 1.0),
+    ):
         checkpoint_name = "latest.pt" if arm == "grpo" else "best.pt"
         main_checkpoint = current_root / arm / "seed18" / checkpoint_name
         main_checkpoint.parent.mkdir(parents=True, exist_ok=True)
@@ -392,6 +401,12 @@ def test_exp11_reports_informative_groups_rlvr_gain_and_sample_efficiency(worksp
     )
     assert gain["status"] == "measured"
     assert gain["grpo_minus_sft_percentage_points"] == 25.0
+    control_gain = next(
+        item for item in report["continued_sft_gains"]
+        if item["model"] == "1m" and item["split"] == "test"
+    )
+    assert control_gain["status"] == "measured"
+    assert control_gain["continued_sft_minus_sft_percentage_points"] == 50.0
     diagnostic = report["grpo_diagnostics"]["1m"]
     assert diagnostic["informative_group_rate"] == 0.5
     assert diagnostic["informative_group_rate_updates"] == 2
@@ -416,3 +431,61 @@ def test_exp11_reports_informative_groups_rlvr_gain_and_sample_efficiency(worksp
     assert "Informative / mixed groups" in markdown
     assert "+25.00" in markdown
     assert "Endpoint sample efficiency" in markdown
+    assert "Continued-SFT gains versus SFT" in markdown
+    assert "50.00" in markdown
+    assert "one seed only" in markdown
+    assert "less detailed supervised traces" in markdown
+
+
+def test_unknown_expected_count_cannot_be_reported_complete(workspace_tmpdir):
+    evaluation = workspace_tmpdir / "eval"
+    evaluation.mkdir()
+    result_path = evaluation / "results.json"
+    result_path.write_text(
+        json.dumps({"splits": {"test": {"examples": 7, "accuracy": 0.5}}}),
+        encoding="utf-8",
+    )
+    status, _result, _split = _exp11_state(result_path, evaluation, "test", None)
+    assert status == "partial"
+
+    result_path.write_text(
+        json.dumps({"splits": {"test": {"examples": 7, "expected_examples": 7, "accuracy": 0.5}}}),
+        encoding="utf-8",
+    )
+    status, _result, _split = _exp11_state(result_path, evaluation, "test", None)
+    assert status == "complete"
+
+
+def test_exp11_annotation_provenance_and_full_length_statistics(workspace_tmpdir):
+    bundle = workspace_tmpdir / "annotation"
+    bundle.mkdir()
+    (bundle / "manifest.json").write_text(json.dumps({
+        "tokenizer": {"protocol": "reasoning_v1", "sha256": "tokenizer-hash"},
+        "annotation": {
+            "annotation_sha256": "annotation-hash", "source_bundle": "source-bundle",
+            "source_manifest_sha256": "source-manifest-hash",
+            "source_split_sha256": "source-split-hash",
+            "source_tokenizer_sha256": "source-tokenizer-hash",
+            "module_split_statistics": {"arithmetic__add/test": {
+                "count": 1, "min": 3, "mean": 3, "median": 3, "p95": 3,
+                "p99": 3, "max": 3, "reduced_count": 0, "reduced_fraction": 0,
+            }},
+        },
+    }), encoding="utf-8")
+    (bundle / "train.jsonl").write_text(json.dumps({
+        "module": "arithmetic__add", "split": "test", "full_length": 10,
+        "retained_length": 3,
+    }) + "\n", encoding="utf-8")
+    report, _outputs = make_exp11_report(
+        runs_dir=workspace_tmpdir / "runs", output_dir=workspace_tmpdir / "reports",
+        baseline_snapshot=_snapshot(workspace_tmpdir / "baseline.json"),
+        baseline_runs_dir=workspace_tmpdir / "runs", annotation_bundle_dir=bundle,
+    )
+    diagnostics = report["diagnostics"]
+    assert diagnostics["annotation_provenance"]["source_manifest_sha256"] == "source-manifest-hash"
+    assert diagnostics["annotation_provenance"]["tokenizer_sha256"] == "tokenizer-hash"
+    assert diagnostics["full_length_statistics"]["arithmetic__add/test"]["mean"] == 10
+    markdown = (workspace_tmpdir / "reports" / "intermediate_results.md").read_text(encoding="utf-8")
+    assert "source-split-hash" in markdown
+    assert "Full untruncated annotation lengths" in markdown
+    assert "| Module / split | Retained-token count | Min | Mean | Median | P95 | P99 | Max |" in markdown

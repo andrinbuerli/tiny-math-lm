@@ -6,6 +6,7 @@ import csv
 import hashlib
 import json
 import math
+import statistics
 from pathlib import Path
 from typing import Any
 
@@ -892,7 +893,11 @@ def _exp11_state(
     saved_split = (result or {}).get("splits", {}).get(split)
     if saved_split is not None:
         count = int(saved_split.get("examples") or 0)
-        if expected_examples is None or count >= expected_examples:
+        declared_expected = (saved_split.get("expected_examples")
+                             or saved_split.get("total_examples")
+                             or (result or {}).get("expected_examples"))
+        required = expected_examples if expected_examples is not None else declared_expected
+        if required is not None and count >= int(required):
             return "complete", result, saved_split
         if (state or {}).get("run_status") == "failed":
             return "failed", result, saved_split
@@ -1010,6 +1015,39 @@ def _exp11_rlvr_gains(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return gains
 
 
+def _exp11_continued_sft_gains(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Compare continued SFT with SFT only for complete, identity-matched splits."""
+    by_key = {(row["model"], row["arm"], row["split"]): row for row in rows}
+    gains: list[dict[str, Any]] = []
+    for model in MODELS:
+        for split in EXP11_SPLITS:
+            sft = by_key.get((model, "sft", split), {})
+            control = by_key.get((model, "continued_sft", split), {})
+            status = "pending"
+            delta = None
+            reason = "Both SFT and continued-SFT evaluations must be complete and use the same questions."
+            if sft.get("exp11_status") == "failed" or control.get("exp11_status") == "failed":
+                status, reason = "failed", "At least one required evaluation failed."
+            elif sft.get("exp11_status") == "complete" and control.get("exp11_status") == "complete":
+                left, right = sft.get("exp11_question_identity_sha256"), control.get("exp11_question_identity_sha256")
+                if left and right and left == right:
+                    if sft.get("exp11_accuracy") is not None and control.get("exp11_accuracy") is not None:
+                        status = "measured"
+                        delta = float(control["exp11_accuracy"]) - float(sft["exp11_accuracy"])
+                        reason = "Complete results share the same ordered module/question/target identities."
+                    else:
+                        reason = "Complete evaluations lack accuracy values."
+                else:
+                    status, reason = "identity-unverified", "Complete evaluations do not have matching ordered question identities."
+            gains.append({
+                "model": model, "split": split, "status": status,
+                "continued_sft_minus_sft_accuracy_delta": delta,
+                "continued_sft_minus_sft_percentage_points": 100 * delta if delta is not None else None,
+                "reason": reason,
+            })
+    return gains
+
+
 def _exp11_charts(rows: list[dict[str, Any]], output_dir: Path) -> list[Path]:
     outputs: list[Path] = []
     for split, filename, title in (
@@ -1057,6 +1095,54 @@ def _exp11_charts(rows: list[dict[str, Any]], output_dir: Path) -> list[Path]:
             axis.legend(fontsize=8)
         else:
             _no_data(axis, title + " (no measurements yet)")
+        outputs.extend(_save(fig, output_dir, filename))
+    return outputs
+
+
+def _exp11_breakdown_charts(rows: list[dict[str, Any]], output_dir: Path) -> list[Path]:
+    """Render breakdowns from the already checkpoint-filtered report rows."""
+    outputs: list[Path] = []
+    specs = (
+        ("module_metrics", "per_module_accuracy", "Per-module ID test accuracy", "module"),
+        ("by_digit_width", "accuracy_by_digit_width", "Accuracy by operand digit width", "Longest decimal operand width"),
+        ("by_operator_count", "accuracy_by_expression_length", "Accuracy by expression length", "Operator count"),
+    )
+    for field, filename, title, x_label in specs:
+        fig, axis = plt.subplots(figsize=(9, 5))
+        found = False
+        selected = [row for row in rows if row["split"] == "test"]
+        if field == "module_metrics":
+            categories = sorted({category for row in selected for category in row.get(field, {})})
+            width = 0.8 / max(1, len(MODELS) * len(ARMS))
+            for idx, (model, arm) in enumerate((m, a) for m in MODELS for a in ARMS):
+                row = next((r for r in selected if r["model"] == model and r["arm"] == arm), {})
+                vals = [row.get(field, {}).get(category, {}).get("accuracy") for category in categories]
+                if any(value is not None for value in vals):
+                    found = True
+                    offset = (idx - (len(MODELS) * len(ARMS) - 1) / 2) * width
+                    axis.bar([i + offset for i, value in enumerate(vals) if value is not None],
+                             [value for value in vals if value is not None], width, label=f"{model} {arm}")
+            if found:
+                axis.set_xticks(range(len(categories)), [c.split("__")[-1] for c in categories], rotation=25, ha="right")
+        else:
+            for row in selected:
+                curve = row.get(field, {}) or {}
+                if not curve:
+                    continue
+                values = sorted(((float(key), metric.get("accuracy")) for key, metric in curve.items()), key=lambda item: item[0])
+                values = [(x, y) for x, y in values if y is not None]
+                if values:
+                    found = True
+                    axis.plot([x for x, _ in values], [y for _, y in values], marker="o",
+                              label=f"{row['model']} {row['arm']}")
+        if found:
+            axis.set_xlabel(x_label)
+            axis.set_ylabel("Exact accuracy")
+            axis.set_title(title)
+            axis.legend(fontsize=7, ncol=2)
+            axis.grid(alpha=0.25)
+        else:
+            _no_data(axis, title)
         outputs.extend(_save(fig, output_dir, filename))
     return outputs
 
@@ -1220,7 +1306,10 @@ def make_exp11_report(
                 baseline = baseline_records.get(key)
                 # A snapshot row is the evidence for a baseline measurement. Its
                 # coverage map can explain the omission, but cannot supply a value.
-                baseline_status = "complete" if baseline is not None else "missing"
+                baseline_count = int((baseline or {}).get("examples") or 0)
+                baseline_status = (
+                    "complete" if baseline_count > 0 else "partial" if baseline is not None else "missing"
+                )
                 base_dir = (base_eval.parent if base_eval else
                             baseline_runs_dir / baseline_name / model / "evaluation" / arm / str(baseline_selector or "") / f"seed{seed}")
                 base_id = _question_identity(base_dir / f"{split}_predictions.csv")
@@ -1242,6 +1331,7 @@ def make_exp11_report(
                     delta = float(accuracy) - float(baseline["accuracy"])
                 row = {
                     "model": model, "arm": arm, "split": split,
+                    "parameters": (result or {}).get("model_parameters"),
                     "baseline_status": baseline_status,
                     "baseline_accuracy": baseline.get("accuracy") if baseline else None,
                     "baseline_examples": baseline.get("examples") if baseline else None,
@@ -1260,6 +1350,8 @@ def make_exp11_report(
                         split_data.get("trace_reference_exact_match_rate") if split_data else None
                     ),
                     "module_metrics": split_data.get("module", {}) if split_data else {},
+                    "by_digit_width": split_data.get("by_digit_width", {}) if split_data else {},
+                    "by_operator_count": split_data.get("by_operator_count", {}) if split_data else {},
                     "capped_completions": split_data.get("capped_completions") if split_data else None,
                     "mean_output_tokens": split_data.get("mean_output_tokens") if split_data else None,
                     "checkpoint_step": (result or {}).get("checkpoint_step"),
@@ -1282,8 +1374,18 @@ def make_exp11_report(
     diagnostics = {
         "protocol": annotation_manifest.get("tokenizer", {}).get("protocol", "reasoning_v1"),
         "annotation_sha256": annotation_manifest.get("annotation", {}).get("annotation_sha256"),
+        "annotation_provenance": {
+            "source_bundle": annotation_manifest.get("annotation", {}).get("source_bundle"),
+            "source_manifest_sha256": annotation_manifest.get("annotation", {}).get("source_manifest_sha256"),
+            "source_split_sha256": annotation_manifest.get("annotation", {}).get("source_split_sha256"),
+            "source_tokenizer_sha256": annotation_manifest.get("annotation", {}).get("source_tokenizer_sha256"),
+            "tokenizer_sha256": annotation_manifest.get("annotation", {}).get("tokenizer_sha256")
+                or annotation_manifest.get("tokenizer", {}).get("sha256"),
+        },
+        "tokenizer": annotation_manifest.get("tokenizer", {}),
         "module_split_statistics": annotation_manifest.get("annotation", {}).get("module_split_statistics", {}),
         "collapsed_categories": annotation_manifest.get("annotation", {}).get("collapsed_categories", {}),
+        "full_length_statistics": {},
         "length_metrics": {},
     }
     # The annotation manifest stores per-module/split reduction counts. Count the
@@ -1296,8 +1398,25 @@ def make_exp11_report(
                     if not line.strip():
                         continue
                     record = json.loads(line)
+                    module = record.get("module", "unknown")
+                    split = record.get("split", "unknown")
+                    key = f"{module}/{split}"
+                    try:
+                        full_length = int(record["full_length"])
+                    except (KeyError, TypeError, ValueError):
+                        full_length = None
+                    if full_length is not None:
+                        diagnostics["full_length_statistics"].setdefault(key, []).append(full_length)
                     for category, count in record.get("collapsed_categories", {}).items():
                         collapsed_counts[category] = collapsed_counts.get(category, 0) + int(count)
+    for key, lengths in diagnostics["full_length_statistics"].items():
+        lengths.sort()
+        n = len(lengths)
+        diagnostics["full_length_statistics"][key] = {
+            "count": n, "min": lengths[0], "mean": sum(lengths) / n,
+            "median": statistics.median(lengths), "p95": lengths[min(n - 1, math.ceil(.95 * n) - 1)],
+            "p99": lengths[min(n - 1, math.ceil(.99 * n) - 1)], "max": lengths[-1],
+        }
     diagnostics["collapsed_categories"] = collapsed_counts or diagnostics["collapsed_categories"]
     # Summarize prediction completion and visible trace lengths as output data arrives.
     for (model, arm), (result_path, result) in raw_results.items():
@@ -1406,6 +1525,7 @@ def make_exp11_report(
         }
 
     rlvr_gains = _exp11_rlvr_gains(rows)
+    continued_sft_gains = _exp11_continued_sft_gains(rows)
     sample_efficiency: list[dict[str, Any]] = []
     for model in MODELS:
         for arm in ARMS:
@@ -1470,6 +1590,7 @@ def make_exp11_report(
         "compute_matching": compute_matching,
         "grpo_diagnostics": grpo_diagnostics,
         "rlvr_gains": rlvr_gains,
+        "continued_sft_gains": continued_sft_gains,
         "sample_efficiency": sample_efficiency,
         "statuses": list(EXP11_STATUS),
         "limitations": [
@@ -1478,6 +1599,8 @@ def make_exp11_report(
             "Accuracy deltas require complete results and identical ordered module/question/target identities in baseline and Experiment 11 prediction CSVs. Aggregate snapshot accuracy alone cannot prove question identity.",
             "The handwritten scratchpad is additional supervised target text in the Experiment 11 SFT data. The current training objective does not separately mask or weight scratchpad tokens, so this is not answer-only supervision with an auxiliary trace loss.",
             "Missing baseline snapshot cells are preserved as missing; unavailable measurements are never treated as zero.",
+            "This report covers one seed only and provides no between-seed uncertainty estimate.",
+            "The annotation token budget can reduce trace detail; harder or longer examples may therefore receive less detailed supervised traces.",
             "Sample-efficiency ratios are endpoint exact-accuracy percentages normalized by logged tokens or estimated FLOPs; token semantics differ by arm and FLOPs are estimated, so they are descriptive rather than causal comparisons.",
         ],
     }
@@ -1495,15 +1618,16 @@ def make_exp11_report(
         f"Rows: {len(rows)} (expected 27: 3 models × 3 arms × 3 splits).",
         "Statuses distinguish missing baseline results, not-run, running, partial, failed, and complete evaluations.",
         "Accuracy deltas are reported only for complete evaluations with identical ordered question identities.", "",
-        "| Model | Arm | Split | Baseline status | Baseline accuracy | Exp11 status | Exp11 accuracy | Delta (pp) | Examples | Format valid | Trace structure | Reference trace match | Capped | Mean output tokens | Baseline train tokens | Exp11 train tokens | Additional tokens | Baseline FLOPs | Exp11 FLOPs | Additional FLOPs | Identity match |",
-        "|---|---|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+        "| Model | Arm | Split | Baseline status | Baseline accuracy | Baseline scored | Exp11 status | Exp11 accuracy | Delta (pp) | Exp11 scored | Format valid | Trace structure | Reference trace match | Capped | Mean output tokens | Baseline train tokens | Exp11 train tokens | Additional tokens | Baseline FLOPs | Exp11 FLOPs | Additional FLOPs | Identity match |",
+        "|---|---|---|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for row in rows:
         delta = "Missing" if row["delta_accuracy"] is None else f"{100 * row['delta_accuracy']:+.2f}"
         lines.append(
             f"| {row['model']} | {row['arm']} | {row['split']} | {row['baseline_status']} | "
-            f"{_exp11_accuracy(row['baseline_accuracy'])} | {row['exp11_status']} | "
-            f"{_exp11_accuracy(row['exp11_accuracy'])} | {delta} | {_format_count(row['examples'])} | "
+            f"{_exp11_accuracy(row['baseline_accuracy'])} | {_format_count(row['baseline_examples'])} | "
+            f"{row['exp11_status']} | {_exp11_accuracy(row['exp11_accuracy'])} | {delta} | "
+            f"{_format_count(row['examples'])} | "
             f"{_exp11_accuracy(row['format_validity'])} | "
             f"{_exp11_accuracy(row['trace_structure_validity'])} | "
             f"{_exp11_accuracy(row['trace_reference_exact_match_rate'])} | "
@@ -1526,6 +1650,19 @@ def make_exp11_report(
     ])
     for item in rlvr_gains:
         gain = item["grpo_minus_sft_percentage_points"]
+        gain_text = f"{gain:+.2f}" if gain is not None else "Missing"
+        lines.append(
+            f"| {item['model']} | {item['split']} | {item['status']} | {gain_text} | {item['reason']} |"
+        )
+    measured_control_gains = sum(item["status"] == "measured" for item in continued_sft_gains)
+    lines.extend([
+        "", "## Continued-SFT gains versus SFT", "",
+        f"Measured continued-SFT gains: {measured_control_gains}/{len(continued_sft_gains)} model/split comparisons; pending, failed, and identity-unverified cells do not imply a gain or loss.",
+        "", "| Model | Split | Status | Continued SFT minus SFT (pp) | Status detail |",
+        "|---|---|---|---:|---|",
+    ])
+    for item in continued_sft_gains:
+        gain = item["continued_sft_minus_sft_percentage_points"]
         gain_text = f"{gain:+.2f}" if gain is not None else "Missing"
         lines.append(
             f"| {item['model']} | {item['split']} | {item['status']} | {gain_text} | {item['reason']} |"
@@ -1644,15 +1781,28 @@ def make_exp11_report(
     lines.extend([
         "", "## Format, trace, length, and collapse diagnostics", "",
         f"Annotation protocol: `{diagnostics['protocol']}`; annotation hash: `{diagnostics['annotation_sha256'] or 'unavailable'}`.",
-        "", "| Module / split | Retained-token count | Min | Median | P95 | Max | Reduced examples | Reduced fraction |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|",
+        f"Source bundle: `{diagnostics['annotation_provenance'].get('source_bundle') or 'unavailable'}`; source manifest SHA-256: `{diagnostics['annotation_provenance'].get('source_manifest_sha256') or 'unavailable'}`; source split SHA-256: `{diagnostics['annotation_provenance'].get('source_split_sha256') or 'unavailable'}`; source tokenizer SHA-256: `{diagnostics['annotation_provenance'].get('source_tokenizer_sha256') or 'unavailable'}`; annotation tokenizer SHA-256: `{diagnostics['annotation_provenance'].get('tokenizer_sha256') or 'unavailable'}`.",
+        "", "| Module / split | Retained-token count | Min | Mean | Median | P95 | P99 | Max | Reduced examples | Reduced fraction |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ])
     for group, stats in sorted(diagnostics["module_split_statistics"].items()):
         lines.append(
             f"| {group} | {_format_count(stats.get('count'))} | {_format_count(stats.get('min'))} | "
-            f"{_format_count(stats.get('median'))} | {_format_count(stats.get('p95'))} | "
+            f"{_format_count(stats.get('mean'))} | {_format_count(stats.get('median'))} | {_format_count(stats.get('p95'))} | {_format_count(stats.get('p99'))} | "
             f"{_format_count(stats.get('max'))} | {_format_count(stats.get('reduced_count'))} | "
             f"{100 * float(stats.get('reduced_fraction') or 0):.2f}% |"
+        )
+    lines.extend([
+        "", "### Full untruncated annotation lengths", "",
+        "These source lengths are measured before trace reduction; retained-token lengths above describe the actual training target budget.",
+        "", "| Module / split | Count | Min | Mean | Median | P95 | P99 | Max |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
+    ])
+    for group, stats in sorted(diagnostics["full_length_statistics"].items()):
+        lines.append(
+            f"| {group} | {_format_count(stats.get('count'))} | {_format_count(stats.get('min'))} | "
+            f"{stats.get('mean', 0):.2f} | {_format_count(stats.get('median'))} | "
+            f"{_format_count(stats.get('p95'))} | {_format_count(stats.get('p99'))} | {_format_count(stats.get('max'))} |"
         )
     lines.extend([
         "", "Collapse operations: " + (
@@ -1668,8 +1818,18 @@ def make_exp11_report(
         "",
     ])
     markdown_path.write_text("\n".join(lines), encoding="utf-8")
+    chart_rows = [
+        {**row, "accuracy": row.get("exp11_accuracy"), "parameters": row.get("parameters")}
+        for row in rows
+    ]
     figures = [
         *_exp11_charts(rows, output_dir),
+        *_figure_scaling(chart_rows, output_dir),
+        *_figure_arm_bars(chart_rows, output_dir),
+        *_exp11_breakdown_charts(chart_rows, output_dir),
+        *_figure_curves(runs_dir, experiment, output_dir, seed),
+        *_figure_ood(chart_rows, output_dir),
+        *_figure_compute(chart_rows, runs_dir, experiment, output_dir, seed),
         *_exp11_grpo_sample_efficiency_chart(
             runs_dir=runs_dir, experiment=experiment, output_dir=output_dir, seed=seed
         ),
