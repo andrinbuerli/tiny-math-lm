@@ -1,15 +1,16 @@
 # Separate Experiment 13 delegated-arithmetic reference bundle.
-name: exp13_reasoning_v3_arithmetic_subtasks
+name: exp13_reasoning_v3_arithmetic_subtasks_atomic_v2
 source_bundle: ${oc.env:WORKSPACE_ROOT,/workspace}/data/processed/d9f78d0665b3-main-seed18
 output_bundle: ${oc.env:WORKSPACE_ROOT,/workspace}/data/processed/exp13_reasoning_v3_arithmetic_subtasks-seed18
 max_tokens: 512
 workers: 8
 seed: 18
 protocol: reasoning_v3
+subtask_schema_version: 2
 experiment:
   number: 13
-  name: exp13_reasoning_v3_arithmetic_subtasks
-  title: "Experiment 13 — Delegated arithmetic with standalone subtask traces"
+  name: exp13_reasoning_v3_arithmetic_subtasks_atomic_v2
+  title: "Experiment 13 — Atomic rational operands in standalone arithmetic subtasks"
   phase: data-annotation
   protocol: reasoning_v3
   seed: 18
@@ -23,9 +24,9 @@ tracking:
   project: tinymath-rl
   entity: ${oc.env:WANDB_ENTITY,andi-mueller-csem-sa}
   group: exp13-reasoning-v3-arithmetic-subtasks-seed18
-  name: exp13-reasoning-v3-arithmetic-subtasks-data-annotation-seed18
+  name: exp13-reasoning-v3-atomic-v2-data-annotation-seed18
   mode: online
-  tags: [exp13_reasoning_v3, data-annotation, reasoning_v3]
+  tags: [exp13_reasoning_v3, data-annotation, reasoning_v3, atomic-subtasks-v2]
   resume: true
 runtime:
   wandb_service_gomaxprocs: 2

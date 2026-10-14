@@ -29,6 +29,12 @@ MODULES = frozenset({
 NUMBER = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)"
 _NUMBER_RE = re.compile(NUMBER)
 _VAR = re.compile(r"[a-z]")
+SUBTASK_SCHEMA_VERSION = 2
+_CALL_SYMBOLS = {"add": "+", "subtract": "-", "multiply": "*", "divide": "/"}
+_CALL_MODULES = {
+    "add": "arithmetic__add_or_sub", "subtract": "arithmetic__add_or_sub",
+    "multiply": "arithmetic__mul", "divide": "arithmetic__div",
+}
 
 
 def _fraction(text: str) -> Fraction:
@@ -117,6 +123,38 @@ class ArithmeticCall:
             f"call:{self.operation}({_scalar(self.left)},{_scalar(self.right)})"
             f" -> {_scalar(self.result)}"
         )
+
+
+def _subtask_question(operation: str, operands: list[str]) -> str:
+    values = [f"({text})" if _fraction(text).denominator != 1 else text for text in operands]
+    return f"Calculate {values[0]} {_CALL_SYMBOLS[operation]} {values[1]}."
+
+
+def _atomic_subtask_call(row: dict) -> ArithmeticCall | None:
+    """Validate structured operands without reinterpreting fraction slashes as nodes."""
+    version = row.get("subtask_schema_version")
+    if version is None:
+        return None  # Original expressions and legacy annotations retain their parser.
+    if version != SUBTASK_SCHEMA_VERSION or row.get("category") != "reasoning_v3_subtask":
+        raise ValueError("Unsupported atomic subtask schema")
+    operation, operands = row.get("call_operation"), row.get("call_operands")
+    if operation not in _CALL_SYMBOLS or not isinstance(operands, list) or len(operands) != 2:
+        raise ValueError("Atomic subtasks require one operation and two scalar operands")
+    if any(not isinstance(text, str) or _scalar(_fraction(text)) != text for text in operands):
+        raise ValueError("Atomic subtask operands must be canonical scalars")
+    left, right = map(_fraction, operands)
+    symbol = _CALL_SYMBOLS[operation]
+    if operation == "divide" and not right:
+        raise ValueError("Atomic subtask divides by zero")
+    result = {"add": left + right, "subtract": left - right,
+              "multiply": left * right, "divide": left / right if right else None}[operation]
+    if (row.get("question") != _subtask_question(operation, operands)
+            or row.get("module") != _CALL_MODULES[operation]
+            or row.get("answer") != _scalar(result)
+            or row.get("call_result") != _scalar(result)
+            or row.get("subtask_operation_count") != 1):
+        raise ValueError("Atomic subtask question, module, result, or operation count is inconsistent")
+    return ArithmeticCall(operation, left, right, result, symbol)
 
 
 def _add_lines(a: int, b: int, result: int) -> list[str]:
@@ -657,17 +695,23 @@ def annotate_row(
     answer = row["answer"].strip()
     expected = _fraction(answer)
     module = row["module"]
+    atomic_call = _atomic_subtask_call(row)
     arithmetic_calls: list[ArithmeticCall] = []
     if module == "algebra__linear_1d":
         _, operations, value = _linear_trace(row["question"], answer)
         if value != expected:
             raise ValueError("Linear result verification failed")
     else:
-        expression, _ = _source_expression(row["question"], module)
-        # Word templates normalize to operators; signed numbers remain exact.
-        expression = re.sub(r"(?<=\d)\s+(?=[+-]?\d)", " ", expression)
         builder = _Builder()
-        trace = _ExpressionParser(expression, builder).parse()
+        if atomic_call is not None:
+            trace = builder.arithmetic(atomic_call.symbol, atomic_call.left, atomic_call.right)
+            if len(builder.calls) != 1:
+                raise ValueError("An atomic subtask must contain exactly one arithmetic operation")
+        else:
+            expression, _ = _source_expression(row["question"], module)
+            # Word templates normalize to operators; signed numbers remain exact.
+            expression = re.sub(r"(?<=\d)\s+(?=[+-]?\d)", " ", expression)
+            trace = _ExpressionParser(expression, builder).parse()
         arithmetic_calls = list(builder.calls)
         value = trace.value
         if value != expected:
@@ -731,6 +775,8 @@ def annotate_row(
     if _fraction(answer) != value:
         raise AssertionError("Final scalar changed during annotation")
     annotated = dict(row)
+    # Re-annotation must not inherit another protocol's verifier dispatch tag.
+    annotated.pop("trace_version", None)
     annotated.update({
         "scratchpad": scratch,
         "full_length": full_length,
@@ -782,22 +828,18 @@ def generate_subtask_rows(
         if actual != result:
             raise ValueError(f"Incorrect reasoning_v3 call result in {line!r}")
         operands = (_scalar(left), _scalar(right))
-        module = {
-            "+": "arithmetic__add_or_sub", "-": "arithmetic__add_or_sub",
-            "*": "arithmetic__mul", "/": "arithmetic__div",
-        }[symbol]
-        if any(value.denominator != 1 for value in (left, right, result)):
-            module = "arithmetic__mixed"
-        question_operands = tuple(
-            f"({text})" if value.denominator != 1 else text
-            for text, value in zip(operands, (left, right))
-        )
-        question = f"Calculate {question_operands[0]} {symbol} {question_operands[1]}."
+        module = _CALL_MODULES[operation]
+        question = _subtask_question(operation, list(operands))
         subtask_source = {
             "question": question,
             "answer": _scalar(result),
             "module": module,
             "category": "reasoning_v3_subtask",
+            "subtask_schema_version": SUBTASK_SCHEMA_VERSION,
+            "subtask_operation_count": 1,
+            "call_operation": operation,
+            "call_operands": list(operands),
+            "call_result": _scalar(result),
         }
         subtask = annotate_row(
             subtask_source, max_tokens=max_tokens, length_fn=length_fn, protocol="reasoning_v2"
@@ -1175,7 +1217,10 @@ def verify_annotation(
         return
     module = row.get("module", "")
     answer = _fraction(row["answer"])
-    if module == "algebra__linear_1d":
+    atomic_call = _atomic_subtask_call(row)
+    if atomic_call is not None:
+        source_value = atomic_call.result
+    elif module == "algebra__linear_1d":
         _, _, source_value = _linear_trace(row["question"], row["answer"])
     else:
         source_expression, _ = _source_expression(row["question"], module)
@@ -1183,8 +1228,8 @@ def verify_annotation(
         source_value = _ExpressionParser(source_expression, _Builder()).parse().value
     if source_value != answer:
         raise ValueError("Source-row arithmetic does not produce its labeled answer")
-    source_operands = None
-    if module in {"arithmetic__add_or_sub", "arithmetic__mul", "arithmetic__div"}:
+    source_operands = (atomic_call.left, atomic_call.symbol, atomic_call.right) if atomic_call else None
+    if atomic_call is None and module in {"arithmetic__add_or_sub", "arithmetic__mul", "arithmetic__div"}:
         source_expression, _ = _source_expression(row["question"], module)
         simple = re.fullmatch(
             rf"\s*({NUMBER})\s*([+*/-])\s*({NUMBER})\s*", source_expression

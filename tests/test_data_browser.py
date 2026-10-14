@@ -15,6 +15,9 @@ def test_discover_bundles_returns_manifest_directories(tmp_path):
     (newer / "manifest.json").write_text("{}", encoding="utf-8")
     os.utime(older / "manifest.json", ns=(10_000_000_000, 10_000_000_000))
     (tmp_path / "processed" / "incomplete").mkdir()
+    backup = tmp_path / "processed" / ".newer.previous-backup"
+    backup.mkdir()
+    (backup / "manifest.json").write_text("{}", encoding="utf-8")
 
     assert discover_bundles(tmp_path) == [newer, older]
 

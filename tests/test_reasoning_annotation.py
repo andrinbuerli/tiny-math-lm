@@ -276,7 +276,7 @@ def test_reasoning_v3_emits_verified_visible_calls_and_separate_subtasks(
     assert subtasks[0]["call_index"] == 0
     assert "call:" not in subtasks[0]["scratchpad"]
     verify_annotation(
-        {key: subtasks[0][key] for key in ("question", "answer", "module", "category")},
+        subtasks[0],
         subtasks[0],
     )
 
@@ -297,6 +297,47 @@ def test_reasoning_v3_nested_calls_are_postorder_and_fraction_tasks_are_parenthe
     subtasks = generate_subtask_rows(source, annotation, source_split="sft_train", parent_row_index=0)
     assert subtasks[-1]["question"] == "Calculate 12 / (-1/2)."
     assert subtasks[-1]["answer"] == "-24"
+    assert subtasks[-1]["module"] == "arithmetic__div"
+    assert subtasks[-1]["subtask_operation_count"] == 1
+    assert subtasks[-1]["subtask_schema_version"] == 2
+    # Re-annotation consumes the structured operands, not the slashes in their text.
+    trace = annotate_row(subtasks[-1], protocol="reasoning_v3")["scratchpad"]
+    assert [line for line in trace.splitlines() if line.startswith("call:")] == [
+        "call:divide(12,-1/2) -> -24"
+    ]
+
+
+def test_fraction_subtraction_subtask_is_one_operator_and_matches_reported_example():
+    source = row("Calculate -1.06 - -4.10201.", "3.04201", "arithmetic__add_or_sub")
+    annotation = annotate_row(source, protocol="reasoning_v3")
+    subtasks = generate_subtask_rows(source, annotation, source_split="sft_train", parent_row_index=0)
+    assert len(subtasks) == 1
+    task = subtasks[0]
+    assert task["question"] == "Calculate (-53/50) - (-410201/100000)."
+    assert task["module"] == "arithmetic__add_or_sub"
+    assert "/(" not in task["scratchpad"]  # No spurious fraction-construction divisions.
+    trace = annotate_row(task, protocol="reasoning_v3")["scratchpad"]
+    assert trace.splitlines()[1:] == ["call:subtract(-53/50,-410201/100000) -> 304201/100000"]
+    verify_annotation(task, task)
+
+
+@pytest.mark.parametrize(("expression", "answer"), [
+    ("(1/3)+(1/7)", "10/21"), ("(1/3)-(1/7)", "4/21"),
+    ("(1/3)*(1/7)", "1/21"), ("(1/3)/(1/7)", "7/3"),
+    ("(-1/2)*(-5/4)", "5/8"),
+])
+def test_subtasks_treat_all_rational_operands_as_atomic(expression, answer):
+    source = row(f"Calculate {expression}.", answer, "arithmetic__mixed")
+    annotation = annotate_row(source, protocol="reasoning_v3")
+    task = generate_subtask_rows(source, annotation, source_split="test", parent_row_index=0)[-1]
+    trace = annotate_row(task, protocol="reasoning_v3")["scratchpad"]
+    assert trace.count("call:") == 1
+    assert task["module"] != "arithmetic__mixed"
+    verify_annotation(task, task)
+    for field, value in (("question", "Calculate 1 + 2."), ("call_result", "0"),
+                         ("module", "arithmetic__mixed"), ("subtask_operation_count", 3)):
+        with pytest.raises(ValueError, match="Atomic subtask"):
+            annotate_row({**task, field: value}, protocol="reasoning_v2")
 
 
 def test_reasoning_v3_algebra_delegates_final_division_and_verifier_rejects_edits():

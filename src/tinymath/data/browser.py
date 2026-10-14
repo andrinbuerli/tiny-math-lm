@@ -13,7 +13,8 @@ def discover_bundles(data_dir: Path) -> list[Path]:
     """Return prepared data directories that contain a readable manifest."""
     if not data_dir.exists():
         return []
-    manifests = list(data_dir.glob("processed/*/manifest.json"))
+    manifests = [path for path in data_dir.glob("processed/*/manifest.json")
+                 if not path.parent.name.startswith(".")]
     manifests.sort(
         key=lambda manifest: (manifest.stat().st_mtime_ns, manifest.parent.name), reverse=True
     )

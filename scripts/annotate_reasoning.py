@@ -17,7 +17,12 @@ from omegaconf import DictConfig
 from tinymath.config import workspace_path
 from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.data.prompts import format_prompt
-from tinymath.data.reasoning import annotate_row, distribution, verify_annotation
+from tinymath.data.reasoning import (
+    SUBTASK_SCHEMA_VERSION,
+    annotate_row,
+    distribution,
+    verify_annotation,
+)
 from tinymath.data.reasoning_v3_bundle import build_reasoning_v3_bundle
 from tinymath.tracking.wandb import finish_wandb, initialize_wandb
 
@@ -70,14 +75,19 @@ def main(config: DictConfig) -> None:
     run = initialize_wandb(config, run_dir, job_type="data-annotation")
     try:
         if str(config.protocol) == "reasoning_v3":
+            if int(config.get("subtask_schema_version", SUBTASK_SCHEMA_VERSION)) != SUBTASK_SCHEMA_VERSION:
+                raise ValueError("Unsupported v3 subtask schema version")
             result = build_reasoning_v3_bundle(
                 source, destination, max_tokens=int(config.max_tokens),
                 workers=int(config.get("workers", 8)),
+                progress=lambda stage, split, rows: run.log({f"annotation/progress/{stage}/{split}": rows}),
             )
             run.config.update({
                 "source_manifest_sha256": result["source_manifest_sha256"],
                 "annotation_sha256": result["annotation"]["annotation_sha256"],
                 "annotation_output_bundle": str(destination),
+                "subtask_schema_version": result["subtask_schema_version"],
+                "subtask_operand_semantics": result["subtask_operand_semantics"],
                 "split_counts": {
                     name: value["examples"] for name, value in result["splits"].items()
                 },

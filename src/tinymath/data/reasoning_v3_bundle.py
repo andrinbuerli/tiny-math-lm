@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
+import logging
 import os
 import shutil
+import tempfile
+import uuid
 from collections import Counter, defaultdict, deque
+from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -14,6 +19,7 @@ from typing import Any
 from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.data.prompts import format_prompt
 from tinymath.data.reasoning import (
+    SUBTASK_SCHEMA_VERSION,
     annotate_row,
     distribution,
     generate_subtask_rows,
@@ -22,6 +28,7 @@ from tinymath.data.reasoning import (
 
 _WORKER_TOKENIZER: CharacterTokenizer | None = None
 _WORKER_MAX_TOKENS = 512
+LOGGER = logging.getLogger(__name__)
 
 
 def _sha256(path: Path) -> str:
@@ -112,7 +119,45 @@ def _bounded_map(executor: ProcessPoolExecutor, function, rows, *, workers: int)
 
 
 def build_reasoning_v3_bundle(
-    source: Path, destination: Path, *, max_tokens: int = 512, workers: int = 8
+    source: Path, destination: Path, *, max_tokens: int = 512, workers: int = 8,
+    progress: Callable[[str, str, int], None] | None = None,
+) -> dict[str, Any]:
+    """Build off to the side and publish only a complete verified replacement."""
+    source, destination = source.resolve(), destination.resolve()
+    if source == destination or source in destination.parents or destination in source.parents:
+        raise ValueError("Source and derived bundle directories must not overlap")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with (destination.parent / f".{destination.name}.build.lock").open("w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("Another process is already building this bundle") from None
+        staging = Path(tempfile.mkdtemp(prefix=f".{destination.name}.building-", dir=destination.parent))
+        backup = None
+        try:
+            result = _build_reasoning_v3_bundle(
+                source, staging, max_tokens=max_tokens, workers=workers, progress=progress,
+            )
+            if destination.exists():
+                backup = destination.with_name(f".{destination.name}.previous-{uuid.uuid4().hex[:12]}")
+                destination.rename(backup)
+            try:
+                staging.rename(destination)
+            except BaseException:
+                if backup is not None:
+                    backup.rename(destination)
+                raise
+            if backup is not None:
+                LOGGER.info("Preserved previous bundle at %s", backup)
+            return result
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
+
+
+def _build_reasoning_v3_bundle(
+    source: Path, destination: Path, *, max_tokens: int = 512, workers: int = 8,
+    progress: Callable[[str, str, int], None] | None = None,
 ) -> dict[str, Any]:
     """Create combined parent/subtask splits, failing closed on any bad row."""
     manifest_path = source / "manifest.json"
@@ -147,7 +192,13 @@ def build_reasoning_v3_bundle(
     with ProcessPoolExecutor(max_workers=workers, initializer=_init_annotation_worker) as pool:
         for split, metadata in split_info.items():
             payloads = ((split, i, row) for i, row in enumerate(_rows(source / str(metadata["path"]))))
-            for subtasks, training_text in _bounded_map(pool, _scan_row, payloads, workers=workers):
+            for scanned, (subtasks, training_text) in enumerate(
+                _bounded_map(pool, _scan_row, payloads, workers=workers), 1
+            ):
+                if scanned % 5000 == 0 or scanned == parent_counts[split]:
+                    LOGGER.info("scan %s: %d/%d parents", split, scanned, parent_counts[split])
+                    if progress is not None:
+                        progress("scan", split, scanned)
                 if training_text is not None:
                     for text in training_text:
                         chars.update(text)
@@ -163,7 +214,13 @@ def build_reasoning_v3_bundle(
         payloads = (("sft_train", i, row) for i, row in enumerate(
             _rows(source / str(split_info["sft_train"]["path"]))
         ))
-        for subtasks, _ in _bounded_map(pool, _scan_row, payloads, workers=workers):
+        for scanned, (subtasks, _) in enumerate(
+            _bounded_map(pool, _scan_row, payloads, workers=workers), 1
+        ):
+            if scanned % 5000 == 0 or scanned == parent_counts["sft_train"]:
+                LOGGER.info("vocabulary sft_train: %d/%d parents", scanned, parent_counts["sft_train"])
+                if progress is not None:
+                    progress("vocabulary", "sft_train", scanned)
             for subtask in subtasks:
                 if str(subtask["task_key"]) in eligible_keys:
                     for field in ("question", "answer", "scratchpad"):
@@ -206,6 +263,10 @@ def build_reasoning_v3_bundle(
                     split_out.write(parent_line)
                     split_digest.update(parent_line.encode("utf-8"))
                     parent_count += 1
+                    if parent_count % 5000 == 0 or parent_count == parent_counts[split]:
+                        LOGGER.info("write %s: %d/%d parents", split, parent_count, parent_counts[split])
+                        if progress is not None:
+                            progress("write", split, parent_count)
                     parent_lengths[(str(row["module"]), split)].append(int(annotation["retained_length"]))
                     if bool(annotation["reduced"]):
                         parent_reduced[(str(row["module"]), split)] += 1
@@ -263,6 +324,8 @@ def build_reasoning_v3_bundle(
         "prompt_format": "Q: {original_question}\\n",
         "completion_format": "<scp>\\n{scratchpad}\\n</scp>\\nA: {original_answer}<EOS>",
         "trace_protocol": "reasoning_v3",
+        "subtask_schema_version": SUBTASK_SCHEMA_VERSION,
+        "subtask_operand_semantics": "atomic_rational",
         "splits": split_manifest,
         "subtask_training_eligible_tasks": len(eligible_keys),
         "subtask_training_eligible": len(eligible_keys),
@@ -278,6 +341,8 @@ def build_reasoning_v3_bundle(
     })
     annotation = {
         "protocol": "reasoning_v3", "max_tokens": max_tokens,
+        "subtask_schema_version": SUBTASK_SCHEMA_VERSION,
+        "subtask_operand_semantics": "atomic_rational",
         "source_split_sha256": source_hashes, "splits": split_manifest,
         "tokenizer_sha256": tokenizer.sha256,
         "training_parent_rows": training_parent_count,

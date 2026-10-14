@@ -57,6 +57,20 @@ W&B. Incompatible checkpoint/evaluation resumes are rejected. Policy, executor, 
 total transcript token counts remain separate; compute estimates include inserted
 tokens. Reference-trace equality is diagnostic only.
 
+Generated subtask schema v2 treats `call_operands` as two atomic rational scalars.
+The question still displays fractions, but their slashes are not parsed as extra
+division tasks. `subtask_operation_count` is always 1, and `module` follows
+`call_operation`, including for fractional operands. The annotator validates the
+question, operation, operands, result, and module together before producing the
+ordinary v2 worked trace. Original parent expressions retain their expression parser.
+
+Regenerate with `uv run python scripts/annotate_reasoning.py --config-name reasoning_v3`.
+The atomic-v2 annotation has its own resumable W&B identity and replaces the standard
+v3 bundle only after successful validation. A hidden sibling backup preserves the
+previous bundle; hidden backups and staging directories are excluded from the browser.
+The new annotation hash intentionally invalidates compatibility with checkpoints
+trained on the old annotations.
+
 ## Controlled validation
 
 ```bash
