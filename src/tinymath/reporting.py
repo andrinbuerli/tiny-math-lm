@@ -1272,15 +1272,20 @@ def make_exp11_report(
                 (result or {}).get("checkpoint_step"),
             )
             training_metrics_by_arm[(model, arm)] = train_metrics
-            baseline_record_for_training = next(
-                (baseline_records.get((model, arm, split_name)) for split_name in EXP11_SPLITS
-                 if baseline_records.get((model, arm, split_name)) is not None),
-                None,
+            baseline_metrics_path = (
+                baseline_runs_dir / baseline_name / model / arm / f"seed{seed}" / "metrics.csv"
             )
+            # Compare training cost at the same optimizer update as the
+            # Experiment 11 checkpoint being evaluated. The baseline's
+            # evaluation checkpoint can be at a different update (for example,
+            # 100,000 versus a best validation checkpoint at 99,300), so using
+            # its evaluation step here makes update-matched costs disappear.
+            step_key = "update" if arm == "grpo" else "optimizer_step"
+            cost_comparison_step = train_metrics.get(step_key)
             baseline_train_metrics = _metric_at_checkpoint(
-                baseline_runs_dir / baseline_name / model / arm / f"seed{seed}" / "metrics.csv",
+                baseline_metrics_path,
                 arm,
-                (baseline_record_for_training or {}).get("checkpoint_step"),
+                cost_comparison_step,
             )
             def estimator_summary(path: Path) -> str | None:
                 versions = sorted({
@@ -1307,7 +1312,6 @@ def make_exp11_report(
                 except (TypeError, ValueError):
                     return None
 
-            step_key = "update" if arm == "grpo" else "optimizer_step"
             update_matched = (
                 train_metrics.get(step_key) not in (None, "")
                 and train_metrics.get(step_key) == baseline_train_metrics.get(step_key)
@@ -1374,6 +1378,8 @@ def make_exp11_report(
                     "capped_completions": split_data.get("capped_completions") if split_data else None,
                     "mean_output_tokens": split_data.get("mean_output_tokens") if split_data else None,
                     "checkpoint_step": (result or {}).get("checkpoint_step"),
+                    "training_cost_comparison_step": cost_comparison_step,
+                    "training_cost_comparison_status": "matched" if update_matched else "missing",
                     "selector": selector,
                     "logged_tokens": train_metrics.get("tokens_seen"),
                     "estimated_flops": train_metrics.get("estimated_flops"),
@@ -1620,7 +1626,7 @@ def make_exp11_report(
         "sample_efficiency": sample_efficiency,
         "statuses": list(EXP11_STATUS),
         "limitations": [
-            "Training token counts and FLOPs are read from the latest checkpoint-aligned metric row when available; FLOPs are dense-position estimates, not hardware counters.",
+            "Training token counts and FLOPs use the Experiment 11 evaluation checkpoint when available; additional training-cost deltas compare both metric histories at the same optimizer update. FLOPs are estimates, not hardware counters.",
             "Continued SFT uses effective batch 128 as an approximate compute control; its measured FLOP ratio to GRPO is shown when both arm metrics are available.",
             "Accuracy deltas require complete results and identical ordered module/question/target identities in baseline and Experiment 11 prediction CSVs. FLOP deltas and FLOP-efficiency deltas also require matching estimator versions.",
             "The handwritten scratchpad is additional supervised target text in the Experiment 11 SFT data. The current training objective does not separately mask or weight scratchpad tokens, so this is not answer-only supervision with an auxiliary trace loss.",

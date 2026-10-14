@@ -235,12 +235,15 @@ def test_main_report_does_not_promote_pilot_evaluation(workspace_tmpdir):
         encoding="utf-8",
     )
     (main_checkpoint.parent / "metrics.csv").write_text(
-        "optimizer_step,tokens_seen,estimated_flops\n10,100,1000\n", encoding="utf-8"
+        "optimizer_step,tokens_seen,estimated_flops,flops_estimator_version\n"
+        "10,1200,15000,dense_position_v2\n", encoding="utf-8"
     )
     baseline_metrics = runs / "baseline" / "1m" / "sft" / "seed18" / "metrics.csv"
     baseline_metrics.parent.mkdir(parents=True)
     baseline_metrics.write_text(
-        "optimizer_step,tokens_seen,estimated_flops\n100,1000,10000\n", encoding="utf-8"
+        "optimizer_step,tokens_seen,estimated_flops,flops_estimator_version\n"
+        "10,1000,10000,dense_position_v2\n100,10000,100000,dense_position_v2\n",
+        encoding="utf-8"
     )
     pilot_checkpoint = main_checkpoint.parent / "pilot-2000-examples-10-updates" / "seed18" / "best.pt"
     pilot_checkpoint.parent.mkdir(parents=True)
@@ -271,8 +274,10 @@ def test_main_report_does_not_promote_pilot_evaluation(workspace_tmpdir):
     )
     assert row["exp11_status"] == "not-run"
     assert row["examples"] is None
-    assert row["additional_tokens"] is None
-    assert row["additional_flops"] is None
+    assert row["training_cost_comparison_step"] == "10"
+    assert row["training_cost_comparison_status"] == "matched"
+    assert row["additional_tokens"] == 200
+    assert row["additional_flops"] == 5000
     assert row["training_wandb"]["run_id"] == "main-run-id"
     assert row["training_wandb"]["sync_status"] == "unsynced"
     assert row["training_wandb"]["url"] is None
