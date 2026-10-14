@@ -41,7 +41,7 @@ def test_reasoning_grpo_reward_requires_structure_and_correct_final_scalar():
         [
             "\nA: 2",
             "Q: 1 + 1\n",
-            "+(1,1)\n1,1,0:2,0",
+            "t0=+(1,1)=2\n1,1,0:2,0",
             "\nA: 3",
         ],
         protocol="reasoning_v1",
@@ -49,22 +49,26 @@ def test_reasoning_grpo_reward_requires_structure_and_correct_final_scalar():
     row = {
         "question": "1 + 1",
         "answer": "2",
-        "scratchpad": "+(1,1)\n1,1,0:2,0",
+        "scratchpad": "t0=+(1,1)=2\n1,1,0:2,0",
     }
-    valid_correct = tokenizer.encode_completion("2", scratchpad="+(1,1)\n1,1,0:2,0")
-    valid_wrong = tokenizer.encode_completion("3", scratchpad="+(1,1)\n1,1,0:2,0")
+    trace = "t0=+(1,1)=2\n1,1,0:2,0"
+    valid_correct = tokenizer.encode_completion("2", scratchpad=trace)
+    valid_wrong = tokenizer.encode_completion("3", scratchpad=trace)
     missing_eos = valid_correct[:-1]
+    malformed_trace = tokenizer.encode_completion("2", scratchpad="A: 2")
 
     assert grpo_runner._score_completion(valid_correct, tokenizer, row) == (
         True,
         True,
-        "+(1,1)\n1,1,0:2,0",
+        trace,
+        True,
         True,
     )
     assert grpo_runner._score_completion(valid_wrong, tokenizer, row) == (
         False,
         True,
-        "+(1,1)\n1,1,0:2,0",
+        trace,
+        True,
         True,
     )
     assert grpo_runner._score_completion(missing_eos, tokenizer, row) == (
@@ -72,6 +76,26 @@ def test_reasoning_grpo_reward_requires_structure_and_correct_final_scalar():
         False,
         None,
         False,
+        False,
+    )
+    assert grpo_runner._score_completion(malformed_trace, tokenizer, row) == (
+        False, True, "A: 2", False, False
+    )
+
+
+def test_reasoning_v2_grpo_reward_requires_transcribable_scratchpad():
+    trace = "step:+(1,2)\n=>3"
+    tokenizer = CharacterTokenizer.from_texts(
+        ["Q: 1 + 2\n", trace, "\nA: 3", "step:A"], protocol="reasoning_v2"
+    )
+    row = {"question": "1 + 2", "answer": "3", "scratchpad": trace}
+
+    assert grpo_runner._score_completion(
+        tokenizer.encode_completion("3", scratchpad=trace), tokenizer, row
+    ) == (True, True, trace, True, True)
+    malformed = tokenizer.encode_completion("3", scratchpad="step:A")
+    assert grpo_runner._score_completion(malformed, tokenizer, row) == (
+        False, True, "step:A", False, False
     )
 
 

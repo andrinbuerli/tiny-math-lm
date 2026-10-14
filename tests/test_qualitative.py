@@ -96,7 +96,7 @@ def test_qualitative_table_covers_each_split_and_balances_modules(monkeypatch):
     table = run.logs[0][0]["qualitative/examples"]
     assert set(table.columns) == {
         "training_arm", "seed", "split", "module", "question", "target",
-        "prediction", "completion", "predicted_scratchpad", "trace_structure_valid",
+        "prediction", "completion", "predicted_scratchpad", "transcribed_scratchpad", "trace_structure_valid",
         "correct", "format_valid", "output_tokens", "capped",
     }
     assert {row[2] for row in table.data} == {"train", "validation", "test"}
@@ -123,7 +123,7 @@ def test_reasoning_qualitative_uses_unprefixed_prompt_and_full_context_cap(monke
         ]
         for split in ("train", "validation", "test")
     }
-    trace = "+(1,1)\n1,1,0:2,0"
+    trace = "t0=+(1,1)=2\n1,1,0:2,0"
     tokenizer = CharacterTokenizer.from_texts(
         ["Q: 1 + 1\n", trace, "\nA: 2"], protocol="reasoning_v1"
     )
@@ -155,6 +155,7 @@ def test_reasoning_qualitative_uses_unprefixed_prompt_and_full_context_cap(monke
     assert all(prompt == "Q: 1 + 1\n" for prompt, _cap in observed)
     assert all(cap == 64 - len(tokenizer.encode("Q: 1 + 1\n", add_bos=True)) for _, cap in observed)
     assert table.data[0][8] == trace
+    assert "Add 1 and 1" in table.data[0][9]
 
 
 def test_reasoning_qualitative_retains_predicted_scratchpad_when_answer_is_malformed(monkeypatch):
@@ -162,7 +163,7 @@ def test_reasoning_qualitative_retains_predicted_scratchpad_when_answer_is_malfo
         split: [{"question": "1 + 1", "answer": "2", "module": "arithmetic__add_or_sub"}]
         for split in ("train", "validation", "test")
     }
-    trace = "+(1,1)\n1,1,0:2,0"
+    trace = "t0=+(1,1)=2\n1,1,0:2,0"
     tokenizer = CharacterTokenizer.from_texts(
         ["Q: 1 + 1\n", trace, "\nA: nope"], protocol="reasoning_v1"
     )

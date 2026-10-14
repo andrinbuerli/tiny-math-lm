@@ -11,6 +11,7 @@ import torch
 from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.data.completions import parse_reasoning_completion
 from tinymath.data.prompts import format_prompt
+from tinymath.data.trace_explanations import transcribe_scratchpad
 from tinymath.rewards.verify import verify_answer
 
 
@@ -107,11 +108,18 @@ def build_qualitative_table(
                     generated = generated[: generated.index(tokenizer.eos_id) + 1]
                 completion = tokenizer.decode(generated, skip_special=True).strip()
                 predicted_scratchpad = _predicted_scratchpad(generated, tokenizer)
+                transcribed_scratchpad = ""
                 trace_structure_valid: bool | None = None
                 if tokenizer.protocol in {"reasoning_v1", "reasoning_v2"}:
                     try:
                         parsed = parse_reasoning_completion(generated, tokenizer)
                         predicted_scratchpad = parsed.scratchpad
+                        explanation = transcribe_scratchpad(
+                            parsed.scratchpad, version=tokenizer.protocol
+                        )
+                        if not explanation:
+                            raise ValueError("Scratchpad has no transcribable reasoning steps")
+                        transcribed_scratchpad = "\n".join(explanation)
                         prediction = parsed.answer
                         correct, valid = verify_answer(
                             prediction, example["answer"], question=example["question"]
@@ -140,6 +148,7 @@ def build_qualitative_table(
                         prediction,
                         completion,
                         predicted_scratchpad,
+                        transcribed_scratchpad,
                         trace_structure_valid,
                         correct,
                         valid,
@@ -166,6 +175,7 @@ def build_qualitative_table(
             "prediction",
             "completion",
             "predicted_scratchpad",
+            "transcribed_scratchpad",
             "trace_structure_valid",
             "correct",
             "format_valid",

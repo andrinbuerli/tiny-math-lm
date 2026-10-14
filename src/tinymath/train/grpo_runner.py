@@ -22,6 +22,7 @@ from tinymath.checkpoint import (
 from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.data.completions import parse_reasoning_completion
 from tinymath.data.prompts import format_prompt
+from tinymath.data.trace_explanations import transcribe_scratchpad
 from tinymath.eval.qualitative import build_qualitative_table
 from tinymath.model.gpt import GPTConfig, TinyMathGPT
 from tinymath.rewards.verify import verify_answer
@@ -43,19 +44,25 @@ def _load_rows(path: Path) -> list[dict[str, str]]:
 
 def _score_completion(
     token_ids: list[int], tokenizer: CharacterTokenizer, row: dict[str, str]
-) -> tuple[bool, bool, str | None, bool | None]:
-    """Return reward validity and diagnostic trace/reference comparison."""
+) -> tuple[bool, bool, str | None, bool | None, bool | None]:
+    """Return reward, answer validity, trace, reference match, and trace validity."""
     if tokenizer.protocol in {"reasoning_v1", "reasoning_v2"}:
         try:
             parsed = parse_reasoning_completion(token_ids, tokenizer)
         except ValueError:
-            return False, False, None, False
+            return False, False, None, False, False
+        try:
+            trace_valid = bool(
+                transcribe_scratchpad(parsed.scratchpad, version=tokenizer.protocol)
+            )
+        except ValueError:
+            trace_valid = False
         correct, valid = verify_answer(parsed.answer, row["answer"], question=row["question"])
         reference_match = parsed.scratchpad == row.get("scratchpad")
-        return correct and valid, valid, parsed.scratchpad, reference_match
+        return correct and valid and trace_valid, valid, parsed.scratchpad, reference_match, trace_valid
     text = tokenizer.decode(token_ids, skip_special=True).strip()
     correct, valid = verify_answer(text, row["answer"], question=row["question"])
-    return correct and valid, valid, None, None
+    return correct and valid, valid, None, None, None
 
 
 def train_grpo(
@@ -239,23 +246,23 @@ def train_grpo(
                 ]
                 outcomes = [_score_completion(ids, tokenizer, row) for ids in generated_ids]
                 rewards = torch.tensor(
-                    [int(correct) for correct, _valid, _trace, _reference_match in outcomes],
+                    [int(correct) for correct, _valid, _trace, _reference_match, _trace_valid in outcomes],
                     dtype=torch.float32,
                     device=device,
                 )
-                valid_count = sum(int(valid) for _correct, valid, _trace, _match in outcomes)
+                valid_count = sum(int(valid) for _correct, valid, _trace, _match, _trace_valid in outcomes)
                 batch_capped += sum(
                     int(len(ids) >= min(max_completion, room) and (not ids or ids[-1] != tokenizer.eos_id))
                     for ids in generated_ids
                 )
                 batch_malformed += group_size - valid_count
                 batch_trace_valid += sum(
-                    int(trace is not None) if tokenizer.protocol in {"reasoning_v1", "reasoning_v2"} else int(valid)
-                    for _correct, valid, trace, _match in outcomes
+                    int(trace_valid) if trace_valid is not None else int(valid)
+                    for _correct, valid, _trace, _match, trace_valid in outcomes
                 )
                 batch_trace_reference_match += sum(
                     int(reference_match is True)
-                    for _correct, _valid, _trace, reference_match in outcomes
+                    for _correct, _valid, _trace, reference_match, _trace_valid in outcomes
                 )
                 batch_correct += int(rewards.sum().item())
                 batch_valid += valid_count
