@@ -23,6 +23,16 @@ uv run python scripts/prepare_data.py experiment=01_smoke
 uv run python scripts/train_sft.py model=1m trainer=sft experiment=02_pilot
 ```
 
+Browse prepared examples locally with Streamlit:
+
+```bash
+uv run streamlit run scripts/browse_data.py
+```
+
+The browser discovers bundles under `data/processed/` and displays the
+manifest counts, split examples, and module/category breakdowns. Prepare a
+bundle first if the browser reports that none are available.
+
 To run the configured three-size workflow, including SFT, GRPO, continued SFT,
 evaluation and comparison reporting:
 
