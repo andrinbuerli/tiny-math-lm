@@ -1,10 +1,13 @@
-"""Build a separate reasoning_v3 parent and arithmetic-subtask data bundle."""
+"""Build a reasoning_v3 bundle with parent and arithmetic-subtask rows."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-from collections import Counter, defaultdict
+import os
+import shutil
+from collections import Counter, defaultdict, deque
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +19,9 @@ from tinymath.data.reasoning import (
     generate_subtask_rows,
     verify_annotation,
 )
+
+_WORKER_TOKENIZER: CharacterTokenizer | None = None
+_WORKER_MAX_TOKENS = 512
 
 
 def _sha256(path: Path) -> str:
@@ -44,10 +50,71 @@ def _subtasks(row: dict[str, str], annotation: dict[str, object], split: str, in
                                   parent_row_index=index, max_tokens=limit, **options)
 
 
+def _sequence_length(row: dict[str, str], scratchpad: str) -> int:
+    if _WORKER_TOKENIZER is None:
+        raise RuntimeError("Reasoning-v3 process worker has no tokenizer")
+    prompt = _WORKER_TOKENIZER.encode(format_prompt(row["question"], protocol="reasoning_v3"), add_bos=True)
+    completion = _WORKER_TOKENIZER.encode_completion(row["answer"], scratchpad=scratchpad)
+    return len(prompt) + len(completion)
+
+
+def _init_annotation_worker(tokenizer: CharacterTokenizer | None = None, max_tokens: int = 512) -> None:
+    global _WORKER_TOKENIZER, _WORKER_MAX_TOKENS
+    _WORKER_TOKENIZER = tokenizer
+    _WORKER_MAX_TOKENS = max_tokens
+
+
+def _scan_row(
+    payload: tuple[str, int, dict[str, str]],
+) -> tuple[list[dict[str, str]], tuple[str, str, str] | None]:
+    split, index, row = payload
+    annotation = annotate_row(row, max_tokens=10**9, protocol="reasoning_v3")
+    verify_annotation(row, annotation)
+    subtasks = _subtasks(row, annotation, split, index, 10**9)
+    training_text = None
+    if split == "sft_train":
+        training_text = (row["question"], row["answer"], str(annotation["scratchpad"]))
+    return subtasks, training_text
+
+
+def _annotate_row(payload: tuple[str, int, dict[str, str]]) -> tuple[dict[str, object], list[dict[str, object]]]:
+    split, index, row = payload
+    try:
+        annotation = annotate_row(
+            row, max_tokens=_WORKER_MAX_TOKENS, length_fn=_sequence_length, protocol="reasoning_v3"
+        )
+        verify_annotation(row, annotation)
+        subtasks = _subtasks(
+            row, annotation, split, index, _WORKER_MAX_TOKENS, _sequence_length
+        )
+    except ValueError as exc:
+        raise ValueError(f"{split}[{index}] {row.get('question', '')!r}: {exc}") from exc
+    return annotation, subtasks
+
+
+def _bounded_map(executor: ProcessPoolExecutor, function, rows, *, workers: int):
+    """Map in input order while keeping only a small number of tasks in flight."""
+    rows = iter(rows)
+    pending = deque()
+    limit = max(2, workers * 2)
+    for _ in range(limit):
+        try:
+            pending.append(executor.submit(function, next(rows)))
+        except StopIteration:
+            break
+    while pending:
+        future = pending.popleft()
+        yield future.result()
+        try:
+            pending.append(executor.submit(function, next(rows)))
+        except StopIteration:
+            pass
+
+
 def build_reasoning_v3_bundle(
-    source: Path, destination: Path, *, max_tokens: int = 512
+    source: Path, destination: Path, *, max_tokens: int = 512, workers: int = 8
 ) -> dict[str, Any]:
-    """Create parent and standalone subtask splits, failing closed on any bad row."""
+    """Create combined parent/subtask splits, failing closed on any bad row."""
     manifest_path = source / "manifest.json"
     source_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     split_info = source_manifest.get("splits")
@@ -75,102 +142,100 @@ def build_reasoning_v3_bundle(
     chars: set[str] = set(
         "0123456789+-*/(),.:;=@^> <" + "\n" + "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
     )
-    # Pass one verifies source rows and discovers where each canonical subtask occurs.
-    for split, metadata in split_info.items():
-        for index, row in enumerate(_rows(source / str(metadata["path"]))):
-            annotation = annotate_row(row, max_tokens=10**9, protocol="reasoning_v3")
-            verify_annotation(row, annotation)
-            if split == "sft_train":
-                chars.update(row["question"])
-                chars.update(row["answer"])
-                chars.update(str(annotation["scratchpad"]))
-            for subtask in _subtasks(row, annotation, split, index, 10**9):
-                task_splits[str(subtask["task_key"])].add(split)
+    workers = max(1, min(int(workers), os.cpu_count() or 1))
+    # Pass one verifies independent source rows in bounded parallel batches.
+    with ProcessPoolExecutor(max_workers=workers, initializer=_init_annotation_worker) as pool:
+        for split, metadata in split_info.items():
+            payloads = ((split, i, row) for i, row in enumerate(_rows(source / str(metadata["path"]))))
+            for subtasks, training_text in _bounded_map(pool, _scan_row, payloads, workers=workers):
+                if training_text is not None:
+                    for text in training_text:
+                        chars.update(text)
+                for subtask in subtasks:
+                    task_splits[str(subtask["task_key"])].add(split)
 
     # Fit worker text only on tasks that remain eligible after checking every split.
     eligible_keys = {
         key for key, splits in task_splits.items()
         if "sft_train" in splits and not (splits - {"sft_train"})
     }
-    for index, row in enumerate(_rows(source / str(split_info["sft_train"]["path"]))):
-        annotation = annotate_row(row, max_tokens=10**9, protocol="reasoning_v3")
-        for subtask in _subtasks(row, annotation, "sft_train", index, 10**9):
-            if str(subtask["task_key"]) in eligible_keys:
-                chars.update(str(subtask[field]) for field in ("question", "answer", "scratchpad"))
+    with ProcessPoolExecutor(max_workers=workers, initializer=_init_annotation_worker) as pool:
+        payloads = (("sft_train", i, row) for i, row in enumerate(
+            _rows(source / str(split_info["sft_train"]["path"]))
+        ))
+        for subtasks, _ in _bounded_map(pool, _scan_row, payloads, workers=workers):
+            for subtask in subtasks:
+                if str(subtask["task_key"]) in eligible_keys:
+                    for field in ("question", "answer", "scratchpad"):
+                        chars.update(str(subtask[field]))
     tokenizer = CharacterTokenizer(chars, protocol="reasoning_v3")
 
-    def sequence_length(row: dict[str, str], scratchpad: str) -> int:
-        prompt = tokenizer.encode(format_prompt(row["question"], protocol="reasoning_v3"), add_bos=True)
-        completion = tokenizer.encode_completion(row["answer"], scratchpad=scratchpad)
-        return len(prompt) + len(completion)
-
     destination.mkdir(parents=True, exist_ok=True)
-    subtask_dir = destination / "subtasks"
-    subtask_dir.mkdir(parents=True, exist_ok=True)
+    # Remove the layout emitted by early v3 builds so no stale special-purpose
+    # subtask files remain beside the combined split files.
+    shutil.rmtree(destination / "subtasks", ignore_errors=True)
     tokenizer_path = destination / "char_tokenizer.json"
     tokenizer.save(tokenizer_path)
-    parent_manifest: dict[str, dict[str, Any]] = {}
-    subtask_manifest: dict[str, dict[str, Any]] = {}
+    split_manifest: dict[str, dict[str, Any]] = {}
     parent_lengths: dict[tuple[str, str], list[int]] = defaultdict(list)
     subtask_lengths: dict[tuple[str, str], list[int]] = defaultdict(list)
     parent_reduced: Counter[tuple[str, str]] = Counter()
     overlap_counts: Counter[str] = Counter()
 
-    # Pass two writes immutable-source parent rows and their linked worker samples.
-    for split, metadata in split_info.items():
-        parent_path = destination / f"{split}.jsonl"
-        worker_path = subtask_dir / f"{split}.jsonl"
-        parent_digest, worker_digest = hashlib.sha256(), hashlib.sha256()
-        parent_count = worker_count = 0
-        with parent_path.open("w", encoding="utf-8") as parent_out, worker_path.open(
-            "w", encoding="utf-8"
-        ) as worker_out:
-            for index, row in enumerate(_rows(source / str(metadata["path"]))):
-                annotation = annotate_row(
-                    row, max_tokens=max_tokens, length_fn=sequence_length, protocol="reasoning_v3"
-                )
-                verify_annotation(row, annotation)
-                for field in ("question", "answer", "scratchpad"):
-                    _assert_known(tokenizer, str(row[field] if field != "scratchpad" else annotation[field]),
-                                  f"{split}[{index}].{field}")
-                parent_line = _json_line(annotation)
-                parent_out.write(parent_line)
-                parent_digest.update(parent_line.encode("utf-8"))
-                parent_count += 1
-                parent_lengths[(str(row["module"]), split)].append(int(annotation["retained_length"]))
-                if bool(annotation["reduced"]):
-                    parent_reduced[(str(row["module"]), split)] += 1
-
-                subtasks = _subtasks(row, annotation, split, index, max_tokens, sequence_length)
-                for subtask in subtasks:
+    # Pass two annotates independent rows in parallel and writes results in source order.
+    with ProcessPoolExecutor(
+        max_workers=workers, initializer=_init_annotation_worker, initargs=(tokenizer, max_tokens)
+    ) as pool:
+        for split, metadata in split_info.items():
+            split_path = destination / f"{split}.jsonl"
+            split_digest = hashlib.sha256()
+            parent_count = worker_count = 0
+            source_rows = _rows(source / str(metadata["path"]))
+            payloads = ((split, i, row) for i, row in enumerate(source_rows))
+            with split_path.open("w", encoding="utf-8") as split_out:
+                for (index, row), (annotation, subtasks) in zip(
+                    enumerate(_rows(source / str(metadata["path"]))),
+                    _bounded_map(pool, _annotate_row, payloads, workers=workers),
+                    strict=True,
+                ):
+                    annotation["is_sub_task"] = False
                     for field in ("question", "answer", "scratchpad"):
-                        _assert_known(tokenizer, str(subtask[field]),
-                                      f"subtasks/{split}[{index}].{field}")
-                    key = str(subtask["task_key"])
-                    overlaps = sorted(task_splits[key] - {split})
-                    eligible = split == "sft_train" and not overlaps
-                    subtask["training_eligible"] = eligible
-                    subtask["overlapping_splits"] = overlaps
-                    if overlaps:
-                        overlap_counts[split] += 1
-                    line = _json_line(subtask)
-                    worker_out.write(line)
-                    worker_digest.update(line.encode("utf-8"))
-                    worker_count += 1
-                    subtask_lengths[(str(subtask["module"]), split)].append(
-                        int(subtask["retained_length"])
-                    )
-        parent_manifest[split] = {
-            "path": parent_path.name, "examples": parent_count,
-            "source_sha256": source_hashes[split], "sha256": _sha256(parent_path),
-            "annotation_sha256": parent_digest.hexdigest(),
-        }
-        subtask_manifest[split] = {
-            "path": str(worker_path.relative_to(destination)), "examples": worker_count,
-            "sha256": _sha256(worker_path), "annotation_sha256": worker_digest.hexdigest(),
-        }
+                        _assert_known(tokenizer, str(row[field] if field != "scratchpad" else annotation[field]),
+                                      f"{split}[{index}].{field}")
+                    parent_line = _json_line(annotation)
+                    split_out.write(parent_line)
+                    split_digest.update(parent_line.encode("utf-8"))
+                    parent_count += 1
+                    parent_lengths[(str(row["module"]), split)].append(int(annotation["retained_length"]))
+                    if bool(annotation["reduced"]):
+                        parent_reduced[(str(row["module"]), split)] += 1
 
-    if sum(item["examples"] for item in parent_manifest.values()) != sum(parent_counts.values()):
+                    for subtask in subtasks:
+                        subtask["is_sub_task"] = True
+                        for field in ("question", "answer", "scratchpad"):
+                            _assert_known(tokenizer, str(subtask[field]),
+                                          f"{split}[{index}].subtask.{field}")
+                        key = str(subtask["task_key"])
+                        overlaps = sorted(task_splits[key] - {split})
+                        subtask["training_eligible"] = split == "sft_train" and not overlaps
+                        subtask["overlapping_splits"] = overlaps
+                        if overlaps:
+                            overlap_counts[split] += 1
+                        line = _json_line(subtask)
+                        split_out.write(line)
+                        split_digest.update(line.encode("utf-8"))
+                        worker_count += 1
+                        subtask_lengths[(str(subtask["module"]), split)].append(
+                            int(subtask["retained_length"])
+                        )
+            split_manifest[split] = {
+                "path": split_path.name, "examples": parent_count + worker_count,
+                "parent_examples": parent_count, "subtask_examples": worker_count,
+                "source_sha256": source_hashes[split], "sha256": _sha256(split_path),
+                "annotation_sha256": split_digest.hexdigest(),
+            }
+
+    if sum(item["parent_examples"] for item in split_manifest.values()) != sum(parent_counts.values()):
         raise AssertionError("Annotated parent count differs from source split inventory")
     tokenizer_stats = {
         f"parent/{module}/{split}": distribution(lengths)
@@ -198,8 +263,8 @@ def build_reasoning_v3_bundle(
         "prompt_format": "Q: {original_question}\\n",
         "completion_format": "<scp>\\n{scratchpad}\\n</scp>\\nA: {original_answer}<EOS>",
         "trace_protocol": "reasoning_v3",
-        "splits": parent_manifest,
-        "subtask_splits": subtask_manifest,
+        "splits": split_manifest,
+        "subtask_training_eligible_tasks": len(eligible_keys),
         "subtask_training_eligible": len(eligible_keys),
         "subtask_overlapping_occurrences_by_split": dict(overlap_counts),
         "token_counts_by_module_training_pools": dict(sorted(training_token_counts.items())),
@@ -213,8 +278,7 @@ def build_reasoning_v3_bundle(
     })
     annotation = {
         "protocol": "reasoning_v3", "max_tokens": max_tokens,
-        "source_split_sha256": source_hashes, "splits": parent_manifest,
-        "subtask_splits": subtask_manifest,
+        "source_split_sha256": source_hashes, "splits": split_manifest,
         "tokenizer_sha256": tokenizer.sha256,
         "training_parent_rows": training_parent_count,
         "eligible_subtask_tasks": len(eligible_keys),

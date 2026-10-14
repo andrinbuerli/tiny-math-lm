@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from tinymath.data.reasoning_v3_bundle import build_reasoning_v3_bundle
+from tinymath.train.runner import _sft_training_rows
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, str]]) -> None:
@@ -29,11 +30,14 @@ def test_build_reasoning_v3_bundle_writes_parent_and_linked_subtask_splits(works
     }), encoding="utf-8")
 
     result = build_reasoning_v3_bundle(source, output)
-    parent = json.loads((output / "sft_train.jsonl").read_text(encoding="utf-8"))
-    subtask = json.loads((output / "subtasks/sft_train.jsonl").read_text(encoding="utf-8"))
-    heldout_subtask = json.loads((output / "subtasks/test.jsonl").read_text(encoding="utf-8"))
+    train_rows = [json.loads(line) for line in (output / "sft_train.jsonl").read_text(encoding="utf-8").splitlines()]
+    test_rows = [json.loads(line) for line in (output / "test.jsonl").read_text(encoding="utf-8").splitlines()]
+    parent = next(row for row in train_rows if not row["is_sub_task"])
+    subtask = next(row for row in train_rows if row["is_sub_task"])
+    heldout_subtask = next(row for row in test_rows if row["is_sub_task"])
 
     assert parent["trace_version"] == "reasoning_v3"
+    assert parent["is_sub_task"] is False
     assert "call:add(25,32) -> 57" in parent["scratchpad"]
     assert subtask["question"] == "Calculate 25 + 32."
     assert subtask["answer"] == "57"
@@ -43,7 +47,32 @@ def test_build_reasoning_v3_bundle_writes_parent_and_linked_subtask_splits(works
     assert subtask["call_operation"] == "add"
     assert subtask["call_operands"] == ["25", "32"]
     assert subtask["call_result"] == "57"
+    assert subtask["is_sub_task"] is True
     assert subtask["training_eligible"] is False
     assert heldout_subtask["training_eligible"] is False
-    assert result["splits"]["sft_train"]["examples"] == 1
-    assert result["subtask_splits"]["sft_train"]["examples"] == 1
+    assert result["splits"]["sft_train"]["examples"] == 2
+    assert result["splits"]["sft_train"]["parent_examples"] == 1
+    assert result["splits"]["sft_train"]["subtask_examples"] == 1
+    assert not (output / "subtasks").exists()
+    assert len(_sft_training_rows(train_rows)) == 1
+
+
+def test_eligible_training_subtask_uses_character_tokenizer_and_enters_sft(workspace_tmpdir):
+    source = workspace_tmpdir / "eligible-source"
+    output = workspace_tmpdir / "eligible-v3"
+    source.mkdir()
+    _write_jsonl(source / "sft_train.jsonl", [{
+        "question": "Calculate 25 + 32.", "answer": "57",
+        "category": "train-easy", "module": "arithmetic__add_or_sub",
+    }])
+    (source / "manifest.json").write_text(json.dumps({
+        "selected_modules": ["arithmetic__add_or_sub"],
+        "splits": {"sft_train": {"path": "sft_train.jsonl", "examples": 1}},
+    }), encoding="utf-8")
+
+    build_reasoning_v3_bundle(source, output, workers=2)
+    rows = [json.loads(line) for line in (output / "sft_train.jsonl").read_text(encoding="utf-8").splitlines()]
+    subtask = next(row for row in rows if row["is_sub_task"])
+
+    assert subtask["training_eligible"] is True
+    assert len(_sft_training_rows(rows)) == 2

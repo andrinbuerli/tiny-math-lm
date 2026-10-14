@@ -33,12 +33,22 @@ def read_jsonl(path: Path) -> list[dict[str, str]]:
         return [json.loads(line) for line in handle if line.strip()]
 
 
+def _sft_training_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Keep eligible subtask rows while retaining ordinary parent rows."""
+    return [
+        row for row in rows
+        if not row.get("is_sub_task") or row.get("training_eligible") is True
+    ]
+
+
 def _examples(rows: list[dict[str, str]], *, protocol: str = "answer_only") -> list[dict[str, str]]:
     return [
         {
             "prompt": format_prompt(row["question"], protocol=protocol),
             "completion": format_completion(row["answer"]),
-            **({"scratchpad": row["scratchpad"]} if protocol in {"reasoning_v1", "reasoning_v2"} else {}),
+            **({"scratchpad": row["scratchpad"]} if protocol in {
+                "reasoning_v1", "reasoning_v2", "reasoning_v3"
+            } else {}),
             "module": row["module"],
         }
         for row in rows
@@ -120,7 +130,7 @@ def train_sft(
     """Train to the configured optimizer step and persist resumable state/metrics."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     tokenizer = CharacterTokenizer.load(bundle_dir / "char_tokenizer.json")
-    train_rows = read_jsonl(bundle_dir / "sft_train.jsonl")
+    train_rows = _sft_training_rows(read_jsonl(bundle_dir / "sft_train.jsonl"))
     validation_rows = read_jsonl(bundle_dir / "sft_validation.jsonl")
     training_rows = train_rows
     experiment = getattr(config, "experiment", {})

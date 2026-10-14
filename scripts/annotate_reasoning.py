@@ -71,7 +71,8 @@ def main(config: DictConfig) -> None:
     try:
         if str(config.protocol) == "reasoning_v3":
             result = build_reasoning_v3_bundle(
-                source, destination, max_tokens=int(config.max_tokens)
+                source, destination, max_tokens=int(config.max_tokens),
+                workers=int(config.get("workers", 8)),
             )
             run.config.update({
                 "source_manifest_sha256": result["source_manifest_sha256"],
@@ -80,14 +81,17 @@ def main(config: DictConfig) -> None:
                 "split_counts": {
                     name: value["examples"] for name, value in result["splits"].items()
                 },
+                "parent_split_counts": {
+                    name: value["parent_examples"] for name, value in result["splits"].items()
+                },
                 "subtask_split_counts": {
-                    name: value["examples"] for name, value in result["subtask_splits"].items()
+                    name: value["subtask_examples"] for name, value in result["splits"].items()
                 },
             }, allow_val_change=True)
             run.log({
-                "annotation/parent_rows": sum(v["examples"] for v in result["splits"].values()),
-                "annotation/subtask_rows": sum(v["examples"] for v in result["subtask_splits"].values()),
-                "annotation/eligible_subtask_tasks": result["subtask_training_eligible"],
+                "annotation/parent_rows": sum(v["parent_examples"] for v in result["splits"].values()),
+                "annotation/subtask_rows": sum(v["subtask_examples"] for v in result["splits"].values()),
+                "annotation/eligible_subtask_tasks": result["subtask_training_eligible_tasks"],
             })
             LOGGER.info("Wrote reasoning_v3 bundle to %s", destination)
             return

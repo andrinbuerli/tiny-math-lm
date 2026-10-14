@@ -3,6 +3,7 @@ name: exp13_reasoning_v3_arithmetic_subtasks
 source_bundle: ${oc.env:WORKSPACE_ROOT,/workspace}/data/processed/d9f78d0665b3-main-seed18
 output_bundle: ${oc.env:WORKSPACE_ROOT,/workspace}/data/processed/exp13_reasoning_v3_arithmetic_subtasks-seed18
 max_tokens: 512
+workers: 8
 seed: 18
 protocol: reasoning_v3
 experiment:

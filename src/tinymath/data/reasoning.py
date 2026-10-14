@@ -735,7 +735,7 @@ def annotate_row(
     })
     if protocol in {"reasoning_v2", "reasoning_v3"}:
         annotated["trace_version"] = protocol
-    if protocol == "reasoning_v3":
+    if protocol == "reasoning_v3" or (protocol == "reasoning_v2" and max_tokens != 512):
         annotated["annotation_max_tokens"] = max_tokens
     return annotated
 
@@ -796,7 +796,7 @@ def generate_subtask_rows(
         subtask = annotate_row(
             subtask_source, max_tokens=max_tokens, length_fn=length_fn, protocol="reasoning_v2"
         )
-        verify_annotation(subtask_source, subtask)
+        verify_annotation(subtask_source, subtask, length_fn=length_fn)
         results.append({
             **subtask,
             "trace_version": "reasoning_v2",
@@ -984,14 +984,23 @@ def _forward_trace(legacy: str, operations: list[Operation], final_value: Fracti
     return rendered
 
 
-def _verify_forward_annotation(row: dict[str, str], scratchpad: str) -> None:
+def _verify_forward_annotation(
+    row: dict[str, str], scratchpad: str, max_tokens: int = 512,
+    length_fn: Callable[[dict[str, str], str], int] = default_sequence_length,
+) -> None:
     """Replay a v2 trace by rebuilding the exact source derivation and budget path."""
     # The established verifier independently derives the source value. The v2
     # comparison additionally rejects omitted, reordered, result-first, or
     # edited steps by comparing against a freshly regenerated forward trace.
-    expected_v1 = annotate_row(row, max_tokens=512, protocol="reasoning_v1")
+    # This source replay is a verifier reference, not a model training sample;
+    # allow it to exceed the v2 context budget for large arithmetic operands.
+    expected_v1 = annotate_row(
+        row, max_tokens=10**9, length_fn=length_fn, protocol="reasoning_v1"
+    )
     verify_annotation(row, expected_v1)
-    expected_v2 = annotate_row(row, max_tokens=512, protocol="reasoning_v2")
+    expected_v2 = annotate_row(
+        row, max_tokens=max_tokens, length_fn=length_fn, protocol="reasoning_v2"
+    )
     if scratchpad != expected_v2["scratchpad"]:
         raise ValueError("reasoning_v2 trace is malformed, result-first, incomplete, or inconsistent")
 
@@ -1128,7 +1137,10 @@ def _verify_multiplier_rows(
     return raw * 10**shift
 
 
-def verify_annotation(row: dict[str, str], annotation: dict[str, object] | str) -> None:
+def verify_annotation(
+    row: dict[str, str], annotation: dict[str, object] | str,
+    *, length_fn: Callable[[dict[str, str], str], int] = default_sequence_length,
+) -> None:
     """Independently replay a rendered scratchpad against its source row.
 
     Raises ``ValueError`` at the first malformed or mathematically inconsistent
@@ -1145,13 +1157,16 @@ def verify_annotation(row: dict[str, str], annotation: dict[str, object] | str) 
         expected = annotate_row(
             row,
             max_tokens=int(annotation.get("annotation_max_tokens", 512)),
+            length_fn=length_fn,
             protocol="reasoning_v3",
         )
         if scratchpad != expected["scratchpad"]:
             raise ValueError("reasoning_v3 calls are malformed, out of order, or inconsistent")
         return
     if isinstance(annotation, dict) and annotation.get("trace_version") == "reasoning_v2":
-        _verify_forward_annotation(row, scratchpad)
+        _verify_forward_annotation(
+            row, scratchpad, int(annotation.get("annotation_max_tokens", 512)), length_fn
+        )
         return
     module = row.get("module", "")
     answer = _fraction(row["answer"])

@@ -108,6 +108,13 @@ def test_reasoning_v2_budget_reduction_preserves_steps_and_replay():
     verify_annotation(source, annotated)
 
 
+def test_reasoning_v2_verifier_replays_nondefault_trace_budget():
+    source = row("12345 * 6789", "83810205", "arithmetic__mul")
+    annotation = annotate_row(source, max_tokens=10**9, protocol="reasoning_v2")
+    assert annotation["annotation_max_tokens"] == 10**9
+    verify_annotation(source, annotation)
+
+
 def test_carries_borrows_and_arbitrary_operation_indices() -> None:
     carry_row = row("999 + 1", "1000", "arithmetic__add_or_sub")
     carry_annotation = annotate_row(carry_row)
@@ -373,3 +380,18 @@ def test_over_budget_skeleton_fails_without_truncation() -> None:
     _ExpressionParser(expression, builder).parse()
     with pytest.raises(ValueError, match="skeleton exceeds"):
         reduce_to_budget(item, builder.operations, max_tokens=0)
+
+
+def test_v2_verifier_replays_tokenizer_aware_collapse_budget() -> None:
+    item = row(
+        "What is 12345678901234567890 + 98765432109876543210?",
+        "111111111011111111100",
+        "arithmetic__add_or_sub",
+    )
+    length_fn = lambda example, scratchpad: default_sequence_length(example, scratchpad) + 300
+    annotation = annotate_row(
+        item, max_tokens=512, length_fn=length_fn, protocol="reasoning_v2"
+    )
+
+    assert annotation["reduced"] is True
+    verify_annotation(item, annotation, length_fn=length_fn)
