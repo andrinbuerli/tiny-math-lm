@@ -282,10 +282,10 @@ def train_grpo(
                     (metrics.loss / len(chosen)).backward()
                     optimized_groups += 1
                 completion_length = completions.shape[-1]
-                rollout_positions = group_size * (
-                    completion_length * prompt_ids.shape[1]
-                    + completion_length * (completion_length - 1) // 2
-                )
+                # Rollout decoding uses a KV cache: the prompt is prefetched
+                # once and each generated position is forwarded once. The
+                # policy pass still evaluates the padded full completion batch.
+                rollout_positions = group_size * (prompt_ids.shape[1] + completion_length)
                 policy_positions = group_size * (prompt_ids.shape[1] + completion_length)
                 padded_compute_positions_update += (
                     rollout_positions
@@ -345,7 +345,7 @@ def train_grpo(
                 "wall_seconds": time.monotonic() - started,
                 "tokens_per_second": tokens_seen / max(1e-9, time.monotonic() - started),
                 "estimated_flops": estimated_flops_seen,
-                "flops_estimator_version": "dense_position_v2",
+                "flops_estimator_version": "kv_cached_position_v3",
                 "peak_gpu_memory_bytes": (
                     torch.cuda.max_memory_allocated(device) if device.type == "cuda" else 0
                 ),
@@ -362,7 +362,7 @@ def train_grpo(
                         "nonpadding_input_tokens": nonpadding_input_tokens,
                         "padded_compute_positions": padded_compute_positions,
                         "estimated_flops": estimated_flops_seen,
-                        "flops_estimator_version": "dense_position_v2",
+                        "flops_estimator_version": "kv_cached_position_v3",
                         "rng_state": capture_rng_state(),
                         "tokenizer_sha256": tokenizer.sha256,
                         **({"compatibility": compatibility} if compatibility is not None else {}),

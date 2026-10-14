@@ -339,7 +339,9 @@ def _figure_compute(
             selected = curve[-1]
         if selected is None or token_key not in selected:
             continue
-        if arm == "grpo" and selected.get("flops_estimator_version") != "dense_position_v2":
+        if arm == "grpo" and selected.get("flops_estimator_version") not in {
+            "dense_position_v2", "kv_cached_position_v3"
+        }:
             continue
         if result and result["parameters"]:
             estimate = selected.get("estimated_flops")
@@ -356,7 +358,7 @@ def _figure_compute(
             axis.scatter(compute, row["accuracy"], label=f"{row['model']} {row['arm']}")
     if points:
         axis.set_xscale("log")
-        axis.set_xlabel("Estimated training FLOPs (dense 2N/6N token-position model)")
+        axis.set_xlabel("Estimated training FLOPs (dense transformer token-position model)")
         axis.set_ylabel(_accuracy_label(rows))
         axis.set_title("Accuracy versus estimated training compute")
         axis.legend(fontsize=7)
@@ -727,10 +729,10 @@ def make_report(
         "available_measurements": rows,
         "coverage": coverage,
         "data_provenance": _data_provenance(data_bundle_dir),
-        "compute_estimate": "SFT uses 6PN; GRPO counts no-cache rollout prefix positions and policy/reference token positions with dense 2N/6N multipliers",
+        "compute_estimate": "SFT uses 6PN dense token-position approximation; GRPO records per-update token-position estimates for the rollout decoder and policy/reference passes",
         "limitations": [
             "Compute uses a dense-transformer token-position approximation; it is not hardware-counter FLOPs.",
-            "GRPO compute points are omitted when a run lacks the dense_position_v2 estimator marker.",
+            "GRPO compute estimates identify the decoding estimator used; a resumed run can contain both pre-cache and KV-cached segments.",
             "Training-time train/validation/test greedy-accuracy curves use the same fixed qualitative probe of 2 examples per module across 5 modules (10 examples per split), not full-split accuracy; selected example identities remain fixed across checkpoints.",
         ],
     }
@@ -1280,6 +1282,23 @@ def make_exp11_report(
                 arm,
                 (baseline_record_for_training or {}).get("checkpoint_step"),
             )
+            def estimator_summary(path: Path) -> str | None:
+                versions = sorted({
+                    row.get("flops_estimator_version") for row in _read_training_metrics(path)
+                    if row.get("flops_estimator_version")
+                })
+                if not versions:
+                    return None
+                return versions[0] if len(versions) == 1 else "mixed:" + "+".join(versions)
+
+            current_flops_estimator = estimator_summary(training_run_dir / "metrics.csv")
+            baseline_flops_estimator = estimator_summary(
+                baseline_runs_dir / baseline_name / model / arm / f"seed{seed}" / "metrics.csv"
+            )
+            same_flops_estimator = (
+                current_flops_estimator == baseline_flops_estimator
+                and (current_flops_estimator is not None or arm != "grpo")
+            )
             def numeric_delta(current: Any, prior: Any) -> float | None:
                 if current in (None, "") or prior in (None, ""):
                     return None
@@ -1299,7 +1318,7 @@ def make_exp11_report(
             )
             additional_flops = (
                 numeric_delta(train_metrics.get("estimated_flops"), baseline_train_metrics.get("estimated_flops"))
-                if update_matched else None
+                if update_matched and same_flops_estimator else None
             )
             for split in EXP11_SPLITS:
                 key = (model, arm, split)
@@ -1358,8 +1377,11 @@ def make_exp11_report(
                     "selector": selector,
                     "logged_tokens": train_metrics.get("tokens_seen"),
                     "estimated_flops": train_metrics.get("estimated_flops"),
+                    "flops_estimator": current_flops_estimator,
                     "baseline_logged_tokens": baseline_train_metrics.get("tokens_seen"),
                     "baseline_estimated_flops": baseline_train_metrics.get("estimated_flops"),
+                    "baseline_flops_estimator": baseline_flops_estimator,
+                    "same_flops_estimator": same_flops_estimator,
                     "additional_tokens": additional_tokens,
                     "additional_flops": additional_flops,
                     "training_wandb": _wandb_provenance(training_run_dir),
@@ -1556,6 +1578,9 @@ def make_exp11_report(
                 "split": "test",
                 "exp11_status": row["exp11_status"],
                 "same_question_identity": row["same_question_identity"],
+                "same_flops_estimator": (
+                    row["same_flops_estimator"]
+                ),
                 "baseline_accuracy_pp_per_million_tokens": baseline_per_million_tokens,
                 "exp11_accuracy_pp_per_million_tokens": exp11_per_million_tokens,
                 "delta_accuracy_pp_per_million_tokens": (
@@ -1570,6 +1595,7 @@ def make_exp11_report(
                 "delta_accuracy_pp_per_trillion_flops": (
                     exp11_per_trillion_flops - baseline_per_trillion_flops
                     if row["same_question_identity"]
+                    and row["same_flops_estimator"]
                     and exp11_per_trillion_flops is not None
                     and baseline_per_trillion_flops is not None
                     else None
@@ -1596,7 +1622,7 @@ def make_exp11_report(
         "limitations": [
             "Training token counts and FLOPs are read from the latest checkpoint-aligned metric row when available; FLOPs are dense-position estimates, not hardware counters.",
             "Continued SFT uses effective batch 128 as an approximate compute control; its measured FLOP ratio to GRPO is shown when both arm metrics are available.",
-            "Accuracy deltas require complete results and identical ordered module/question/target identities in baseline and Experiment 11 prediction CSVs. Aggregate snapshot accuracy alone cannot prove question identity.",
+            "Accuracy deltas require complete results and identical ordered module/question/target identities in baseline and Experiment 11 prediction CSVs. FLOP deltas and FLOP-efficiency deltas also require matching estimator versions.",
             "The handwritten scratchpad is additional supervised target text in the Experiment 11 SFT data. The current training objective does not separately mask or weight scratchpad tokens, so this is not answer-only supervision with an auxiliary trace loss.",
             "Missing baseline snapshot cells are preserved as missing; unavailable measurements are never treated as zero.",
             "This report covers one seed only and provides no between-seed uncertainty estimate.",
@@ -1617,9 +1643,9 @@ def make_exp11_report(
         "# Experiment 11 intermediate results", "", f"Seed: `{seed}`", "",
         f"Rows: {len(rows)} (expected 27: 3 models × 3 arms × 3 splits).",
         "Statuses distinguish missing baseline results, not-run, running, partial, failed, and complete evaluations.",
-        "Accuracy deltas are reported only for complete evaluations with identical ordered question identities.", "",
-        "| Model | Arm | Split | Baseline status | Baseline accuracy | Baseline scored | Exp11 status | Exp11 accuracy | Delta (pp) | Exp11 scored | Format valid | Trace structure | Reference trace match | Capped | Mean output tokens | Baseline train tokens | Exp11 train tokens | Additional tokens | Baseline FLOPs | Exp11 FLOPs | Additional FLOPs | Identity match |",
-        "|---|---|---|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+        "Accuracy deltas are reported only for complete evaluations with identical ordered question identities. FLOP deltas additionally require matching estimator versions.", "",
+        "| Model | Arm | Split | Baseline status | Baseline accuracy | Baseline scored | Exp11 status | Exp11 accuracy | Delta (pp) | Exp11 scored | Format valid | Trace structure | Reference trace match | Capped | Mean output tokens | Baseline train tokens | Exp11 train tokens | Additional tokens | Baseline FLOPs | Exp11 FLOPs | Additional FLOPs | Identity match | FLOPs estimator match |",
+        "|---|---|---|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|",
     ]
     for row in rows:
         delta = "Missing" if row["delta_accuracy"] is None else f"{100 * row['delta_accuracy']:+.2f}"
@@ -1636,7 +1662,8 @@ def make_exp11_report(
             f"{_format_count(row['baseline_logged_tokens'])} | {_format_count(row['logged_tokens'])} | "
             f"{_format_count(row['additional_tokens'])} | {_format_count(row['baseline_estimated_flops'])} | "
             f"{_format_count(row['estimated_flops'])} | {_format_count(row['additional_flops'])} | "
-            f"{'yes' if row['same_question_identity'] else 'unverified'} |"
+            f"{'yes' if row['same_question_identity'] else 'unverified'} | "
+            f"{'yes' if row['flops_estimator'] == row['baseline_flops_estimator'] and row['flops_estimator'] else 'no/unverified'} |"
         )
     lines.extend([
         "", "## RLVR gains versus SFT", "",
@@ -1684,9 +1711,9 @@ def make_exp11_report(
         )
     lines.extend([
         "", "## Endpoint sample efficiency", "",
-        "Exact ID test accuracy normalized by logged training tokens and estimated FLOPs. These endpoint ratios are descriptive; they are not learning-curve or causal efficiency estimates.",
-        "", "| Model | Arm | Exp11 status | Identity match | Baseline pp / 1M tokens | Exp11 pp / 1M tokens | Delta | Baseline pp / 1T FLOPs | Exp11 pp / 1T FLOPs | Delta |",
-        "|---|---|---|---|---:|---:|---:|---:|---:|---:|",
+        "Exact ID test accuracy normalized by logged training tokens and estimated FLOPs. FLOP deltas require matching estimator versions. These endpoint ratios are descriptive; they are not learning-curve or causal efficiency estimates.",
+        "", "| Model | Arm | Exp11 status | Identity match | FLOPs estimator match | Baseline pp / 1M tokens | Exp11 pp / 1M tokens | Delta | Baseline pp / 1T FLOPs | Exp11 pp / 1T FLOPs | Delta |",
+        "|---|---|---|---|---|---:|---:|---:|---:|---:|---:|",
     ])
     for item in sample_efficiency:
         def efficiency_cell(value: Any) -> str:
@@ -1694,6 +1721,7 @@ def make_exp11_report(
         lines.append(
             f"| {item['model']} | {item['arm']} | {item['exp11_status']} | "
             f"{'yes' if item['same_question_identity'] else 'unverified'} | "
+            f"{'yes' if item['same_flops_estimator'] else 'no/unverified'} | "
             f"{efficiency_cell(item['baseline_accuracy_pp_per_million_tokens'])} | "
             f"{efficiency_cell(item['exp11_accuracy_pp_per_million_tokens'])} | "
             f"{efficiency_cell(item['delta_accuracy_pp_per_million_tokens'])} | "

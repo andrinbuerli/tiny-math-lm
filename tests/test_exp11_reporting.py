@@ -369,9 +369,9 @@ def test_exp11_reports_informative_groups_rlvr_gain_and_sample_efficiency(worksp
     )
     grpo_metrics = current_root / "grpo" / "seed18" / "metrics.csv"
     grpo_metrics.write_text(
-        "update,reward/mean,group/mixed_rate,group/all_correct_rate,group/all_wrong_rate,tokens_seen,estimated_flops\n"
-        "99,0.5,0.25,0.375,0.375,3900,3900000000000\n"
-        "100,0.6,0.75,0.125,0.125,4000,4000000000000\n",
+        "update,reward/mean,group/mixed_rate,group/all_correct_rate,group/all_wrong_rate,tokens_seen,estimated_flops,flops_estimator_version\n"
+        "99,0.5,0.25,0.375,0.375,3900,3900000000000,kv_cached_position_v3\n"
+        "100,0.6,0.75,0.125,0.125,4000,4000000000000,kv_cached_position_v3\n",
         encoding="utf-8",
     )
     baseline_sft_metrics = base_root / "sft" / "seed18" / "metrics.csv"
@@ -383,7 +383,8 @@ def test_exp11_reports_informative_groups_rlvr_gain_and_sample_efficiency(worksp
     baseline_grpo_metrics = base_root / "grpo" / "seed18" / "metrics.csv"
     baseline_grpo_metrics.parent.mkdir(parents=True)
     baseline_grpo_metrics.write_text(
-        "update,tokens_seen,estimated_flops\n100,2000,2000000000000\n",
+        "update,tokens_seen,estimated_flops,flops_estimator_version\n"
+        "100,2000,2000000000000,dense_position_v2\n",
         encoding="utf-8",
     )
 
@@ -422,6 +423,19 @@ def test_exp11_reports_informative_groups_rlvr_gain_and_sample_efficiency(worksp
     assert sft_efficiency["baseline_accuracy_pp_per_trillion_flops"] == 50.0
     assert sft_efficiency["exp11_accuracy_pp_per_trillion_flops"] == 25.0
     assert sft_efficiency["delta_accuracy_pp_per_trillion_flops"] == -25.0
+    grpo_row = next(
+        row for row in report["rows"]
+        if row["model"] == "1m" and row["arm"] == "grpo" and row["split"] == "test"
+    )
+    assert grpo_row["flops_estimator"] == "kv_cached_position_v3"
+    assert grpo_row["baseline_flops_estimator"] == "dense_position_v2"
+    assert grpo_row["additional_flops"] is None
+    grpo_efficiency = next(
+        item for item in report["sample_efficiency"]
+        if item["model"] == "1m" and item["arm"] == "grpo"
+    )
+    assert grpo_efficiency["same_flops_estimator"] is False
+    assert grpo_efficiency["delta_accuracy_pp_per_trillion_flops"] is None
     chart = next(path for path in outputs if path.name == "grpo_sample_efficiency.svg")
     chart_svg = chart.read_text(encoding="utf-8")
     assert "reward/mean" in chart_svg

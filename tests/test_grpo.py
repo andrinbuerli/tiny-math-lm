@@ -230,8 +230,9 @@ def test_grpo_runner_scores_mixed_group_and_applies_gradient(workspace_tmpdir, m
     assert int(metrics["generated_tokens"]) == result["generated_tokens"]
     assert int(metrics["padded_compute_positions"]) > 0
     prompt_length = len(tokenizer.encode(format_prompt("1 + 1"), add_bos=True))
-    expected_flops = initial_model.count_parameters() * (20 * prompt_length + 28)
+    expected_flops = initial_model.count_parameters() * (16 * prompt_length + 32)
     assert int(metrics["estimated_flops"]) == expected_flops
+    assert metrics["flops_estimator_version"] == "kv_cached_position_v3"
     with (run_dir / "metrics.csv").open(encoding="utf-8") as existing:
         fieldnames = next(csv.reader(existing))
     with (run_dir / "metrics.csv").open("a", encoding="utf-8", newline="") as handle:
