@@ -136,8 +136,8 @@ def _compatible_with_runtime_extension(
     # configured ceiling changes provenance only for reasoning runs. It is
     # safe when the model context already supplies the effective per-prompt cap.
     if (
-        saved_normalized.get("experiment", {}).get("protocol") == "reasoning_v1"
-        and normalized.get("experiment", {}).get("protocol") == "reasoning_v1"
+        saved_normalized.get("experiment", {}).get("protocol") in {"reasoning_v1", "reasoning_v2"}
+        and normalized.get("experiment", {}).get("protocol") in {"reasoning_v1", "reasoning_v2"}
         and saved_eval.get("max_new_tokens", 0) < current_eval.get("max_new_tokens", 0)
         and current_eval.get("max_new_tokens")
         == normalized.get("model", {}).get("context_length")

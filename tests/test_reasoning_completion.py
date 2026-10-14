@@ -41,3 +41,23 @@ def test_question_marker_spelling_cannot_supply_completion_boundary(tokenizer):
         parse_reasoning_completion(
             question + tokenizer.encode("75") + [tokenizer.eos_id], tokenizer
         )
+
+
+def test_reasoning_v2_completion_keeps_answer_after_forward_trace():
+    trace = "step:+(2,3)\n2,3,0:5,0"
+    tokenizer = CharacterTokenizer.from_texts(
+        [trace, "\nA: 5", "summary: 5", "step:+(2,3)\nA: 5"], protocol="reasoning_v2"
+    )
+    parsed = parse_reasoning_completion(
+        tokenizer.encode_completion("5", scratchpad=trace), tokenizer
+    )
+    assert parsed.scratchpad == trace
+    assert parsed.answer == "5"
+    with pytest.raises(ValueError, match="begin with a derivation"):
+        parse_reasoning_completion(
+            tokenizer.encode_completion("5", scratchpad="summary: 5"), tokenizer
+        )
+    with pytest.raises(ValueError, match="cannot contain an answer field"):
+        parse_reasoning_completion(
+            tokenizer.encode_completion("5", scratchpad="step:+(2,3)\nA: 5"), tokenizer
+        )

@@ -36,7 +36,7 @@ def _predicted_scratchpad(
     generated: Sequence[int], tokenizer: CharacterTokenizer
 ) -> str:
     """Return generated scratchpad text for inspection, even when parsing fails."""
-    if tokenizer.protocol != "reasoning_v1":
+    if tokenizer.protocol not in {"reasoning_v1", "reasoning_v2"}:
         return ""
     try:
         start = generated.index(tokenizer.scp_id)
@@ -97,7 +97,7 @@ def build_qualitative_table(
                         prompt,
                         max_new_tokens=(
                             available
-                            if tokenizer.protocol == "reasoning_v1"
+                            if tokenizer.protocol in {"reasoning_v1", "reasoning_v2"}
                             else min(max_new_tokens, available)
                         ),
                         temperature=0.0,
@@ -108,7 +108,7 @@ def build_qualitative_table(
                 completion = tokenizer.decode(generated, skip_special=True).strip()
                 predicted_scratchpad = _predicted_scratchpad(generated, tokenizer)
                 trace_structure_valid: bool | None = None
-                if tokenizer.protocol == "reasoning_v1":
+                if tokenizer.protocol in {"reasoning_v1", "reasoning_v2"}:
                     try:
                         parsed = parse_reasoning_completion(generated, tokenizer)
                         predicted_scratchpad = parsed.scratchpad

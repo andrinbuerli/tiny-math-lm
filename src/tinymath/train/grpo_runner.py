@@ -45,7 +45,7 @@ def _score_completion(
     token_ids: list[int], tokenizer: CharacterTokenizer, row: dict[str, str]
 ) -> tuple[bool, bool, str | None, bool | None]:
     """Return reward validity and diagnostic trace/reference comparison."""
-    if tokenizer.protocol == "reasoning_v1":
+    if tokenizer.protocol in {"reasoning_v1", "reasoning_v2"}:
         try:
             parsed = parse_reasoning_completion(token_ids, tokenizer)
         except ValueError:
@@ -99,7 +99,7 @@ def train_grpo(
             bundle_sha256=sha256_file(manifest_path),
             context_length=model_config.context_length,
         )
-    elif tokenizer.protocol == "reasoning_v1":
+    elif tokenizer.protocol in {"reasoning_v1", "reasoning_v2"}:
         raise ValueError("Reasoning GRPO requires a provenance-bearing annotated bundle")
     if compatibility is not None:
         validate_checkpoint_compatibility(
@@ -250,7 +250,7 @@ def train_grpo(
                 )
                 batch_malformed += group_size - valid_count
                 batch_trace_valid += sum(
-                    int(trace is not None) if tokenizer.protocol == "reasoning_v1" else int(valid)
+                    int(trace is not None) if tokenizer.protocol in {"reasoning_v1", "reasoning_v2"} else int(valid)
                     for _correct, valid, trace, _match in outcomes
                 )
                 batch_trace_reference_match += sum(

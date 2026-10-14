@@ -30,11 +30,11 @@ def compatibility_metadata(
     context_length: int,
 ) -> dict[str, Any]:
     """Build the immutable dataset/protocol identity stored in checkpoints."""
-    if protocol not in {"answer_only", "reasoning_v1"}:
+    if protocol not in {"answer_only", "reasoning_v1", "reasoning_v2"}:
         raise ValueError(f"Unsupported checkpoint protocol: {protocol}")
     if not tokenizer_sha256 or not bundle_sha256 or context_length < 1:
         raise ValueError("Checkpoint compatibility metadata is incomplete")
-    if protocol == "reasoning_v1" and not annotation_sha256:
+    if protocol in {"reasoning_v1", "reasoning_v2"} and not annotation_sha256:
         raise ValueError("Reasoning checkpoints require an annotation identity")
     return {
         "protocol": protocol,
@@ -78,7 +78,7 @@ def validate_checkpoint_compatibility(
         raise ValueError("Checkpoint is missing required compatibility metadata")
     required_fields = (
         COMPATIBILITY_FIELDS
-        if expected["protocol"] == "reasoning_v1"
+        if expected["protocol"] in {"reasoning_v1", "reasoning_v2"}
         else tuple(field for field in COMPATIBILITY_FIELDS if field != "annotation_sha256")
     )
     missing = [field for field in required_fields if field not in actual or actual[field] is None]

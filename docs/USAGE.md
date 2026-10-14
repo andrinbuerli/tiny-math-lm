@@ -24,6 +24,18 @@ The data config pins `d0rj/mathematics_dataset` to revision `d9f78d0665b3a13dad2
 
 The saved `wandb_run.json` records the run ID and whether synchronization is pending, synced or unsynced. Never pass the API key as a command-line override. The installed W&B SDK warns that `resume` is ignored in offline mode: training checkpoints and RNG state resume locally, but W&B starts another offline history directory with the same configured run ID. Online mode uses W&B's normal resume behavior.
 
+## Corrected Experiment 12 reasoning annotations
+
+Experiment 12 introduces the `reasoning_v2` scratchpad format. Each scratchpad starts with a derivation step, puts intermediate values after their derivations using `=>`, has no operation-summary lines, and omits the terminal scalar. The answer is generated afterward in the separate `A:` field. Historical `reasoning_v1` bundles and checkpoints remain supported.
+
+To create the corrected dataset from the pinned source bundle, run only the annotation entry point:
+
+```bash
+uv run python scripts/annotate_reasoning.py --config-name exp12_reasoning_forward
+```
+
+This creates a new Experiment 12 bundle and a W&B-tracked annotation run. It does not start training or evaluation. Do not point `output_bundle` at an existing Experiment 11 path.
+
 ## Train and evaluate
 
 ```bash

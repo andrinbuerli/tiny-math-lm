@@ -60,6 +60,53 @@ def test_decimal_arithmetic_and_negative_subtraction_are_exact() -> None:
     assert _decimal(Fraction(1, 2)) == "0.5"
 
 
+@pytest.mark.parametrize(
+    ("question", "answer", "module"),
+    [
+        ("999 + 1", "1000", "arithmetic__add_or_sub"),
+        ("1000 - 1", "999", "arithmetic__add_or_sub"),
+        ("-6.14+0.4764252833", "-5.6635747167", "arithmetic__add_or_sub"),
+        ("123 * 45", "5535", "arithmetic__mul"),
+        ("What is the product of -32.8 and 199809?", "-6553735.2", "arithmetic__mul"),
+        ("What is 1 divided by 20?", "1/20", "arithmetic__div"),
+        ("What is -274 divided by 2770?", "-137/1385", "arithmetic__div"),
+        ("Evaluate (8 + 4) * 3", "36", "arithmetic__mixed"),
+        ("Evaluate 2 + 3 + 0", "5", "arithmetic__mixed"),
+        ("Solve 3*x + 2 = 11 for x.", "3", "algebra__linear_1d"),
+    ],
+)
+def test_reasoning_v2_is_forward_ordered_and_answer_is_separate(
+    question: str, answer: str, module: str
+) -> None:
+    source = row(question, answer, module)
+    annotated = annotate_row(source, protocol="reasoning_v2")
+    trace = str(annotated["scratchpad"])
+    assert annotated["trace_version"] == "reasoning_v2"
+    assert trace.startswith("step:")
+    assert "A:" not in trace
+    assert not re.search(r"(?m)^t\d+=.*=", trace)
+    assert all(
+        not line.startswith("=>") or _fraction(line[2:]) != _fraction(answer)
+        for line in trace.splitlines()
+    )
+    verify_annotation(source, annotated)
+    with pytest.raises(ValueError, match="result-first"):
+        verify_annotation(source, {**annotated, "scratchpad": "t0=+(1,2)=3\n1,2,0:3,0"})
+    with pytest.raises(ValueError, match="result-first"):
+        verify_annotation(source, {**annotated, "scratchpad": trace.rsplit("\n", 1)[0]})
+
+
+def test_reasoning_v2_budget_reduction_preserves_steps_and_replay():
+    source = row("12345 * 6789", "83810205", "arithmetic__mul")
+    annotated = annotate_row(source, protocol="reasoning_v2")
+    assert annotated["collapsed_categories"]
+    assert annotated["retained_length"] <= 512
+    assert annotated["scratchpad"].endswith("t1+p3")
+    assert "=>9740205" in annotated["scratchpad"]
+    assert "83810205" not in annotated["scratchpad"]
+    verify_annotation(source, annotated)
+
+
 def test_carries_borrows_and_arbitrary_operation_indices() -> None:
     carry_row = row("999 + 1", "1000", "arithmetic__add_or_sub")
     carry_annotation = annotate_row(carry_row)

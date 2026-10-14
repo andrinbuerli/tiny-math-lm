@@ -296,7 +296,7 @@ def evaluate_checkpoint(
             "max_new_tokens": max_new_tokens,
             "context_length": model_config.context_length,
             "per_prompt_cap": (
-                "context_length - prompt_tokens" if tokenizer.protocol == "reasoning_v1"
+                "context_length - prompt_tokens" if tokenizer.protocol in {"reasoning_v1", "reasoning_v2"}
                 else "min(max_new_tokens, context_length - prompt_tokens)"
             ),
         },
@@ -341,7 +341,7 @@ def evaluate_checkpoint(
         for prompt_length, pending in sorted(by_prompt_length.items()):
             generation_cap = (
                 model_config.context_length - prompt_length
-                if tokenizer.protocol == "reasoning_v1"
+                if tokenizer.protocol in {"reasoning_v1", "reasoning_v2"}
                 else min(max_new_tokens, model_config.context_length - prompt_length)
             )
             for offset in range(0, len(pending), batch_size):
@@ -368,7 +368,7 @@ def evaluate_checkpoint(
                     scratchpad = ""
                     trace_structure_valid: bool | None = None
                     trace_reference_exact_match: bool | None = None
-                    if tokenizer.protocol == "reasoning_v1":
+                    if tokenizer.protocol in {"reasoning_v1", "reasoning_v2"}:
                         try:
                             parsed = parse_reasoning_completion(generated, tokenizer)
                             scratchpad = parsed.scratchpad

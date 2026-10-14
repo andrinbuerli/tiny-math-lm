@@ -38,7 +38,7 @@ def _examples(rows: list[dict[str, str]], *, protocol: str = "answer_only") -> l
         {
             "prompt": format_prompt(row["question"], protocol=protocol),
             "completion": format_completion(row["answer"]),
-            **({"scratchpad": row["scratchpad"]} if protocol == "reasoning_v1" else {}),
+            **({"scratchpad": row["scratchpad"]} if protocol in {"reasoning_v1", "reasoning_v2"} else {}),
             "module": row["module"],
         }
         for row in rows
@@ -66,7 +66,7 @@ def _bundle_compatibility(
 ) -> dict[str, Any] | None:
     manifest_path = bundle_dir / "manifest.json"
     if not manifest_path.is_file():
-        if tokenizer.protocol == "reasoning_v1":
+        if tokenizer.protocol in {"reasoning_v1", "reasoning_v2"}:
             raise ValueError("Reasoning training requires a provenance-bearing annotated bundle")
         return None
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))

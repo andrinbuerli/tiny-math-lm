@@ -81,14 +81,16 @@ def main(config: DictConfig) -> None:
                 if split_name == train_name:
                     tokenizer_characters.update(row["question"])
                     tokenizer_characters.update(row["answer"])
-                full = annotate_row(row, max_tokens=10**9)
+                full = annotate_row(
+                    row, max_tokens=10**9, protocol=str(config.protocol)
+                )
                 if split_name == train_name:
                     tokenizer_characters.update(str(full["scratchpad"]))
-        tokenizer = CharacterTokenizer(tokenizer_characters, protocol="reasoning_v1")
+        tokenizer = CharacterTokenizer(tokenizer_characters, protocol=str(config.protocol))
 
         def exact_length(row: dict[str, str], scratchpad: str) -> int:
             prompt = tokenizer.encode(
-                format_prompt(row["question"], protocol="reasoning_v1"), add_bos=True
+                format_prompt(row["question"], protocol=str(config.protocol)), add_bos=True
             )
             completion = tokenizer.encode_completion(row["answer"], scratchpad=scratchpad)
             return len(prompt) + len(completion)
@@ -113,7 +115,10 @@ def main(config: DictConfig) -> None:
                 for index, row in enumerate(_load_split(source_path)):
                     try:
                         annotated = annotate_row(
-                            row, max_tokens=int(config.max_tokens), length_fn=exact_length
+                            row,
+                            max_tokens=int(config.max_tokens),
+                            length_fn=exact_length,
+                            protocol=str(config.protocol),
                         )
                     except Exception as exc:
                         raise ValueError(
@@ -172,6 +177,7 @@ def main(config: DictConfig) -> None:
             )
         annotation_payload = {
             "protocol": str(config.protocol),
+            "trace_version": str(config.protocol),
             "max_tokens": int(config.max_tokens),
             "source_bundle": str(source),
             "source_manifest_sha256": _sha256(manifest_path),
@@ -187,6 +193,7 @@ def main(config: DictConfig) -> None:
             json.dumps(annotation_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
         derived = dict(source_manifest)
+        derived["experiment_identity"] = str(config.name)
         derived["source_bundle"] = str(source)
         derived["source_manifest_sha256"] = _sha256(manifest_path)
         derived["context_length"] = int(config.max_tokens)
@@ -197,8 +204,8 @@ def main(config: DictConfig) -> None:
         derived["token_counts_by_module_training_pools"] = dict(sorted(training_pool_counts.items()))
         derived["token_length_distribution_training_pools"] = distribution(training_pool_lengths)
         derived["tokenizer"] = {
-            "version": 2,
-            "protocol": "reasoning_v1",
+            "version": 3 if str(config.protocol) == "reasoning_v2" else 2,
+            "protocol": str(config.protocol),
             "strict_single_unicode_codepoint": True,
             "special_tokens": list(tokenizer.special_tokens),
             "vocab_size": tokenizer.vocab_size,

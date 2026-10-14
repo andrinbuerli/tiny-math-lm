@@ -1,4 +1,4 @@
-"""Structural parsing for the reasoning_v1 generated completion protocol."""
+"""Structural parsing for generated reasoning completion protocols."""
 
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ def parse_reasoning_completion(
     The parser operates on reserved structural IDs before decoding ordinary text so
     question text that happens to spell a marker cannot affect completion structure.
     """
-    if tokenizer.protocol != "reasoning_v1":
-        raise ValueError("Reasoning completions require the reasoning_v1 tokenizer")
+    if tokenizer.protocol not in {"reasoning_v1", "reasoning_v2"}:
+        raise ValueError("Reasoning completions require a reasoning tokenizer")
     ids = list(token_ids)
     if not ids or ids[-1] != tokenizer.eos_id:
         raise ValueError("Reasoning completion must end with EOS")
@@ -43,6 +43,10 @@ def parse_reasoning_completion(
     suffix = tokenizer.decode(body[end + 1 :])
     if not scratchpad or not suffix.startswith("\nA: "):
         raise ValueError("Reasoning completion needs a nonempty scratchpad and terminal A: line")
+    if tokenizer.protocol == "reasoning_v2" and not scratchpad.startswith("step:"):
+        raise ValueError("reasoning_v2 scratchpads must begin with a derivation step")
+    if tokenizer.protocol == "reasoning_v2" and "A:" in scratchpad:
+        raise ValueError("reasoning_v2 scratchpads cannot contain an answer field")
     answer = suffix[len("\nA: ") :]
     if not answer or answer != answer.strip() or "\n" in answer or "\r" in answer:
         raise ValueError("Reasoning completion has a missing, multiline, or trailing answer")

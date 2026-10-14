@@ -627,8 +627,11 @@ def reduce_to_budget(
 def annotate_row(
     row: dict[str, str], *, max_tokens: int = 512,
     length_fn: Callable[[dict[str, str], str], int] = default_sequence_length,
+    protocol: str = "reasoning_v1",
 ) -> dict[str, str | int | dict[str, int]]:
     """Verify and annotate a source row without mutating it."""
+    if protocol not in {"reasoning_v1", "reasoning_v2"}:
+        raise ValueError(f"Unsupported trace protocol: {protocol}")
     if not MODULES.__contains__(row.get("module", "")):
         raise ValueError(f"Unsupported module: {row.get('module')!r}")
     answer = row["answer"].strip()
@@ -660,9 +663,33 @@ def annotate_row(
             if op.category not in ("single_digit", "algebra"):
                 op.category = "mixed"
     full_text = render_operations(operations)
+    if protocol == "reasoning_v2":
+        full_text = _forward_trace(full_text, operations, value)
     full_length = length_fn(row, full_text)
     scratch, collapsed, retained_length = reduce_to_budget(
         row, operations, max_tokens=max_tokens, length_fn=length_fn)
+    if protocol == "reasoning_v2":
+        scratch = _forward_trace(scratch, operations, value)
+        retained_length = length_fn(row, scratch)
+        while retained_length > max_tokens:
+            candidates: list[tuple[int, int, Operation, str]] = []
+            for op in operations:
+                if op.collapsed_now or op.essential:
+                    continue
+                op.collapsed_now = True
+                candidate = _forward_trace(render_operations(operations), operations, value)
+                saving = retained_length - length_fn(row, candidate)
+                op.collapsed_now = False
+                if saving > 0:
+                    candidates.append((saving, -op.order, op, candidate))
+            if not candidates:
+                raise ValueError(
+                    f"Forward trace skeleton exceeds {max_tokens} tokens: {retained_length}"
+                )
+            _, _, chosen, scratch = max(candidates, key=lambda item: (item[0], item[1]))
+            chosen.collapsed_now = True
+            collapsed[chosen.category] = collapsed.get(chosen.category, 0) + 1
+            retained_length = length_fn(row, scratch)
     if _fraction(answer) != value:
         raise AssertionError("Final scalar changed during annotation")
     annotated = dict(row)
@@ -674,6 +701,8 @@ def annotate_row(
         "collapsed_categories": collapsed,
         "collapsed_count": sum(collapsed.values()),
     })
+    if protocol == "reasoning_v2":
+        annotated["trace_version"] = protocol
     return annotated
 
 
@@ -711,6 +740,139 @@ def _verify_addition_rows(a: int, b: int, rows: list[str]) -> int:
     if row_index != len(rows):
         raise ValueError("Addition trace has unexpected transition rows")
     return sum(digit * 10**index for index, digit in enumerate(out_digits))
+
+
+def _forward_trace(legacy: str, operations: list[Operation], final_value: Fraction) -> str:
+    """Convert v1 result-first operation blocks to v2 forward derivations.
+
+    A step's operands and digit work come first. Nonterminal intermediate values
+    are emitted after their derivation because later steps may use them. The
+    terminal scalar is never emitted in the scratchpad.
+    """
+    final_name = operations[-1].identifier if operations else ""
+    lines: list[str] = []
+    blocks: list[tuple[str, list[str]]] = []
+    for line in legacy.splitlines():
+        match = _DEFINITION.fullmatch(line)
+        if match:
+            blocks.append((match.group(1), [match.group(2)]))
+        elif blocks:
+            blocks[-1][1].append(line)
+        else:
+            raise ValueError("Malformed source trace while producing reasoning_v2")
+    operation_by_name = {op.identifier: op for op in operations}
+    for name, block in blocks:
+        head = block[0]
+        offset = 0
+        if head == "sign:-":
+            lines.append("step:sign negative")
+            offset = 1
+            head = block[offset]
+        if head.startswith("collect:"):
+            lines.extend("step:" + item for item in block if item.startswith(("collect:", "move:")))
+            continue
+
+        multiplication_header = next(
+            (item for item in block[offset:] if item.startswith("M") and "@" in item), None
+        )
+        partial = re.fullmatch(r"(-?1)\*(\d+)\*(\d+)\*10\^(\d+)=(-?\d+)", head)
+        if partial:
+            sign, multiplicand, digit, shift, answer = partial.groups()
+            lines.append(f"step:mul {multiplicand}*{digit}@{shift}")
+            result = Fraction(int(answer))
+            if int(sign) < 0 and result > 0:
+                result = -result
+        elif multiplication_header is not None:
+            match = re.fullmatch(r"M(.+?)@(\d+)=(?:sign:)?(-?\d+)", multiplication_header)
+            if not match:
+                raise ValueError("Malformed multiplication step")
+            multiplier, shift, answer = match.groups()
+            lines.append(f"step:mul {multiplier}@{shift}")
+            for item in block[offset:]:
+                if item.startswith("digit:") or item == multiplication_header:
+                    continue
+                if item.startswith("carry:") or _TRANSITION.fullmatch(item) or re.fullmatch(r"\d+,\d+:\d+,\d+", item):
+                    lines.append(item)
+            result = Fraction(int(answer))
+        elif head.startswith(("+(", "-(", "*(", "/(")):
+            match = re.fullmatch(r"([+*/-])\(([^,]+),([^)]*)\)=([^\s]+)", head)
+            if not match:
+                raise ValueError("Malformed arithmetic step")
+            symbol, left, right, answer = match.groups()
+            lines.append(f"step:{symbol}({left},{right})")
+            result = _fraction(answer)
+            for item in block[offset + 1:]:
+                if item.startswith("scale:"):
+                    scale = re.match(r"scale:(\d+)", item)
+                    if scale:
+                        lines.append("scale:" + scale.group(1))
+                elif item.startswith("gcd="):
+                    lines.append(item.split(";", 1)[0])
+                else:
+                    lines.append(item)
+        else:
+            scale_head = re.fullmatch(r"scale:(-?\d+)/(\d+)=(-?\d+(?:\.\d+)?)", head)
+            if scale_head is None:
+                scale_head = re.fullmatch(r"([tp]\d+)/(\d+)=(-?\d+(?:\.\d+)?)", head)
+            if scale_head:
+                source, denominator, answer = scale_head.groups()
+                if source.startswith(("t", "p")):
+                    prior_name = source
+                else:
+                    operation_index = [op.identifier for op in operations].index(name)
+                    prior_name = operations[operation_index - 1].identifier if operation_index else ""
+                lines.append(f"step:scale {prior_name} by {denominator}")
+                result = _fraction(answer)
+            else:
+                match = re.fullmatch(r"([^=]+)=(-?\d+(?:/\d+)?)", head)
+                if match:
+                    expression, answer = match.groups()
+                    lines.append("step:" + expression)
+                    result = _fraction(answer)
+                elif re.fullmatch(r"[+-]?[tp]\d+\+[+-]?[tp]\d+ ->", head):
+                    left, right = head[:-3].split("+")
+                    lines.append(f"step:+({left},{right})")
+                    result = _fraction(operation_by_name[name].collapsed.rsplit("=", 1)[-1])
+                    lines.extend(block[1:])
+                else:
+                    match = re.fullmatch(r"([+-]?[tp]\d+)([+*/-])([+-]?[tp]\d+)=(-?\d+(?:/\d+)?)", head)
+                    if not match:
+                        raise ValueError(f"Cannot convert operation {name}: {head!r}")
+                    left, symbol, right, answer = match.groups()
+                    lines.append(f"step:{symbol}({left},{right})")
+                    result = _fraction(answer)
+        if name != final_name and result != final_value:
+            lines.append(f"=>{_scalar(result)}")
+    step_seen = False
+    compact_lines = []
+    for line in lines:
+        if line.startswith("step:"):
+            compact_lines.append(line if not step_seen else line[5:])
+            step_seen = True
+        else:
+            compact_lines.append(line)
+    rendered = "\n".join(compact_lines).strip()
+    if not rendered:
+        raise ValueError("reasoning_v2 cannot have an empty trace")
+    if any(
+        (match := re.fullmatch(r"=>(-?\d+(?:/\d+)?)", line))
+        and _fraction(match.group(1)) == final_value
+        for line in rendered.splitlines()
+    ):
+        raise ValueError("Final answer leaked into a scratchpad result line")
+    return rendered
+
+
+def _verify_forward_annotation(row: dict[str, str], scratchpad: str) -> None:
+    """Replay a v2 trace by rebuilding the exact source derivation and budget path."""
+    # The established verifier independently derives the source value. The v2
+    # comparison additionally rejects omitted, reordered, result-first, or
+    # edited steps by comparing against a freshly regenerated forward trace.
+    expected_v1 = annotate_row(row, max_tokens=512, protocol="reasoning_v1")
+    verify_annotation(row, expected_v1)
+    expected_v2 = annotate_row(row, max_tokens=512, protocol="reasoning_v2")
+    if scratchpad != expected_v2["scratchpad"]:
+        raise ValueError("reasoning_v2 trace is malformed, result-first, incomplete, or inconsistent")
 
 
 def _verify_decimal_scale(a: Fraction, b: Fraction, result: Fraction, rows: list[str]) -> list[str]:
@@ -819,6 +981,9 @@ def verify_annotation(row: dict[str, str], annotation: dict[str, object] | str) 
         if isinstance(annotation, dict)
         else annotation
     )
+    if isinstance(annotation, dict) and annotation.get("trace_version") == "reasoning_v2":
+        _verify_forward_annotation(row, scratchpad)
+        return
     module = row.get("module", "")
     answer = _fraction(row["answer"])
     if module == "algebra__linear_1d":
