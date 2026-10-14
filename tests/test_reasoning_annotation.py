@@ -147,6 +147,17 @@ def test_mixed_nonterminating_rational_intermediate_uses_exact_equation() -> Non
     assert trace.splitlines()[-1] == "t1=+(t0,-99)=-2/29"
 
 
+def test_reduced_rational_helper_references_are_verified_exactly() -> None:
+    source = row(
+        "Calculate (5/(-80)*-244 + (-28)/(-16))/((-9)/(-36)).",
+        "68",
+        "arithmetic__mixed",
+    )
+    annotation = annotate_row(source)
+    verify_annotation(source, annotation)
+    assert "t5=t3+t4=17" in annotation["scratchpad"]
+
+
 def test_repeated_multiplication_nodes_have_unique_references_and_fit_budget() -> None:
     source = row("(-6)/4*((-9)/(-8) - 1)*149804/(-6609)", "17/4", "arithmetic__mixed")
     annotation = annotate_row(source)

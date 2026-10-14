@@ -914,18 +914,20 @@ def verify_annotation(row: dict[str, str], annotation: dict[str, object] | str) 
             values[name] = Fraction(expected)
             continue
 
-        sum_header = re.fullmatch(r"([+-]?[tp]\d+)\+([+-]?[tp]\d+)(?:=| ->)(-?\d+)?", head)
+        sum_header = re.fullmatch(
+            r"([+-]?[tp]\d+)\+([+-]?[tp]\d+)(?:=| ->)(-?\d+(?:/\d+)?)?", head
+        )
         if sum_header:
             left, right, result_text = sum_header.groups()
             a, b = operand(left), operand(right)
-            if a.denominator != 1 or b.denominator != 1:
-                raise ValueError("Digit addition references must resolve to integers")
             result = a + b
             if len(lines) > 1:
+                if a.denominator != 1 or b.denominator != 1:
+                    raise ValueError("Digit addition references must resolve to integers")
                 replayed = _verify_addition_rows(int(a), int(b), lines[1:])
                 if Fraction(replayed) != result:
                     raise ValueError(f"Referenced addition {name} disagrees with its digit rows")
-            elif result_text and int(result_text) != result:
+            elif result_text and _fraction(result_text) != result:
                 raise ValueError(f"Referenced addition {name} has an incorrect result")
             values[name] = result
             continue
