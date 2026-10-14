@@ -1871,3 +1871,214 @@ def make_exp11_report(
         ),
     ]
     return report, [markdown_path, report_path, csv_path, *figures]
+
+
+def make_exp13_report(
+    *,
+    runs_dir: Path,
+    output_dir: Path,
+    seed: int = 18,
+    experiment: str = "exp13_reasoning_v3_arithmetic_subtasks",
+    baseline_snapshot: Path,
+    annotation_bundle_dir: Path,
+) -> tuple[dict[str, Any], list[Path]]:
+    """Build the Experiment 13 reasoning-v3 versus frozen-baseline table."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    snapshot = _json_file(baseline_snapshot) or {}
+    baseline_name = str(
+        snapshot.get("experiment", {}).get("canonical_name", "restarted_100k_greedy_restart_2")
+    )
+    baseline_records = {
+        (item.get("model"), item.get("arm"), item.get("split")): item
+        for item in snapshot.get("available_measurements", [])
+    }
+    baseline_wandb = _baseline_wandb_provenance(snapshot)
+    baseline_digest = hashlib.sha256(baseline_snapshot.read_bytes()).hexdigest()
+    manifest = _json_file(annotation_bundle_dir / "manifest.json") or {}
+    rows: list[dict[str, Any]] = []
+
+    for model in MODELS:
+        for arm in ARMS:
+            selector = _exp11_selector(snapshot, model, arm, baseline_name)
+            baseline_dir = (
+                runs_dir / baseline_name / model / "evaluation" / arm
+                / str(selector or "") / f"seed{seed}"
+            )
+            training_dir = runs_dir / experiment / model / arm / f"seed{seed}"
+            checkpoint_name = "latest.pt" if arm == "grpo" else "best.pt"
+            checkpoint = training_dir / checkpoint_name
+            eval_root = runs_dir / experiment / model / "evaluation" / arm / (
+                "latest" if arm == "grpo" else "best"
+            ) / f"seed{seed}"
+            result_path = _exp11_result_path(
+                runs_dir, experiment, model, arm, seed,
+                "latest" if arm == "grpo" else "best",
+                expected_checkpoint=checkpoint,
+            )
+            if result_path is not None:
+                eval_root = result_path.parent
+            result = _json_file(result_path) if result_path else None
+            eval_state = _json_file(eval_root / "wandb_run.json") or {}
+            progress = _json_file(eval_root / "progress.json") or {}
+            checkpoint_hash = hashlib.sha256(checkpoint.read_bytes()).hexdigest() if checkpoint.is_file() else None
+            training_metrics = _metric_at_checkpoint(
+                training_dir / "metrics.csv", arm, (result or {}).get("checkpoint_step")
+            )
+            for split in SPLITS:
+                baseline = baseline_records.get((model, arm, split))
+                expected = int((baseline or {}).get("examples") or 0)
+                base_identity, base_identity_count = _question_identity(
+                    baseline_dir / f"{split}_predictions.csv"
+                )
+                reasoning_identity, reasoning_identity_count = _question_identity(
+                    eval_root / f"{split}_predictions.csv"
+                )
+                identity_matches = bool(
+                    base_identity and reasoning_identity and base_identity == reasoning_identity
+                )
+                split_result = (result or {}).get("splits", {}).get(split)
+                scored = int((split_result or {}).get("examples") or 0)
+                if split_result is None:
+                    scored = len(progress.get("scored", {}).get(split, []))
+                if expected > 0 and scored >= expected:
+                    status = "complete"
+                elif eval_state.get("run_status") == "failed" or eval_state.get("exit_code") not in (None, 0):
+                    status = "failed"
+                elif eval_state.get("run_status") == "running":
+                    status = "running"
+                elif scored:
+                    status = "partial"
+                else:
+                    status = "not-run"
+                reasoning_accuracy = (split_result or {}).get("accuracy")
+                baseline_accuracy = (baseline or {}).get("accuracy")
+                delta_pp = None
+                if (
+                    status == "complete" and identity_matches
+                    and reasoning_accuracy is not None and baseline_accuracy is not None
+                ):
+                    delta_pp = 100.0 * (float(reasoning_accuracy) - float(baseline_accuracy))
+                rows.append({
+                    "model": model,
+                    "model_parameters": (result or {}).get("model_parameters"),
+                    "arm": arm,
+                    "split": split,
+                    "baseline_accuracy": baseline_accuracy,
+                    "baseline_scored": expected or None,
+                    "reasoning_accuracy": reasoning_accuracy,
+                    "reasoning_scored": scored or None,
+                    "delta_percentage_points": delta_pp,
+                    "status": status,
+                    "same_question_identity": identity_matches,
+                    "baseline_question_identity_sha256": base_identity,
+                    "reasoning_question_identity_sha256": reasoning_identity,
+                    "baseline_question_identity_count": base_identity_count,
+                    "reasoning_question_identity_count": reasoning_identity_count,
+                    "checkpoint_selector": "latest" if arm == "grpo" else "best",
+                    "checkpoint": str(checkpoint) if checkpoint.is_file() else None,
+                    "checkpoint_sha256": checkpoint_hash,
+                    "checkpoint_step": (result or {}).get("checkpoint_step"),
+                    "training_step": training_metrics.get("update" if arm == "grpo" else "optimizer_step"),
+                    "training_tokens_seen": training_metrics.get("tokens_seen"),
+                    "training_estimated_flops": training_metrics.get("estimated_flops"),
+                    "training_wall_seconds": training_metrics.get("wall_seconds"),
+                    "training_tokens_per_second": training_metrics.get("tokens_per_second"),
+                    "protocol": (result or {}).get("protocol", "reasoning_v3"),
+                    "format_validity": (split_result or {}).get("format_validity"),
+                    "trace_structure_validity": (split_result or {}).get("trace_structure_validity"),
+                    "trace_reference_exact_match_rate": (split_result or {}).get("trace_reference_exact_match_rate"),
+                    "mean_output_tokens": (split_result or {}).get("mean_output_tokens"),
+                    "capped_completions": (split_result or {}).get("capped_completions"),
+                    "module_metrics": (split_result or {}).get("module", {}),
+                    "training_wandb": _wandb_provenance(training_dir),
+                    "evaluation_wandb": _wandb_provenance(eval_root),
+                    "baseline_evaluation_wandb": baseline_wandb.get(model, {}).get(arm, {}),
+                })
+
+    report = {
+        "experiment": experiment,
+        "seed": seed,
+        "row_count": len(rows),
+        "rows": rows,
+        "baseline_provenance": {
+            "experiment": baseline_name,
+            "snapshot_path": str(baseline_snapshot),
+            "snapshot_sha256": baseline_digest,
+            "frozen_at_utc": snapshot.get("frozen_at_utc"),
+        },
+        "reasoning_v3_provenance": {
+            "bundle_path": str(annotation_bundle_dir),
+            "manifest_sha256": hashlib.sha256((annotation_bundle_dir / "manifest.json").read_bytes()).hexdigest(),
+            "source_manifest_sha256": manifest.get("source_manifest_sha256"),
+            "split_manifest_sha256": manifest.get("split_manifest_sha256"),
+            "annotation_sha256": manifest.get("annotation", {}).get("annotation_sha256"),
+            "protocol": manifest.get("annotation", {}).get("protocol"),
+            "tokenizer_sha256": manifest.get("tokenizer", {}).get("sha256"),
+            "splits": manifest.get("splits", {}),
+        },
+        "limitations": [
+            "Comparisons use parent rows only, matching the frozen baseline question populations; standalone annotated subtasks are excluded by the reasoning-v3 evaluator.",
+            "Accuracy deltas require complete evaluations and identical ordered module/question/target identities.",
+            "The comparison covers one seed; no between-seed uncertainty estimate is available.",
+        ],
+    }
+    json_path = output_dir / "comparison.json"
+    json_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    csv_path = output_dir / "comparison.csv"
+    fields = list(rows[0]) if rows else []
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    def accuracy(value: Any) -> str:
+        return f"{100 * float(value):.2f}%" if value is not None else "—"
+
+    markdown_path = output_dir / "intermediate_results.md"
+    lines = [
+        "# Experiment 13 reasoning-v3 comparison", "", f"Seed: `{seed}`", "",
+        f"Rows: {len(rows)} / 27 (3 model sizes × 3 arms × 3 splits).",
+        "Deltas are shown only for complete evaluations with identical ordered question identities.", "",
+        "| Model | Arm | Split | Baseline accuracy (scored) | +Reasoning accuracy (scored) | Δ percentage points | Status |",
+        "|---|---|---|---:|---:|---:|---|",
+    ]
+    for row in rows:
+        baseline_cell = f"{accuracy(row['baseline_accuracy'])} ({row['baseline_scored'] or '—'})"
+        reasoning_cell = f"{accuracy(row['reasoning_accuracy'])} ({row['reasoning_scored'] or '—'})"
+        delta = f"{row['delta_percentage_points']:+.2f}" if row["delta_percentage_points"] is not None else "—"
+        lines.append(
+            f"| {row['model']} | {row['arm']} | {row['split']} | {baseline_cell} | "
+            f"{reasoning_cell} | {delta} | {row['status']} |"
+        )
+    lines.extend([
+        "", "## Provenance", "",
+        f"- Baseline snapshot: `{baseline_snapshot}` (SHA256 `{baseline_digest}`; frozen `{snapshot.get('frozen_at_utc')}`).",
+        f"- Reasoning-v3 bundle: `{annotation_bundle_dir}` (protocol `{manifest.get('annotation', {}).get('protocol')}`, manifest SHA256 `{report['reasoning_v3_provenance']['manifest_sha256']}`).",
+        "- Evaluation population: parent rows only; the bundle’s added standalone subtask rows are excluded so the question IDs match the frozen baseline.",
+        "", "## Evaluation diagnostics", "",
+        "Module accuracy, format and trace validity, mean output tokens, cap counts, checkpoint hashes, question identity hashes, and W&B run metadata are recorded per row in `comparison.json` and `comparison.csv`.",
+        "", "## Limitations", "", *[f"- {item}" for item in report["limitations"]], "",
+    ])
+    markdown_path.write_text("\n".join(lines), encoding="utf-8")
+
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5), sharey=True)
+    for axis, split in zip(axes, SPLITS):
+        selected = [row for row in rows if row["split"] == split]
+        x = list(range(len(selected)))
+        width = 0.38
+        base_values = [100 * row["baseline_accuracy"] if row["baseline_accuracy"] is not None else 0 for row in selected]
+        axis.bar([i - width / 2 for i in x], base_values, width, label="Baseline")
+        measured = [
+            (i + width / 2, 100 * row["reasoning_accuracy"])
+            for i, row in enumerate(selected) if row["reasoning_accuracy"] is not None
+        ]
+        if measured:
+            axis.bar([item[0] for item in measured], [item[1] for item in measured], width, label="Reasoning-v3")
+        axis.set_title(split)
+        axis.set_xticks(x, [f"{r['model']}\n{r['arm']}" for r in selected], rotation=45, ha="right")
+        axis.set_ylabel("Accuracy (%)")
+        axis.grid(axis="y", alpha=0.25)
+    axes[0].legend(fontsize=8)
+    fig.suptitle("Experiment 13 reasoning-v3 versus frozen baseline")
+    figures = _save(fig, output_dir, "accuracy_comparison")
+    return report, [markdown_path, json_path, csv_path, *figures]

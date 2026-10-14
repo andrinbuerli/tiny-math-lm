@@ -10,7 +10,7 @@ from omegaconf import DictConfig
 
 import wandb
 from tinymath.config import workspace_path
-from tinymath.reporting import make_exp11_report, make_report
+from tinymath.reporting import make_exp11_report, make_exp13_report, make_report
 from tinymath.tracking.wandb import finish_wandb, initialize_wandb
 
 LOGGER = logging.getLogger(__name__)
@@ -37,7 +37,23 @@ def main(config: DictConfig) -> None:
     output_dir = workspace_path(str(config.reporting.output_dir))
     run = initialize_wandb(config, run_dir, job_type="comparison")
     try:
-        if str(config.experiment.name) == "exp11_reasoning_500k_100k":
+        if int(experiment.get("number", 0) or 0) == 13:
+            report, outputs = make_exp13_report(
+                runs_dir=workspace_path("runs"),
+                experiment=str(experiment.name),
+                output_dir=output_dir,
+                seed=int(config.seed),
+                baseline_snapshot=workspace_path(str(config.reporting.baseline_snapshot)),
+                annotation_bundle_dir=workspace_path(str(config.reporting.annotation_bundle_dir)),
+            )
+            run.log({
+                "comparison/rows": report["row_count"],
+                "comparison/complete": sum(row["status"] == "complete" for row in report["rows"]),
+                "comparison/partial": sum(row["status"] == "partial" for row in report["rows"]),
+                "comparison/running": sum(row["status"] == "running" for row in report["rows"]),
+                "comparison/not_run": sum(row["status"] == "not-run" for row in report["rows"]),
+            })
+        elif str(config.experiment.name) == "exp11_reasoning_500k_100k":
             report, outputs = make_exp11_report(
                 runs_dir=workspace_path("runs"),
                 experiment=str(config.experiment.name),
@@ -77,7 +93,7 @@ def main(config: DictConfig) -> None:
                 "seed": int(config.seed),
                 "available_evaluations": (
                     report["coverage"]["available_evaluations"]
-                    if "coverage" in report else report["row_count"]
+                    if "coverage" in report else sum(row.get("status") == "complete" for row in report["rows"])
                 ),
             },
         )
@@ -88,13 +104,15 @@ def main(config: DictConfig) -> None:
             {
                 "comparison/report_path": str(output_dir / "comparison.json"),
                 "comparison/markdown_path": str(output_dir / (
-                    "intermediate_results.md" if str(config.experiment.name) == "exp11_reasoning_500k_100k"
+                    "intermediate_results.md"
+                    if str(config.experiment.name) == "exp11_reasoning_500k_100k"
+                    or int(experiment.get("number", 0) or 0) == 13
                     else "report.md"
                 )),
                 "comparison/csv_path": str(output_dir / "comparison.csv"),
                 "comparison/available_evaluations": (
                     report["coverage"]["available_evaluations"]
-                    if "coverage" in report else report["row_count"]
+                    if "coverage" in report else sum(row.get("status") == "complete" for row in report["rows"])
                 ),
             }
         )
