@@ -13,13 +13,23 @@ Preserve source bundles, checkpoints, Experiment 11 artifacts, W&B histories, an
 
 ## Experiment matrix
 
-Run the three planned model sizes, each with all three training arms. The intended full comparison therefore covers 9 model/arm combinations and 27 model/arm/split evaluation rows.
+Run the three planned model sizes, each with all three training arms. This is nine distinct training runs and 27 model/arm/split evaluation rows. Use fresh W&B run identities for all Experiment 13 runs.
 
-| Model size | SFT arm | GRPO arm | Continued-SFT arm | Evaluation splits |
-|---|---|---|---|---|
-| 1M parameters | Fresh random initialization; reasoning-v3 SFT | Initialize from that model's selected SFT checkpoint; GRPO/RLVR | Initialize from the same selected SFT checkpoint; continued SFT control | `test`, `number_length_ood`, `expression_length_ood` |
-| 10M parameters | Fresh random initialization; reasoning-v3 SFT | Initialize from that model's selected SFT checkpoint; GRPO/RLVR | Initialize from the same selected SFT checkpoint; continued SFT control | `test`, `number_length_ood`, `expression_length_ood` |
-| 100M parameters | Fresh random initialization; reasoning-v3 SFT | Initialize from that model's selected SFT checkpoint; GRPO/RLVR | Initialize from the same selected SFT checkpoint; continued SFT control | `test`, `number_length_ood`, `expression_length_ood` |
+| Experiment 13 run | Model size | Method | Initialization | Training data / objective | Checkpoint used for evaluation |
+|---|---:|---|---|---|---|
+| `exp13-reasoning-v3-1m-sft-seed18` | 1M parameters | SFT | Fresh random initialization | Reasoning-v3 SFT examples; completion-only next-token loss | Validation-loss-selected checkpoint |
+| `exp13-reasoning-v3-1m-grpo-seed18` | 1M parameters | GRPO / RLVR | The selected 1M SFT checkpoint | Prompts and verifiable arithmetic rewards from the RLVR split; no held-out reasoning traces or teacher forcing | Latest GRPO checkpoint |
+| `exp13-reasoning-v3-1m-continued-sft-seed18` | 1M parameters | Continued SFT control | The same selected 1M SFT checkpoint used to initialize GRPO | Reasoning-v3 SFT examples; completion-only next-token loss | Validation-loss-selected checkpoint |
+| `exp13-reasoning-v3-10m-sft-seed18` | 10M parameters | SFT | Fresh random initialization | Reasoning-v3 SFT examples; completion-only next-token loss | Validation-loss-selected checkpoint |
+| `exp13-reasoning-v3-10m-grpo-seed18` | 10M parameters | GRPO / RLVR | The selected 10M SFT checkpoint | Prompts and verifiable arithmetic rewards from the RLVR split; no held-out reasoning traces or teacher forcing | Latest GRPO checkpoint |
+| `exp13-reasoning-v3-10m-continued-sft-seed18` | 10M parameters | Continued SFT control | The same selected 10M SFT checkpoint used to initialize GRPO | Reasoning-v3 SFT examples; completion-only next-token loss | Validation-loss-selected checkpoint |
+| `exp13-reasoning-v3-100m-sft-seed18` | 100M parameters | SFT | Fresh random initialization | Reasoning-v3 SFT examples; completion-only next-token loss | Validation-loss-selected checkpoint |
+| `exp13-reasoning-v3-100m-grpo-seed18` | 100M parameters | GRPO / RLVR | The selected 100M SFT checkpoint | Prompts and verifiable arithmetic rewards from the RLVR split; no held-out reasoning traces or teacher forcing | Latest GRPO checkpoint |
+| `exp13-reasoning-v3-100m-continued-sft-seed18` | 100M parameters | Continued SFT control | The same selected 100M SFT checkpoint used to initialize GRPO | Reasoning-v3 SFT examples; completion-only next-token loss | Validation-loss-selected checkpoint |
+
+Evaluate every run on the same three held-out splits: `test`, `number_length_ood`, and `expression_length_ood`. Each evaluation uses the matching Experiment 13 reasoning-v3 table and the corresponding frozen baseline rows. Each model/method pair must report baseline and reasoning scored counts and accuracy, question-ID match status, delta in percentage points when eligible, and a row status. The table therefore contains one row per run per split.
+
+Run order is by model size: for each size, train and evaluate SFT first; use its selected checkpoint to initialize GRPO and continued SFT; then evaluate those two arms. The three sizes may run in parallel only when GPU utilization and VRAM permit it. All training and evaluation runs must log online to `andi-mueller-csem-sa/tinymath-rl`, with Experiment 13 names, groups, tags, and sanitized resolved Hydra configurations.
 
 Use seed 18 and the budgets and optimization settings in the original Experiment 11 plan unless the Experiment 13 Hydra configuration explicitly defines a compatible replacement. The planned defaults are 100,000 updates per arm; SFT effective batch 32; GRPO eight prompts by eight completions, temperature 0.8, learning rate `1e-5`, clip 0.2, and zero KL coefficient; continued SFT effective batch 128 and learning rate `1e-4`, with approximate compute matching reported from measured FLOPs. Select SFT and continued-SFT checkpoints by validation loss and evaluate GRPO's latest checkpoint. Do not use held-out reasoning traces as prompts or RLVR teacher forcing.
 
