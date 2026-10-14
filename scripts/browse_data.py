@@ -189,11 +189,12 @@ def main() -> None:
                     explain_reasoning_trace(selected["scratchpad"]), start=1
                 ):
                     st.markdown(f"**Step {index}.** {step}")
-                with st.expander("Trace notation and full reference trace"):
+                st.markdown("#### Original reasoning / scratchpad trace")
+                st.code(selected["scratchpad"], language="text")
+                with st.expander("Trace notation key"):
                     st.markdown("**Notation key**")
                     for notation, description in TRACE_KEY.items():
                         st.markdown(f"- `{notation}` — {description}")
-                    st.code(selected["scratchpad"], language="text")
 
 
 if __name__ == "__main__":
