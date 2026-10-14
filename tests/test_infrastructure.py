@@ -106,6 +106,23 @@ def test_resume_allows_wandb_mode_change_without_training_config_changes():
     assert not tracking._compatible_with_runtime_extension(saved, changed_training)
 
 
+def test_resume_allows_reasoning_generation_ceiling_to_match_context():
+    saved = {
+        "experiment": {"protocol": "reasoning_v1"},
+        "model": {"context_length": 512},
+        "eval": {"greedy": True, "max_new_tokens": 128},
+    }
+    current = {
+        "experiment": {"protocol": "reasoning_v1"},
+        "model": {"context_length": 512},
+        "eval": {"greedy": True, "max_new_tokens": 512},
+    }
+    assert tracking._compatible_with_runtime_extension(saved, current)
+
+    changed_context = {**current, "model": {"context_length": 256}}
+    assert not tracking._compatible_with_runtime_extension(saved, changed_context)
+
+
 def test_wandb_entity_defaults_to_configured_team(monkeypatch):
     monkeypatch.delenv("WANDB_ENTITY", raising=False)
     with initialize_config_dir(version_base="1.3", config_dir="/workspace/configs"):

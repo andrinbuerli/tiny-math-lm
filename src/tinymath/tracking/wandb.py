@@ -132,6 +132,18 @@ def _compatible_with_runtime_extension(
     ):
         current_eval.pop("temperature")
 
+    # Reasoning generation is capped by remaining context, so increasing this
+    # configured ceiling changes provenance only for reasoning runs. It is
+    # safe when the model context already supplies the effective per-prompt cap.
+    if (
+        saved_normalized.get("experiment", {}).get("protocol") == "reasoning_v1"
+        and normalized.get("experiment", {}).get("protocol") == "reasoning_v1"
+        and saved_eval.get("max_new_tokens", 0) < current_eval.get("max_new_tokens", 0)
+        and current_eval.get("max_new_tokens")
+        == normalized.get("model", {}).get("context_length")
+    ):
+        saved_eval["max_new_tokens"] = current_eval["max_new_tokens"]
+
     return saved_normalized == normalized
 
 

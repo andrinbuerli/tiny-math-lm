@@ -36,3 +36,8 @@ data:
 
 rlvr:
   max_completion_tokens: 512
+
+# Reasoning evaluation consumes the remaining context (512 - prompt tokens).
+# Keep the configured ceiling aligned with that allowance for provenance.
+eval:
+  max_new_tokens: 512
