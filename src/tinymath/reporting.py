@@ -777,6 +777,26 @@ def _json_file(path: Path) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+def _wandb_provenance(run_dir: Path) -> dict[str, Any]:
+    """Expose local W&B identity and sync state without implying an online link."""
+    state = _json_file(run_dir / "wandb_run.json") or {}
+    identity = state.get("identity") or {}
+    url = state.get("url")
+    if state.get("mode") == "offline" and state.get("sync_status") != "synced":
+        url = None
+    return {
+        "run_id": state.get("id"),
+        "run_name": identity.get("name"),
+        "project": state.get("project") or identity.get("project"),
+        "group": identity.get("group"),
+        "phase": (identity.get("metadata") or {}).get("phase"),
+        "mode": state.get("mode"),
+        "sync_status": state.get("sync_status"),
+        "url": url,
+        "local_path": str(run_dir),
+    }
+
+
 def _question_identity(path: Path) -> tuple[str | None, int]:
     """Hash the ordered module/question/target identity in a prediction CSV."""
     if not path.is_file():
@@ -979,6 +999,7 @@ def make_exp11_report(
     training_metrics_by_arm: dict[tuple[str, str], dict[str, str]] = {}
     for model in MODELS:
         for arm in ARMS:
+            training_run_dir = runs_dir / experiment / model / arm / f"seed{seed}"
             baseline_selector = _exp11_selector(snapshot, model, arm, baseline_name)
             base_eval = _exp11_result_path(
                 baseline_runs_dir, baseline_name, model, arm, seed, baseline_selector
@@ -1006,7 +1027,7 @@ def make_exp11_report(
                 result = None
             raw_results[(model, arm)] = (exp_result_path, result)
             train_metrics = _metric_at_checkpoint(
-                runs_dir / experiment / model / arm / f"seed{seed}" / "metrics.csv",
+                training_run_dir / "metrics.csv",
                 arm,
                 (result or {}).get("checkpoint_step"),
             )
@@ -1095,6 +1116,8 @@ def make_exp11_report(
                     "baseline_estimated_flops": baseline_train_metrics.get("estimated_flops"),
                     "additional_tokens": additional_tokens,
                     "additional_flops": additional_flops,
+                    "training_wandb": _wandb_provenance(training_run_dir),
+                    "evaluation_wandb": _wandb_provenance(eval_root),
                 }
                 rows.append(row)
 
@@ -1265,6 +1288,32 @@ def make_exp11_report(
             f"{_format_count(metrics['continued_sft_step'])} | "
             f"{_format_count(metrics['continued_sft_additional_estimated_flops'])} | {ratio_text} | "
             f"{metrics['status']} |"
+        )
+    lines.extend([
+        "", "## Experiment and W&B provenance", "",
+        "Offline runs are identified by their run ID and local directory; a cloud URL appears when W&B provides one.",
+        "", "| Model | Arm | Training run | Evaluation run |", "|---|---|---|---|",
+    ])
+    provenance_rows = {}
+    for row in rows:
+        provenance_rows.setdefault((row["model"], row["arm"]), row)
+
+    def tracking_cell(provenance: dict[str, Any]) -> str:
+        run_id = provenance.get("run_id")
+        if not run_id:
+            return f"Not started; expected local path `{provenance['local_path']}`"
+        run_name = provenance.get("run_name") or "unnamed"
+        url = provenance.get("url")
+        label = f"[{run_name}]({url})" if url else run_name
+        mode = provenance.get("mode") or "unknown mode"
+        sync_status = provenance.get("sync_status") or "unknown sync"
+        local_path = provenance.get("local_path") or ""
+        return f"{label} (`{run_id}`; {mode}/{sync_status}; `{local_path}`)"
+
+    for (model, arm), row in sorted(provenance_rows.items()):
+        lines.append(
+            f"| {model} | {arm} | {tracking_cell(row['training_wandb'])} | "
+            f"{tracking_cell(row['evaluation_wandb'])} |"
         )
     lines.extend([
         "", "## Evaluation accuracy and format by module", "",

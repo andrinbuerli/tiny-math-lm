@@ -227,6 +227,7 @@ def test_exp11_wandb_uses_canonical_group_and_training_name(workspace_tmpdir, mo
 
     class FakeRun:
         id = "stable-run"
+        url = "https://wandb.ai/unit/tinymath-rl/runs/stable-run"
         settings = types.SimpleNamespace(mode="offline")
 
         def __init__(self):
@@ -260,6 +261,8 @@ def test_exp11_wandb_uses_canonical_group_and_training_name(workspace_tmpdir, mo
     assert captured[0]["name"] == "exp11-reasoning-500k-100k-main-10m-grpo-seed18"
     state = json.loads((run_dir / "wandb_run.json").read_text())
     assert state["identity"]["name"] == captured[0]["name"]
+    assert state["url"] == FakeRun.url
+    assert state["project"] == "tinymath-rl"
 
 
 def test_online_sync_status_requires_successful_finish(workspace_tmpdir):

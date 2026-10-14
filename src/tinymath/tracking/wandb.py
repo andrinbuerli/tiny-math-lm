@@ -187,16 +187,14 @@ def initialize_wandb(
             "no online run was started. Set tracking.mode=offline explicitly to create an "
             "unsynced local run."
         )
-    _write_tracking_state(
-        state_path,
-        {
-            "id": run_id,
-            "mode": mode,
-            "sync_status": "unsynced" if mode == "offline" else "pending",
-            "run_status": "running",
-            "identity": naming,
-        },
-    )
+    state = {
+        "id": run_id,
+        "mode": mode,
+        "sync_status": "unsynced" if mode == "offline" else "pending",
+        "run_status": "running",
+        "identity": naming,
+    }
+    _write_tracking_state(state_path, state)
     metadata = {
         "resolved_config_path": str(config_path),
         "protocol": "tinymath-r1",
@@ -220,6 +218,10 @@ def initialize_wandb(
             settings=wandb.Settings(code_dir="/workspace"),
         )
         _ACTIVE_STATE_PATHS[str(getattr(run, "id", run_id))] = state_path
+        state["url"] = getattr(run, "url", None)
+        state["entity"] = tracking.get("entity")
+        state["project"] = str(naming["project"])
+        _write_tracking_state(state_path, state)
         # runtime_info probes CUDA. Collect it after W&B has started its service
         # threads so constrained process quotas do not block W&B initialization.
         run.config.update({"runtime": runtime_info().as_dict()}, allow_val_change=True)
