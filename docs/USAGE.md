@@ -46,7 +46,9 @@ Generate the separate bundle with:
 uv run python scripts/annotate_reasoning.py --config-name reasoning_v3
 ```
 
-The output goes to `data/processed/exp13_reasoning_v3_arithmetic_subtasks-seed18`. This command is a W&B-tracked data annotation run; it does not train a model or implement inference dispatch. V3's `<scp>` delimiters are ordinary character tokens, while existing v1/v2 tokenizer files retain their reserved markers.
+The output goes to `data/processed/exp13_reasoning_v3_arithmetic_subtasks-seed18`. This command is a W&B-tracked data annotation run. V3's `<scp>` delimiters are ordinary character tokens, while existing v1/v2 tokenizer files retain their reserved markers.
+
+V3 training and evaluation use the shared `reasoning_v3` configuration. See [reasoning v3 execution and rewards](REASONING_V3.md) for call dispatch, partial formatting rewards, assisted comparisons, and the tracked validation command.
 
 ## Train and evaluate
 

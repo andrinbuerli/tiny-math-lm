@@ -1,0 +1,41 @@
+defaults:
+  - reasoning_v3
+  - _self_
+
+experiment:
+  name: v3_integration_validation
+  max_steps: 2
+  data_budget: 5
+data_bundle: null
+model:
+  name: validation_tiny
+  context_length: 512
+  n_layers: 1
+  n_heads: 1
+  d_model: 16
+  d_ff: 32
+trainer:
+  bf16: false
+  save_every: 1
+rlvr:
+  prompts_per_batch: 1
+  group_size: 8
+  temperature: 1.0
+  kl_coefficient: 0.01
+  learning_rate: 0.001
+qualitative:
+  every_steps: 100
+  examples_per_module: 1
+eval:
+  splits: [test]
+  batch_size: 5
+tracking:
+  name: v3-controlled-validation-seed${seed}
+  group: v3-integration-validation
+  log_every: 1
+validation:
+  root: ${paths.runs}/v3-integration-validation
+  interrupt_once: true
+  controlled_trajectories: true
+runtime:
+  cpu_threads: 1

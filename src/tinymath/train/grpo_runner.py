@@ -157,6 +157,8 @@ def train_grpo(
     padded_compute_positions = 0
     estimated_flops_seen = 0
     parameter_count = model.count_parameters()
+    if hasattr(run, "config"):
+        run.config.update({"model_parameters": parameter_count}, allow_val_change=True)
     if latest_path.exists():
         resumed = torch.load(latest_path, map_location="cpu", weights_only=False)
         if resumed.get("tokenizer_sha256") != tokenizer.sha256:

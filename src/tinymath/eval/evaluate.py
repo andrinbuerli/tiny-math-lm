@@ -290,6 +290,7 @@ def evaluate_checkpoint(
     if tokenizer.protocol == "reasoning_v3":
         identity["rollout"] = rollout_config.identity()
         identity["population"] = "parents_only"
+        identity["decoding"]["batch_size"] = batch_size
     progress_path = output_dir / "progress.json"
     if progress_path.is_file():
         progress = json.loads(progress_path.read_text(encoding="utf-8"))

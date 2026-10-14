@@ -48,6 +48,7 @@ def controlled_rollouts(model, prompt_ids, *, tokenizer, rollout, group_size=1, 
     with torch.no_grad():
         old = grpo_runner.completion_log_probs(model, prompt_ids, result.completion_ids,
                                                temperature=kwargs["temperature"] or 1.)
+    old = torch.where(result.loss_mask, old, 0.)
     return Rollouts(result.completion_ids, result.completion_mask, old, result.entropy,
                     result.policy_mask, result.termination_reasons, result.call_events)
 
@@ -167,3 +168,40 @@ def test_v3_hydra_configuration():
         config = compose(config_name="reasoning_v3", overrides=["rollout.executor=none"])
     assert config.model.context_length == config.rlvr.max_completion_tokens == config.eval.max_new_tokens == 512
     assert RolloutConfig.from_config(config.rollout).executor == "none"
+
+
+def test_evaluation_shaped_rewards_and_sampled_resume(v3_setup, workspace_tmpdir, monkeypatch):
+    bundle, _, _, checkpoint, _ = v3_setup
+    parents = [{"question": f"Calculate {left} + {right}.", "answer": "3",
+                "module": "arithmetic__add_or_sub"} for left, right in ((1, 2), (2, 1), (0, 3))]
+    (bundle / "test.jsonl").write_text("".join(json.dumps(row) + "\n" for row in parents))
+    kwargs = {"checkpoint_path": checkpoint, "bundle_dir": bundle, "split_names": ["test"],
+              "max_new_tokens": 200, "batch_size": 3, "rollout": RolloutConfig(executor="exact")}
+    with monkeypatch.context() as patcher:
+        patcher.setattr(evaluation, "generate_rollouts", controlled_rollouts)
+        summary = evaluation.evaluate_checkpoint(**kwargs, output_dir=workspace_tmpdir / "shaped")
+    result = summary["splits"]["test"]
+    assert result["mean_reward"] == pytest.approx(1.1 / 3)
+    assert result["accuracy"] == result["full_success_rate"] == pytest.approx(1 / 3)
+    assert result["format_validity"] == pytest.approx(2 / 3)
+    kwargs.update(max_new_tokens=6, batch_size=1, greedy=False, temperature=.8)
+    seed_everything(42, cpu_threads=1)
+    evaluation.evaluate_checkpoint(**kwargs, output_dir=workspace_tmpdir / "sampled_whole")
+    original_atomic = evaluation._atomic_json
+    def interrupt(path, payload):
+        original_atomic(path, payload)
+        if path.name == "progress.json" and len(payload["scored"]["test"]) == 1:
+            raise KeyboardInterrupt("controlled evaluation interruption")
+    with monkeypatch.context() as patcher:
+        patcher.setattr(evaluation, "_atomic_json", interrupt)
+        seed_everything(42, cpu_threads=1)
+        with pytest.raises(KeyboardInterrupt):
+            evaluation.evaluate_checkpoint(**kwargs, output_dir=workspace_tmpdir / "sampled_resumed")
+    seed_everything(999, cpu_threads=1)
+    evaluation.evaluate_checkpoint(**kwargs, output_dir=workspace_tmpdir / "sampled_resumed")
+    whole = json.loads((workspace_tmpdir / "sampled_whole" / "progress.json").read_text())
+    resumed = json.loads((workspace_tmpdir / "sampled_resumed" / "progress.json").read_text())
+    assert whole["scored"] == resumed["scored"]
+    with pytest.raises(ValueError, match="progress"):
+        evaluation.evaluate_checkpoint(**{**kwargs, "batch_size": 2},
+                                       output_dir=workspace_tmpdir / "sampled_resumed")
