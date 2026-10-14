@@ -1,7 +1,7 @@
 # Experiment 12 corrected forward trace annotation. This is a data-only run.
 name: exp12_reasoning_forward_500k_100k
-source_bundle: /workspace/data/processed/d9f78d0665b3-main-seed18
-output_bundle: /workspace/data/processed/exp12_reasoning_forward_500k_100k-seed18
+source_bundle: ${oc.env:WORKSPACE_ROOT,/workspace}/data/processed/d9f78d0665b3-main-seed18
+output_bundle: ${oc.env:WORKSPACE_ROOT,/workspace}/data/processed/exp12_reasoning_forward_500k_100k-seed18
 max_tokens: 512
 seed: 18
 protocol: reasoning_v2
@@ -30,7 +30,7 @@ runtime:
   wandb_service_gomaxprocs: 2
 hydra:
   run:
-    dir: /workspace/outputs/${name}/annotation/seed${seed}
+    dir: ${oc.env:WORKSPACE_ROOT,/workspace}/outputs/${name}/annotation/seed${seed}
   job:
     chdir: false
   output_subdir: hydra

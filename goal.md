@@ -23,12 +23,16 @@ This goal is data-only. Do not stop, start, restart, or resume model training, a
 - [x] Annotate all 607,000 source rows in memory; all traces fit the 512-token ceiling.
 - [x] Independently verify/replay all 607,000 generated traces in memory across all five modules.
 - [x] Attempt the complete repository test suite; pytest collection stops because `/workspace/scripts/run_all.py` is absent.
-- [ ] Run the fresh W&B-tracked Experiment 12 annotation job and generate the complete bundle.
-- [ ] Verify bundle counts, hashes, five-module coverage, split consistency, token limits, and provenance.
+- [x] Run the fresh W&B-tracked Experiment 12 annotation job and generate the complete bundle.
+- [x] Verify bundle counts, hashes, five-module coverage, split consistency, token limits, and provenance.
 - [x] Record validation results, workspace limitation, and W&B status in this file.
 
 ## Current execution constraint
 
-The repository is checked out at `/home/abl/workspace/math-llm`, while its runtime/configuration and the provided workspace instructions require `/workspace`. `/workspace` is absent in the current environment. The full source annotation and verifier passes succeeded in memory, but the bundle, tokenizer artifact and W&B annotation run cannot be created from this checkout without the required mount. W&B authentication and sync status have not been tested because no run was started.
+The repository is checked out at `/home/abl/workspace/math-llm`, while its default runtime root is `/workspace`, which is absent in this environment. The annotation entry point now honors `WORKSPACE_ROOT`; setting it to this checkout allowed the new bundle and run artifacts to be written here without changing Docker or host configuration. The Experiment 11 output remains untouched.
 
-Implementation commit: `6aa7243 feat(data): add forward reasoning v2 annotations`.
+Validation: 607,000 rows written and checked; 500,000 `sft_train`, 25,000 `sft_validation`, 25,000 `rlvr`, 50,000 `test`, 5,000 `number_length_ood`, 2,000 `expression_length_ood`, and 0 `extrapolate_other`. Every split matched its source rows and recorded hashes; all five modules are covered. Every trace is `reasoning_v2`, starts with a derivation step, has no `A:` field, and fits within 512 tokens. Tokenizer and annotation digests were verified from the saved artifacts.
+
+W&B annotation run `e96ed0e74ca4078f` finished online and synced (`exit_code=0`): https://wandb.ai/andi-mueller-csem-sa/tinymath-rl/runs/e96ed0e74ca4078f. No training or evaluation jobs were started. The complete repository test suite still cannot collect because `/workspace/scripts/run_all.py` is absent; focused tests pass.
+
+Implementation commit: `6aa7243 feat(data): add forward reasoning v2 annotations`. Workspace-root fix and final status are recorded in the follow-up commit.

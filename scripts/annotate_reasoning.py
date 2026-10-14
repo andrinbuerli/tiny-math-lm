@@ -14,6 +14,7 @@ from typing import Any
 import hydra
 from omegaconf import DictConfig
 
+from tinymath.config import workspace_path
 from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.data.prompts import format_prompt
 from tinymath.data.reasoning import annotate_row, distribution, verify_annotation
@@ -62,7 +63,9 @@ def main(config: DictConfig) -> None:
     split_info = source_manifest.get("splits")
     if not isinstance(split_info, dict) or not split_info:
         raise ValueError("Source manifest has no split inventory")
-    run_dir = Path("/workspace/runs") / str(config.name) / "data-annotation" / f"seed{int(config.seed)}"
+    run_dir = workspace_path(
+        "runs", str(config.name), "data-annotation", f"seed{int(config.seed)}"
+    )
     run = initialize_wandb(config, run_dir, job_type="data-annotation")
     try:
         # Fit on SFT training questions, answers and complete reference traces,

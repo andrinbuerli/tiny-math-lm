@@ -13,7 +13,12 @@ import requests
 from dotenv import dotenv_values, load_dotenv
 from omegaconf import DictConfig
 
-from tinymath.config import persist_resolved_config, read_saved_resolved_config, sanitized_config
+from tinymath.config import (
+    WORKSPACE,
+    persist_resolved_config,
+    read_saved_resolved_config,
+    sanitized_config,
+)
 from tinymath.repro import runtime_info, seed_everything
 
 
@@ -29,7 +34,7 @@ _ACTIVE_STATE_PATHS: dict[str, Path] = {}
 
 def _load_workspace_credentials() -> None:
     # python-dotenv parses standard assignment syntax and never prints the values.
-    env_path = "/workspace/.env"
+    env_path = WORKSPACE / ".env"
     load_dotenv(dotenv_path=env_path, override=False, verbose=False)
     if os.environ.get("WANDB_API_KEY"):
         return
@@ -205,7 +210,7 @@ def initialize_wandb(
         )
     if mode != "offline" and not os.environ.get("WANDB_API_KEY"):
         raise TrackingError(
-            "W&B online tracking requires WANDB_API_KEY in the environment or /workspace/.env; "
+            f"W&B online tracking requires WANDB_API_KEY in the environment or {WORKSPACE / '.env'}; "
             "no online run was started. Set tracking.mode=offline explicitly to create an "
             "unsynced local run."
         )

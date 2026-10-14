@@ -9,7 +9,7 @@ from typing import Any
 
 from omegaconf import DictConfig, OmegaConf
 
-WORKSPACE = Path("/workspace")
+WORKSPACE = Path(os.environ.get("WORKSPACE_ROOT", "/workspace")).resolve()
 
 
 def workspace_path(*parts: str) -> Path:
@@ -59,7 +59,7 @@ def persist_resolved_config(config: DictConfig, run_dir: str | Path) -> Path:
 def read_saved_resolved_config(run_dir: str | Path) -> dict[str, Any] | None:
     """Read a previous run's sanitized config for exact-resume reconstruction."""
     path = Path(run_dir).resolve() / "resolved_config.json"
-    if Path("/workspace") not in path.parents:
+    if WORKSPACE not in path.parents:
         raise ValueError(f"Run directory must stay under {WORKSPACE}")
     if not path.exists():
         return None

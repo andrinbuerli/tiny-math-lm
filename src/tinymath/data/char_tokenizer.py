@@ -9,6 +9,8 @@ from pathlib import Path
 
 import torch
 
+from tinymath.config import WORKSPACE
+
 LEGACY_SPECIAL_TOKENS = ("<PAD>", "<BOS>", "<EOS>", "<UNK>")
 REASONING_SPECIAL_TOKENS = (*LEGACY_SPECIAL_TOKENS, "<scp>", "</scp>")
 TOKENIZER_VERSION = 2
@@ -137,8 +139,8 @@ class CharacterTokenizer:
 
     def save(self, path: str | Path) -> None:
         destination = Path(path).resolve()
-        if Path("/workspace") not in destination.parents:
-            raise ValueError("Tokenizer files must be saved inside /workspace")
+        if destination != WORKSPACE and WORKSPACE not in destination.parents:
+            raise ValueError(f"Tokenizer files must be saved inside {WORKSPACE}")
         destination.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "version": (
