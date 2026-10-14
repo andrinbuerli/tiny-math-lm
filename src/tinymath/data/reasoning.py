@@ -694,7 +694,13 @@ def annotate_row(
         scratch, collapsed, retained_length = full_text, {}, full_length
     else:
         scratch, collapsed, retained_length = reduce_to_budget(
-            row, operations, max_tokens=max_tokens, length_fn=length_fn)
+            row, operations,
+            # V2 changes the trace grammar before measuring it. Avoid rejecting
+            # an intermediate v1 rendering that may be longer than the final
+            # forward trace; its dedicated reducer below enforces the real budget.
+            max_tokens=10**9 if protocol == "reasoning_v2" else max_tokens,
+            length_fn=length_fn,
+        )
     if protocol == "reasoning_v2":
         scratch = _forward_trace(scratch, operations, value)
         retained_length = length_fn(row, scratch)

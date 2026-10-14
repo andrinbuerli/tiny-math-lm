@@ -97,12 +97,12 @@ def test_reasoning_v2_is_forward_ordered_and_answer_is_separate(
         verify_annotation(source, {**annotated, "scratchpad": trace.rsplit("\n", 1)[0]})
 
 
-def test_reasoning_v2_budget_reduction_preserves_steps_and_replay():
+def test_reasoning_v2_keeps_full_forward_derivation_when_within_budget():
     source = row("12345 * 6789", "83810205", "arithmetic__mul")
     annotated = annotate_row(source, protocol="reasoning_v2")
-    assert annotated["collapsed_categories"]
+    assert not annotated["collapsed_categories"]
     assert annotated["retained_length"] <= 512
-    assert annotated["scratchpad"].endswith("t1+p3")
+    assert annotated["scratchpad"].endswith("9,4,0:3,1\n0,7,1:8,0")
     assert "=>9740205" in annotated["scratchpad"]
     assert "83810205" not in annotated["scratchpad"]
     verify_annotation(source, annotated)
@@ -395,3 +395,23 @@ def test_v2_verifier_replays_tokenizer_aware_collapse_budget() -> None:
 
     assert annotation["reduced"] is True
     verify_annotation(item, annotation, length_fn=length_fn)
+
+
+def test_v2_reducer_budgets_the_forward_trace_not_its_legacy_intermediate() -> None:
+    item = row(
+        "Calculate (-1/10) * (162649977/1000000000).",
+        "-162649977/10000000000",
+        "arithmetic__mixed",
+    )
+
+    def v3_character_length(example: dict[str, str], scratchpad: str) -> int:
+        # reasoning_v3 encodes the two scratchpad delimiters as 11 characters;
+        # v1/v2 count them as two reserved IDs.
+        return default_sequence_length(example, scratchpad) + 9
+
+    annotation = annotate_row(
+        item, max_tokens=512, length_fn=v3_character_length, protocol="reasoning_v2"
+    )
+
+    assert annotation["retained_length"] == 507
+    verify_annotation(item, annotation, length_fn=v3_character_length)
