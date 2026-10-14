@@ -10,7 +10,7 @@ from omegaconf import DictConfig
 
 import wandb
 from tinymath.config import workspace_path
-from tinymath.reporting import make_report
+from tinymath.reporting import make_exp11_report, make_report
 from tinymath.tracking.wandb import finish_wandb, initialize_wandb
 
 LOGGER = logging.getLogger(__name__)
@@ -24,16 +24,35 @@ def main(config: DictConfig) -> None:
     output_dir = workspace_path(str(config.reporting.output_dir))
     run = initialize_wandb(config, run_dir, job_type="comparison")
     try:
-        report, outputs = make_report(
-            runs_dir=workspace_path("runs"),
-            experiment=str(config.experiment.name),
-            output_dir=output_dir,
-            seed=int(config.seed),
-            data_bundle_dir=(
-                workspace_path(str(config.data_bundle)) if config.data_bundle else None
-            ),
-        )
-        run.log({"comparison/available_evaluations": report["coverage"]["available_evaluations"]})
+        if str(config.experiment.name) == "exp11_reasoning_500k_100k":
+            report, outputs = make_exp11_report(
+                runs_dir=workspace_path("runs"),
+                experiment=str(config.experiment.name),
+                output_dir=output_dir,
+                seed=int(config.seed),
+                baseline_snapshot=workspace_path(str(config.reporting.baseline_snapshot)),
+                baseline_runs_dir=workspace_path("runs"),
+                annotation_bundle_dir=(
+                    workspace_path(str(config.reporting.annotation_bundle_dir))
+                    if config.reporting.annotation_bundle_dir else None
+                ),
+            )
+            run.log({
+                "comparison/rows": report["row_count"],
+                "comparison/complete": sum(row["exp11_status"] == "complete" for row in report["rows"]),
+                "comparison/partial": sum(row["exp11_status"] == "partial" for row in report["rows"]),
+            })
+        else:
+            report, outputs = make_report(
+                runs_dir=workspace_path("runs"),
+                experiment=str(config.experiment.name),
+                output_dir=output_dir,
+                seed=int(config.seed),
+                data_bundle_dir=(
+                    workspace_path(str(config.data_bundle)) if config.data_bundle else None
+                ),
+            )
+            run.log({"comparison/available_evaluations": report["coverage"]["available_evaluations"]})
         for artifact in outputs:
             if artifact.suffix == ".png":
                 run.log({f"comparison/{artifact.stem}": wandb.Image(str(artifact))})
@@ -43,7 +62,10 @@ def main(config: DictConfig) -> None:
             metadata={
                 "experiment": str(config.experiment.name),
                 "seed": int(config.seed),
-                "available_evaluations": report["coverage"]["available_evaluations"],
+                "available_evaluations": (
+                    report["coverage"]["available_evaluations"]
+                    if "coverage" in report else report["row_count"]
+                ),
             },
         )
         for artifact_path in outputs:
@@ -52,9 +74,15 @@ def main(config: DictConfig) -> None:
         run.summary.update(
             {
                 "comparison/report_path": str(output_dir / "comparison.json"),
-                "comparison/markdown_path": str(output_dir / "report.md"),
+                "comparison/markdown_path": str(output_dir / (
+                    "intermediate_results.md" if str(config.experiment.name) == "exp11_reasoning_500k_100k"
+                    else "report.md"
+                )),
                 "comparison/csv_path": str(output_dir / "comparison.csv"),
-                "comparison/available_evaluations": report["coverage"]["available_evaluations"],
+                "comparison/available_evaluations": (
+                    report["coverage"]["available_evaluations"]
+                    if "coverage" in report else report["row_count"]
+                ),
             }
         )
         LOGGER.info("Comparison report written to %s", output_dir)

@@ -1,1 +1,3 @@
 output_dir: ${paths.root}/reports/${experiment.name}/seed${seed}
+baseline_snapshot: ${paths.root}/baselines/exp10_restarted_100k_greedy_restart_2/seed18/snapshot.json
+annotation_bundle_dir: ${paths.root}/data/processed/exp11_reasoning_500k_100k-seed18

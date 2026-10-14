@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -439,9 +440,11 @@ def _data_provenance_markdown(provenance: dict[str, Any] | None) -> list[str]:
         lines.extend(
             [
                 "",
-                "No official `extrapolate` examples were present in the selected source modules. "
-                "Controlled OOD examples were reserved from training categories and kept out of "
-                "the SFT and RLVR pools.",
+                (
+                    "No official `extrapolate` examples were present in the selected source modules. "
+                    "Controlled OOD examples were reserved from training categories and kept out of "
+                    "the SFT and RLVR pools."
+                ),
             ]
         )
     elif any("controlled fallback" in source for source in sources.values()):
@@ -755,3 +758,397 @@ def make_report(
     figures += _figure_ood(rows, output_dir)
     figures += _figure_compute(rows, runs_dir, experiment, output_dir, seed)
     return report, [csv_path, output_dir / "comparison.json", report_path, *figures]
+
+
+# Experiment 11 has a different question from the historical three-arm report:
+# its rows compare a frozen answer-only checkpoint with a reasoning-trained
+# checkpoint, and incomplete evaluation is a first-class result. Keep the
+# renderer separate so the established report and plots remain stable.
+EXP11_SPLITS = ("test", "number_length_ood", "expression_length_ood")
+EXP11_STATUS = ("missing", "not-run", "running", "partial", "failed", "complete")
+EXP11_SELECTORS = {"sft": "best", "grpo": "latest_inference", "continued_sft": "best"}
+
+
+def _json_file(path: Path) -> dict[str, Any] | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _question_identity(path: Path) -> tuple[str | None, int]:
+    """Hash the ordered module/question/target identity in a prediction CSV."""
+    if not path.is_file():
+        return None, 0
+    digest = hashlib.sha256()
+    count = 0
+    with path.open(encoding="utf-8", newline="") as handle:
+        for row in csv.DictReader(handle):
+            identity = [row.get("module", ""), row.get("question", ""), row.get("target", "")]
+            digest.update(json.dumps(identity, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+            digest.update(b"\n")
+            count += 1
+    return (digest.hexdigest(), count) if count else (None, 0)
+
+
+def _exp11_result_path(
+    runs_dir: Path, experiment: str, model: str, arm: str, seed: int, selector: str | None = None
+) -> Path | None:
+    root = runs_dir / experiment / model / "evaluation" / arm
+    if selector is not None:
+        path = root / selector / f"seed{seed}" / "results.json"
+        return path if path.is_file() else None
+    matches = sorted(root.glob(f"*/seed{seed}/results.json"))
+    return matches[-1] if matches else None
+
+
+def _exp11_eval_dir(
+    runs_dir: Path, experiment: str, model: str, arm: str, seed: int, selector: str | None
+) -> Path:
+    root = runs_dir / experiment / model / "evaluation" / arm
+    if selector:
+        selected = root / selector / f"seed{seed}"
+        if selected.exists():
+            return selected
+    candidates = sorted(root.glob(f"*/seed{seed}"))
+    return candidates[-1] if candidates else root / str(selector or "best") / f"seed{seed}"
+
+
+def _exp11_selector(
+    snapshot: dict[str, Any], model: str, arm: str, baseline_name: str
+) -> str | None:
+    provenance = snapshot.get("provenance", {}).get("baseline_evaluation_wandb_runs", {})
+    saved = provenance.get(model, {}).get(arm, {}).get("checkpoint_selector")
+    if saved:
+        return str(saved)
+    choices = sorted((Path(baseline_name) / model / "evaluation" / arm).glob("*/seed18/results.json"))
+    return choices[-1].parent.parent.name if choices else None
+
+
+def _exp11_state(
+    result_path: Path | None, evaluation_root: Path, split: str, expected_examples: int | None
+) -> tuple[str, dict[str, Any] | None, dict[str, Any] | None]:
+    result = _json_file(result_path) if result_path else None
+    progress_path = evaluation_root / "progress.json"
+    progress = _json_file(progress_path)
+    state = _json_file(evaluation_root / "wandb_run.json")
+    saved_split = (result or {}).get("splits", {}).get(split)
+    if saved_split is not None:
+        count = int(saved_split.get("examples") or 0)
+        if expected_examples is None or count >= expected_examples:
+            return "complete", result, saved_split
+        if (state or {}).get("run_status") == "failed":
+            return "failed", result, saved_split
+        return "partial", result, saved_split
+    scored = (progress or {}).get("scored", {}).get(split, [])
+    if scored:
+        return "partial", result, {"examples": len(scored)}
+    status = (state or {}).get("run_status")
+    if status == "failed" or (state or {}).get("exit_code", 0) not in (None, 0):
+        return "failed", result, None
+    if status == "running":
+        return "running", result, None
+    if result is not None:
+        return "partial", result, None
+    return "not-run", None, None
+
+
+def _metric_at_checkpoint(metrics_path: Path, arm: str, checkpoint_step: Any) -> dict[str, str]:
+    metrics = _read_training_metrics(metrics_path)
+    step_key = "update" if arm == "grpo" else "optimizer_step"
+    if checkpoint_step is not None:
+        matching = next((row for row in metrics if row.get(step_key) == str(checkpoint_step)), None)
+        return matching or {}
+    return metrics[-1] if metrics else {}
+
+
+def _exp11_accuracy(value: Any) -> str:
+    return "Missing" if value is None else f"{100 * float(value):.2f}%"
+
+
+def _exp11_charts(rows: list[dict[str, Any]], output_dir: Path) -> list[Path]:
+    outputs: list[Path] = []
+    for split, filename, title in (
+        ("test", "id_accuracy", "Experiment 11: ID test accuracy"),
+        ("ood", "ood_accuracy", "Experiment 11: controlled OOD accuracy"),
+    ):
+        selected_splits = ("test",) if split == "test" else ("number_length_ood", "expression_length_ood")
+        fig, axis = plt.subplots(figsize=(9, 5))
+        selected = [row for row in rows if row["split"] in selected_splits]
+        positions = list(range(len(MODELS) * len(ARMS)))
+        labels = [f"{model}\n{arm}" for model in MODELS for arm in ARMS]
+        groups = [("Experiment 10 baseline", "baseline_accuracy", "test", "#777777")]
+        if split == "test":
+            groups.append(("Experiment 11 reasoning", "exp11_accuracy", "test", "#2878b5"))
+        else:
+            groups.extend([
+                ("Experiment 10 number-length OOD", "baseline_accuracy", "number_length_ood", "#777777"),
+                ("Experiment 10 expression-length OOD", "baseline_accuracy", "expression_length_ood", "#999999"),
+                ("Experiment 11 number-length OOD", "exp11_accuracy", "number_length_ood", "#2878b5"),
+                ("Experiment 11 expression-length OOD", "exp11_accuracy", "expression_length_ood", "#72a6cf"),
+            ])
+        bar_count = len(groups)
+        width = 0.8 / bar_count
+        for index, (label, field, group_split, color) in enumerate(groups):
+            vals = []
+            for model in MODELS:
+                for arm in ARMS:
+                    row = next((r for r in rows if r["model"] == model and r["arm"] == arm
+                                and r["split"] == group_split), None)
+                    vals.append(row.get(field) if row else None)
+            offset = (index - (bar_count - 1) / 2) * width
+            present = [(pos + offset, value) for pos, value in zip(positions, vals, strict=True) if value is not None]
+            if present:
+                axis.bar([item[0] for item in present], [item[1] for item in present], width,
+                         color=color, label=label)
+            for pos, value in zip(positions, vals, strict=True):
+                if value is None:
+                    axis.text(pos + offset, 0.01, "missing", fontsize=5, rotation=90, ha="center")
+        if any(value is not None for row in selected for value in (row.get("baseline_accuracy"), row.get("exp11_accuracy"))):
+            axis.set_xticks(positions, labels, fontsize=7)
+            axis.set_ylabel("Greedy exact accuracy")
+            axis.set_title(title)
+            axis.set_ylim(0, 1.05)
+            axis.grid(axis="y", alpha=0.2)
+            axis.legend(fontsize=8)
+        else:
+            _no_data(axis, title + " (no measurements yet)")
+        outputs.extend(_save(fig, output_dir, filename))
+    return outputs
+
+
+def make_exp11_report(
+    *,
+    runs_dir: Path,
+    output_dir: Path,
+    seed: int = 18,
+    experiment: str = "exp11_reasoning_500k_100k",
+    baseline_snapshot: Path | None = None,
+    baseline_runs_dir: Path | None = None,
+    annotation_bundle_dir: Path | None = None,
+) -> tuple[dict[str, Any], list[Path]]:
+    """Create the continuously refreshable Experiment 11 status and comparison report."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    baseline_snapshot = baseline_snapshot or Path("baselines/exp10_restarted_100k_greedy_restart_2/seed18/snapshot.json")
+    snapshot = _json_file(baseline_snapshot) or {}
+    baseline_name = str(snapshot.get("experiment", {}).get("canonical_name", "restarted_100k_greedy_restart_2"))
+    baseline_runs_dir = baseline_runs_dir or runs_dir
+    baseline_records = {
+        (item.get("model"), item.get("arm"), item.get("split")): item
+        for item in snapshot.get("available_measurements", [])
+    }
+    rows: list[dict[str, Any]] = []
+    raw_results: dict[tuple[str, str], tuple[Path | None, dict[str, Any] | None]] = {}
+    for model in MODELS:
+        for arm in ARMS:
+            baseline_selector = _exp11_selector(snapshot, model, arm, baseline_name)
+            base_eval = _exp11_result_path(
+                baseline_runs_dir, baseline_name, model, arm, seed, baseline_selector
+            )
+            selector = EXP11_SELECTORS[arm]
+            exp_result_path = _exp11_result_path(
+                runs_dir, experiment, model, arm, seed, selector
+            ) or _exp11_result_path(runs_dir, experiment, model, arm, seed)
+            if exp_result_path is not None:
+                result = _json_file(exp_result_path)
+                selector = exp_result_path.parents[1].name
+            else:
+                result = None
+            raw_results[(model, arm)] = (exp_result_path, result)
+            train_metrics = _metric_at_checkpoint(
+                runs_dir / experiment / model / arm / f"seed{seed}" / "metrics.csv",
+                arm,
+                (result or {}).get("checkpoint_step"),
+            )
+            baseline_record_for_training = next(
+                (baseline_records.get((model, arm, split_name)) for split_name in EXP11_SPLITS
+                 if baseline_records.get((model, arm, split_name)) is not None),
+                None,
+            )
+            baseline_train_metrics = _metric_at_checkpoint(
+                baseline_runs_dir / baseline_name / model / arm / f"seed{seed}" / "metrics.csv",
+                arm,
+                (baseline_record_for_training or {}).get("checkpoint_step"),
+            )
+            def numeric_delta(current: Any, prior: Any) -> float | None:
+                if current in (None, "") or prior in (None, ""):
+                    return None
+                try:
+                    return float(current) - float(prior)
+                except (TypeError, ValueError):
+                    return None
+
+            additional_tokens = numeric_delta(train_metrics.get("tokens_seen"), baseline_train_metrics.get("tokens_seen"))
+            additional_flops = numeric_delta(train_metrics.get("estimated_flops"), baseline_train_metrics.get("estimated_flops"))
+            for split in EXP11_SPLITS:
+                key = (model, arm, split)
+                baseline = baseline_records.get(key)
+                # A snapshot row is the evidence for a baseline measurement. Its
+                # coverage map can explain the omission, but cannot supply a value.
+                baseline_status = "complete" if baseline is not None else "missing"
+                base_dir = (base_eval.parent if base_eval else
+                            baseline_runs_dir / baseline_name / model / "evaluation" / arm / str(baseline_selector or "") / f"seed{seed}")
+                base_id = _question_identity(base_dir / f"{split}_predictions.csv")
+                eval_root = exp_result_path.parent if exp_result_path else _exp11_eval_dir(
+                    runs_dir, experiment, model, arm, seed, selector
+                )
+                expected = int(baseline.get("examples") or 0) if baseline else None
+                status, result, split_data = _exp11_state(exp_result_path, eval_root, split, expected)
+                if result is None:
+                    result = raw_results[(model, arm)][1]
+                exp_id = _question_identity(eval_root / f"{split}_predictions.csv")
+                identity_matches = bool(base_id[0] and exp_id[0] and base_id == exp_id)
+                accuracy = split_data.get("accuracy") if split_data else None
+                if status == "complete" and split_data and int(split_data.get("examples") or 0) == 0:
+                    status = "partial"
+                delta = None
+                if status == "complete" and baseline and accuracy is not None and baseline.get("accuracy") is not None and identity_matches:
+                    delta = float(accuracy) - float(baseline["accuracy"])
+                row = {
+                    "model": model, "arm": arm, "split": split,
+                    "baseline_status": baseline_status,
+                    "baseline_accuracy": baseline.get("accuracy") if baseline else None,
+                    "baseline_examples": baseline.get("examples") if baseline else None,
+                    "exp11_status": status,
+                    "exp11_accuracy": accuracy,
+                    "delta_accuracy": delta,
+                    "delta_status": "comparable" if delta is not None else "identity-unverified-or-incomplete",
+                    "same_question_identity": identity_matches,
+                    "baseline_question_count": base_id[1], "exp11_question_count": exp_id[1],
+                    "examples": split_data.get("examples") if split_data else None,
+                    "format_validity": split_data.get("format_validity") if split_data else None,
+                    "capped_completions": split_data.get("capped_completions") if split_data else None,
+                    "mean_output_tokens": split_data.get("mean_output_tokens") if split_data else None,
+                    "checkpoint_step": (result or {}).get("checkpoint_step"),
+                    "selector": selector,
+                    "logged_tokens": train_metrics.get("tokens_seen"),
+                    "estimated_flops": train_metrics.get("estimated_flops"),
+                    "baseline_logged_tokens": baseline_train_metrics.get("tokens_seen"),
+                    "baseline_estimated_flops": baseline_train_metrics.get("estimated_flops"),
+                    "additional_tokens": additional_tokens,
+                    "additional_flops": additional_flops,
+                }
+                rows.append(row)
+
+    annotation_bundle_dir = annotation_bundle_dir or Path("data/processed/d9f78d0665b3-main-seed18-reasoning-v1")
+    annotation_manifest = _json_file(annotation_bundle_dir / "manifest.json") or {}
+    diagnostics = {
+        "protocol": annotation_manifest.get("tokenizer", {}).get("protocol", "reasoning_v1"),
+        "annotation_sha256": annotation_manifest.get("annotation", {}).get("annotation_sha256"),
+        "module_split_statistics": annotation_manifest.get("annotation", {}).get("module_split_statistics", {}),
+        "collapsed_categories": annotation_manifest.get("annotation", {}).get("collapsed_categories", {}),
+        "length_metrics": {},
+    }
+    # The annotation manifest stores per-module/split reduction counts. Count the
+    # individual collapse categories from rows when the annotated JSONL exists.
+    collapsed_counts: dict[str, int] = {}
+    if annotation_bundle_dir.is_dir():
+        for annotated_path in sorted(annotation_bundle_dir.glob("*.jsonl")):
+            with annotated_path.open(encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    record = json.loads(line)
+                    for category in record.get("collapsed_categories", []):
+                        collapsed_counts[category] = collapsed_counts.get(category, 0) + 1
+    diagnostics["collapsed_categories"] = collapsed_counts or diagnostics["collapsed_categories"]
+    # Summarize prediction completion and visible trace lengths as output data arrives.
+    for (model, arm), (result_path, result) in raw_results.items():
+        if not result_path or not result:
+            continue
+        for split in EXP11_SPLITS:
+            pred_path = result_path.parent / f"{split}_predictions.csv"
+            if not pred_path.is_file():
+                continue
+            lengths: list[int] = []
+            trace_chars: list[int] = []
+            trace_nonempty = 0
+            with pred_path.open(encoding="utf-8", newline="") as handle:
+                for record in csv.DictReader(handle):
+                    try:
+                        lengths.append(int(record.get("output_tokens") or 0))
+                        trace = record.get("scratchpad") or ""
+                        trace_chars.append(len(trace))
+                        trace_nonempty += int(bool(trace))
+                    except ValueError:
+                        continue
+            if lengths:
+                diagnostics["length_metrics"][f"{model}/{arm}/{split}"] = {
+                    "scored_examples": len(lengths),
+                    "mean_output_tokens": sum(lengths) / len(lengths),
+                    "mean_scratchpad_characters": sum(trace_chars) / len(trace_chars),
+                    "mean_scratchpad_tokens": sum(trace_chars) / len(trace_chars),
+                    "nonempty_trace_fraction": trace_nonempty / len(lengths),
+                }
+    report = {
+        "experiment": experiment, "seed": seed,
+        "baseline_snapshot": str(baseline_snapshot),
+        "row_count": len(rows), "rows": rows, "diagnostics": diagnostics,
+        "statuses": list(EXP11_STATUS),
+        "limitations": [
+            "Training token counts and FLOPs are read from the latest checkpoint-aligned metric row when available; FLOPs are dense-position estimates, not hardware counters.",
+            "Accuracy deltas require complete results and identical ordered module/question/target identities in baseline and Experiment 11 prediction CSVs. Aggregate snapshot accuracy alone cannot prove question identity.",
+            "The handwritten scratchpad is additional supervised target text in the Experiment 11 SFT data. The current training objective does not separately mask or weight scratchpad tokens, so this is not answer-only supervision with an auxiliary trace loss.",
+            "Missing baseline snapshot cells are preserved as missing; unavailable measurements are never treated as zero.",
+        ],
+    }
+    report_path = output_dir / "comparison.json"
+    report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    fields = list(rows[0]) if rows else []
+    csv_path = output_dir / "comparison.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+    markdown_path = output_dir / "intermediate_results.md"
+    lines = [
+        "# Experiment 11 intermediate results", "", f"Seed: `{seed}`", "",
+        f"Rows: {len(rows)} (expected 27: 3 models × 3 arms × 3 splits).",
+        "Statuses distinguish missing baseline results, not-run, running, partial, failed, and complete evaluations.",
+        "Accuracy deltas are reported only for complete evaluations with identical ordered question identities.", "",
+        "| Model | Arm | Split | Baseline status | Baseline accuracy | Exp11 status | Exp11 accuracy | Delta (pp) | Examples | Format valid | Capped | Mean output tokens | Baseline train tokens | Exp11 train tokens | Additional tokens | Baseline FLOPs | Exp11 FLOPs | Additional FLOPs | Identity match |",
+        "|---|---|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+    ]
+    for row in rows:
+        delta = "Missing" if row["delta_accuracy"] is None else f"{100 * row['delta_accuracy']:+.2f}"
+        lines.append(
+            f"| {row['model']} | {row['arm']} | {row['split']} | {row['baseline_status']} | "
+            f"{_exp11_accuracy(row['baseline_accuracy'])} | {row['exp11_status']} | "
+            f"{_exp11_accuracy(row['exp11_accuracy'])} | {delta} | {_format_count(row['examples'])} | "
+            f"{_exp11_accuracy(row['format_validity'])} | {_format_count(row['capped_completions'])} | "
+            f"{row['mean_output_tokens'] if row['mean_output_tokens'] is not None else 'Missing'} | "
+            f"{_format_count(row['baseline_logged_tokens'])} | {_format_count(row['logged_tokens'])} | "
+            f"{_format_count(row['additional_tokens'])} | {_format_count(row['baseline_estimated_flops'])} | "
+            f"{_format_count(row['estimated_flops'])} | {_format_count(row['additional_flops'])} | "
+            f"{'yes' if row['same_question_identity'] else 'unverified'} |"
+        )
+    lines.extend([
+        "", "## Format, trace, length, and collapse diagnostics", "",
+        f"Annotation protocol: `{diagnostics['protocol']}`; annotation hash: `{diagnostics['annotation_sha256'] or 'unavailable'}`.",
+        "", "| Module / split | Retained-token count | Min | Median | P95 | Max | Reduced examples | Reduced fraction |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
+    ])
+    for group, stats in sorted(diagnostics["module_split_statistics"].items()):
+        lines.append(
+            f"| {group} | {_format_count(stats.get('count'))} | {_format_count(stats.get('min'))} | "
+            f"{_format_count(stats.get('median'))} | {_format_count(stats.get('p95'))} | "
+            f"{_format_count(stats.get('max'))} | {_format_count(stats.get('reduced_count'))} | "
+            f"{100 * float(stats.get('reduced_fraction') or 0):.2f}% |"
+        )
+    lines.extend([
+        "", "Collapse operations: " + (
+            ", ".join(f"{name}={count:,}" for name, count in sorted(diagnostics["collapsed_categories"].items()))
+            if diagnostics["collapsed_categories"] else "unavailable until annotated rows are present"
+        ) + ".",
+        "Trace length metrics by model/arm/split are in `comparison.json`; they populate as prediction CSVs arrive.",
+        "The evaluation results expose format validity, capped completions, output tokens, and prediction CSVs include the generated scratchpad for trace inspection.",
+        "",
+        "## Limitations", "",
+        *[f"- {item}" for item in report["limitations"]],
+        "- Additional training tokens and FLOPs are compared only when both Experiment 10 and Experiment 11 checkpoint-aligned metrics exist; unavailable counters remain blank.",
+        "",
+    ])
+    markdown_path.write_text("\n".join(lines), encoding="utf-8")
+    figures = _exp11_charts(rows, output_dir)
+    return report, [markdown_path, report_path, csv_path, *figures]
