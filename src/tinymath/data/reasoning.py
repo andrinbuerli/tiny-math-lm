@@ -883,20 +883,19 @@ def _forward_trace(legacy: str, operations: list[Operation], final_value: Fracti
             head = block[offset]
         if head.startswith("collect:"):
             lines.extend("step:" + item for item in block if item.startswith(("collect:", "move:")))
-            # Keep the complete equation-solving path from v1. The explicit
-            # ``variable=result`` line is replaced by the operation that
-            # obtains it, and numeric substitution is rendered as a check
-            # without exposing the solution in the trace.
+            # Keep the equation-solving path and finish with its solution.
             move = next((item.removeprefix("move:") for item in block if item.startswith("move:")), None)
             if move is None:
                 raise ValueError("Linear equation trace is missing its move step")
-            coefficient_match = re.fullmatch(r"(.+?)[A-Za-z]", move.split("=", 1)[0])
-            if coefficient_match is None:
+            move_match = re.fullmatch(r"(.+?)([A-Za-z])=(.+)", move)
+            if move_match is None:
                 raise ValueError("Linear equation trace has a malformed moved coefficient")
-            coefficient = coefficient_match.group(1)
+            coefficient, variable = move_match.group(1), move_match.group(2)
             lines.append(f"step:divide both sides by {coefficient}")
-            if any(item.startswith("verify:") for item in block):
-                lines.append("verify:substitution satisfies the original equation")
+            solution = next((item for item in block if item.startswith(f"{variable}=")), None)
+            if solution is None:
+                raise ValueError("Linear equation trace is missing its solution")
+            lines.append(solution)
             continue
 
         multiplication_header = next(

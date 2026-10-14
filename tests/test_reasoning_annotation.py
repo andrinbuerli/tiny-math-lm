@@ -234,15 +234,15 @@ def test_linear_equation_collects_and_substitutes_exactly() -> None:
     assert trace.endswith("verify:5540240=5540240")
 
 
-def test_reasoning_v2_linear_trace_keeps_division_and_verification_without_answer():
+def test_reasoning_v2_linear_trace_ends_with_solution_without_generic_verification():
     source = row("Solve -21*o + 32 + 120 = -37 for o.", "9", "algebra__linear_1d")
     annotation = annotate_row(source, protocol="reasoning_v2")
     trace = str(annotation["scratchpad"])
     assert "collect:" in trace
     assert "move:-21o=-189" in trace
     assert "divide both sides by -21" in trace
-    assert "verify:substitution satisfies the original equation" in trace
-    assert "o=9" not in trace
+    assert "verify:substitution satisfies the original equation" not in trace
+    assert trace.endswith("o=9")
     assert "-189" in trace
     verify_annotation(source, annotation)
 
@@ -306,7 +306,8 @@ def test_reasoning_v3_algebra_delegates_final_division_and_verifier_rejects_edit
     assert "step:collect:" in trace
     assert "move:-21o=-189" in trace
     assert "call:divide(-189,-21) -> 9" in trace
-    assert "o=9" not in trace
+    assert "verify:substitution satisfies the original equation" not in trace
+    assert trace.endswith("o=9")
     verify_annotation(source, annotation)
     corrupted = dict(annotation, scratchpad=trace.replace("-> 9", "-> 8"))
     with pytest.raises(ValueError, match="reasoning_v3 calls"):
