@@ -248,6 +248,41 @@ def test_grpo_runner_scores_mixed_group_and_applies_gradient(workspace_tmpdir, m
     resumed_checkpoint = torch.load(resumed["checkpoint"], map_location="cpu", weights_only=False)
     assert resumed["update"] == resumed_checkpoint["update"] == 2
     assert resumed_checkpoint["examples_drawn"] == 2
+
+    def zero_variance_rollouts(model, prompt_ids, *, temperature, **_kwargs):
+        completion_ids = torch.tensor(
+            [[[tokenizer.token_to_id["2"], tokenizer.eos_id],
+              [tokenizer.token_to_id["2"], tokenizer.eos_id]]],
+            device=prompt_ids.device,
+        )
+        mask = torch.ones_like(completion_ids, dtype=torch.bool)
+        with torch.no_grad():
+            old = grpo_runner.completion_log_probs(
+                model, prompt_ids, completion_ids, temperature=temperature
+            )
+        return Rollouts(completion_ids, mask, old, torch.ones_like(old))
+
+    monkeypatch.setattr(grpo_runner, "sample_group_rollouts", zero_variance_rollouts)
+    config.rlvr.updates = 1
+    zero_variance_run = grpo_runner.train_grpo(
+        config=config,
+        bundle_dir=bundle,
+        init_checkpoint=checkpoint_path,
+        run_dir=workspace_tmpdir / "grpo-zero-variance",
+        run=Run(),
+    )
+    zero_variance_checkpoint = torch.load(
+        zero_variance_run["checkpoint"], map_location="cpu", weights_only=False
+    )
+    assert zero_variance_run["final_reward"] == 1.0
+    assert all(
+        torch.equal(initial_model.state_dict()[name], zero_variance_checkpoint["model"][name])
+        for name in initial_model.state_dict()
+    )
+    with (workspace_tmpdir / "grpo-zero-variance" / "metrics.csv").open(encoding="utf-8") as handle:
+        zero_variance_metrics = next(csv.DictReader(handle))
+    assert float(zero_variance_metrics["grad_norm"]) == 0.0
+    assert float(zero_variance_metrics["group/all_correct_rate"]) == 1.0
     with (run_dir / "metrics.csv").open(encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
         assert [int(row["update"]) for row in rows] == [1, 2]
