@@ -49,7 +49,7 @@ def main(config: DictConfig) -> None:
     bundle_dir = _bundle_dir(config)
     manifest = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
     checkpoint_payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
-    checkpoint_step = int(checkpoint_payload.get("step", 0))
+    checkpoint_step = int(checkpoint_payload.get("step", checkpoint_payload.get("update", 0)))
     checkpoint_arm = str(
         checkpoint_payload.get("training_arm")
         or checkpoint_payload.get("stage")
@@ -57,10 +57,23 @@ def main(config: DictConfig) -> None:
     )
     checkpoint_selector = checkpoint.stem
     checkpoint_hash = sha256_file(checkpoint)
-    run_dir = workspace_path(
-        "runs", str(config.experiment.name), str(config.model.name), "evaluation",
-        checkpoint.parent.parent.name, checkpoint.stem, checkpoint_hash[:12], f"seed{int(config.seed)}",
-    )
+    if int(config.experiment.get("number", 0) or 0) == 11:
+        evaluation_identity = f"step{checkpoint_step}-{checkpoint_hash[:12]}"
+        run_dir = workspace_path(
+            "runs",
+            str(config.experiment.name),
+            str(config.model.name),
+            "evaluation",
+            checkpoint_arm,
+            checkpoint_selector,
+            evaluation_identity,
+            f"seed{int(config.seed)}",
+        )
+    else:
+        run_dir = workspace_path(
+            "runs", str(config.experiment.name), str(config.model.name), "evaluation",
+            checkpoint.parent.parent.name, checkpoint.stem, f"seed{int(config.seed)}",
+        )
     run = initialize_tracked_run(
         config,
         run_dir,

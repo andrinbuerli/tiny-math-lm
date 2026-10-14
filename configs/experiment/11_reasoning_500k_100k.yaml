@@ -8,6 +8,7 @@ experiment:
   baseline: restarted_100k_greedy_restart_2
   lineage: restarted_100k_greedy_restart_2
   protocol: reasoning_v1
+  phase: main
   seed: 18
   source_bundle: data/processed/d9f78d0665b3-main-seed18
   data_budget: 500000

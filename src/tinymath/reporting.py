@@ -766,7 +766,7 @@ def make_report(
 # renderer separate so the established report and plots remain stable.
 EXP11_SPLITS = ("test", "number_length_ood", "expression_length_ood")
 EXP11_STATUS = ("missing", "not-run", "running", "partial", "failed", "complete")
-EXP11_SELECTORS = {"sft": "best", "grpo": "latest_inference", "continued_sft": "best"}
+EXP11_SELECTORS = {"sft": "best", "grpo": "latest", "continued_sft": "best"}
 
 
 def _json_file(path: Path) -> dict[str, Any] | None:
@@ -797,9 +797,12 @@ def _exp11_result_path(
 ) -> Path | None:
     root = runs_dir / experiment / model / "evaluation" / arm
     if selector is not None:
-        path = root / selector / f"seed{seed}" / "results.json"
-        return path if path.is_file() else None
-    matches = sorted(root.glob(f"*/seed{seed}/results.json"))
+        direct = root / selector / f"seed{seed}" / "results.json"
+        if direct.is_file():
+            return direct
+        matches = sorted((root / selector).glob(f"*/seed{seed}/results.json"))
+        return matches[-1] if matches else None
+    matches = sorted(root.glob(f"*/*/seed{seed}/results.json"))
     return matches[-1] if matches else None
 
 
@@ -811,7 +814,10 @@ def _exp11_eval_dir(
         selected = root / selector / f"seed{seed}"
         if selected.exists():
             return selected
-    candidates = sorted(root.glob(f"*/seed{seed}"))
+        candidates = sorted((root / selector).glob(f"*/seed{seed}"))
+        if candidates:
+            return candidates[-1]
+    candidates = sorted(root.glob(f"*/*/seed{seed}"))
     return candidates[-1] if candidates else root / str(selector or "best") / f"seed{seed}"
 
 

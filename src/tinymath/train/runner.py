@@ -23,6 +23,7 @@ from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.data.prompts import format_completion, format_prompt
 from tinymath.eval.qualitative import build_qualitative_table
 from tinymath.model.gpt import GPTConfig, TinyMathGPT
+from tinymath.train.budgets import budget_rows
 from tinymath.train.metrics import truncate_csv_after_step
 from tinymath.train.sft import build_completion_batch, completion_only_loss
 
@@ -121,7 +122,26 @@ def train_sft(
     tokenizer = CharacterTokenizer.load(bundle_dir / "char_tokenizer.json")
     train_rows = read_jsonl(bundle_dir / "sft_train.jsonl")
     validation_rows = read_jsonl(bundle_dir / "sft_validation.jsonl")
-    train_examples = _examples(train_rows, protocol=tokenizer.protocol)
+    training_rows = train_rows
+    experiment = getattr(config, "experiment", {})
+    bounded_phase = (
+        int(experiment.get("number", 0) or 0) == 11
+        and str(experiment.get("phase", "main")) in {"smoke", "pilot"}
+    )
+    if bounded_phase:
+        training_rows = budget_rows(
+            train_rows,
+            examples=int(experiment.get("data_budget", 0)),
+            seed=int(config.seed),
+        )
+        validation_budget = int(experiment.get("validation_examples", len(validation_rows)))
+        if validation_budget < len(validation_rows):
+            validation_rows = budget_rows(
+                validation_rows,
+                examples=validation_budget,
+                seed=int(config.seed) + 1,
+            )
+    train_examples = _examples(training_rows, protocol=tokenizer.protocol)
     validation_examples = _examples(validation_rows, protocol=tokenizer.protocol)
     if not train_examples:
         raise ValueError("SFT training split is empty")
@@ -403,6 +423,7 @@ def train_sft(
     return {
         "step": target_steps,
         "tokens_seen": tokens_seen,
+        "training_examples": len(train_examples),
         "best_validation_loss": best_val,
         "metrics_path": str(metrics_path),
         "checkpoint": str(latest_path),

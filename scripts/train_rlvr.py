@@ -14,6 +14,7 @@ from tinymath.config import workspace_path
 from tinymath.data.load import SELECTED_MODULES
 from tinymath.tracking.provenance import read_wandb_run_id
 from tinymath.tracking.wandb import finish_wandb, initialize_tracked_run
+from tinymath.train.budgets import isolated_training_run_dir
 from tinymath.train.grpo_runner import train_grpo
 
 LOGGER = logging.getLogger(__name__)
@@ -46,8 +47,13 @@ def main(config: DictConfig) -> None:
     checkpoint = torch_load_checkpoint(init_checkpoint)
     bundle_dir = _bundle_dir(config, checkpoint.get("dataset_revision"))
     manifest = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
-    run_dir = workspace_path(
-        "runs", str(config.experiment.name), str(config.model.name), "grpo", f"seed{int(config.seed)}"
+    run_dir = Path(
+        isolated_training_run_dir(
+            config,
+            model=str(config.model.name),
+            arm="grpo",
+            runs_root=str(workspace_path("runs")),
+        )
     )
     run = initialize_tracked_run(config, run_dir, job_type="grpo")
     try:
@@ -73,6 +79,7 @@ def main(config: DictConfig) -> None:
         run.summary.update(
             {
                 "grpo/updates": result["update"],
+                "grpo/prompt_examples": result["prompt_examples"],
                 "grpo/tokens_seen": result["tokens_seen"],
                 "grpo/estimated_flops": result["estimated_flops"],
                 "grpo/final_reward": result["final_reward"],

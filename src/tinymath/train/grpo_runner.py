@@ -25,6 +25,7 @@ from tinymath.data.prompts import format_prompt
 from tinymath.eval.qualitative import build_qualitative_table
 from tinymath.model.gpt import GPTConfig, TinyMathGPT
 from tinymath.rewards.verify import verify_answer
+from tinymath.train.budgets import budget_rows
 from tinymath.train.grpo import (
     completion_log_probs,
     group_outcome_rates,
@@ -68,6 +69,16 @@ def train_grpo(
         raise FileNotFoundError(f"SFT initialization checkpoint not found: {init_checkpoint}")
     tokenizer = CharacterTokenizer.load(bundle_dir / "char_tokenizer.json")
     prompts = _load_rows(bundle_dir / "rlvr.jsonl")
+    experiment = getattr(config, "experiment", {})
+    if (
+        int(experiment.get("number", 0) or 0) == 11
+        and str(experiment.get("phase", "main")) in {"smoke", "pilot"}
+    ):
+        prompts = budget_rows(
+            prompts,
+            examples=int(experiment.get("data_budget", 0)),
+            seed=int(config.seed),
+        )
     if not prompts:
         raise ValueError("RLVR prompt pool is empty")
     initial = torch.load(init_checkpoint, map_location="cpu", weights_only=False)
@@ -393,6 +404,7 @@ def train_grpo(
         metrics_file.close()
     return {
         "update": updates,
+        "prompt_examples": len(prompts),
         "tokens_seen": tokens_seen,
         "estimated_flops": estimated_flops_seen,
         "checkpoint": str(latest_path),

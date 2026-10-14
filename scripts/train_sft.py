@@ -16,6 +16,7 @@ from tinymath.data.load import SELECTED_MODULES
 from tinymath.model.gpt import GPTConfig, TinyMathGPT
 from tinymath.tracking.provenance import read_wandb_run_id
 from tinymath.tracking.wandb import finish_wandb, initialize_tracked_run
+from tinymath.train.budgets import isolated_training_run_dir
 from tinymath.train.runner import train_sft
 
 LOGGER = logging.getLogger(__name__)
@@ -51,9 +52,13 @@ def main(config: DictConfig) -> None:
         raise ValueError(f"The experiment is restricted to exactly these modules: {SELECTED_MODULES}")
     bundle_dir = _bundle_dir(config)
     manifest = __import__("json").loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
-    run_dir = workspace_path(
-        "runs", str(config.experiment.name), str(config.model.name),
-        str(config.trainer.name), f"seed{int(config.seed)}",
+    run_dir = Path(
+        isolated_training_run_dir(
+            config,
+            model=str(config.model.name),
+            arm=str(config.trainer.name),
+            runs_root=str(workspace_path("runs")),
+        )
     )
     run = initialize_tracked_run(config, run_dir, job_type=str(config.trainer.name))
     try:
@@ -98,6 +103,7 @@ def main(config: DictConfig) -> None:
         run.summary.update(
             {
                 "training/optimizer_steps": result["step"],
+                "training/examples_used": result["training_examples"],
                 "training/tokens_seen": result["tokens_seen"],
                 "training/best_validation_loss": result["best_validation_loss"],
                 "training/model_parameters": result["parameters"],

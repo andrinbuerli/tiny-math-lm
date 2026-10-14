@@ -84,7 +84,10 @@ def test_exp11_delta_requires_complete_same_question_identity(workspace_tmpdir):
         runs / "baseline" / "1m" / "evaluation" / "sft" / "best" / "seed18" / "test_predictions.csv"
     )
     _predictions(baseline_csv, question_rows)
-    evaluation = runs / "exp11_reasoning_500k_100k" / "1m" / "evaluation" / "sft" / "best" / "seed18"
+    evaluation = (
+        runs / "exp11_reasoning_500k_100k" / "1m" / "evaluation" / "sft" / "best"
+        / "step94000-0123456789ab" / "seed18"
+    )
     evaluation.mkdir(parents=True)
     (evaluation / "results.json").write_text(
         json.dumps(

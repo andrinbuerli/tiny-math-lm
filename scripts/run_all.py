@@ -16,9 +16,18 @@ from omegaconf import DictConfig, OmegaConf
 
 from tinymath.config import workspace_path
 from tinymath.data.load import SELECTED_MODULES
+from tinymath.train.budgets import isolated_training_run_dir
 
 LOGGER = logging.getLogger(__name__)
 _GPU_LAUNCH_LOCK = threading.Lock()
+
+
+def _hydra_value(value: object) -> str:
+    """Serialize resolved values into Hydra override grammar."""
+    if isinstance(value, dict):
+        entries = ",".join(f"{key}:{_hydra_value(item)}" for key, item in value.items())
+        return "{" + entries + "}"
+    return json.dumps(value)
 
 
 def _gpu_load() -> tuple[int, int]:
@@ -111,15 +120,15 @@ def _overrides(
                     value.append(model)
             if group == "data" and key == "modules" and set(value) != set(SELECTED_MODULES):
                 raise ValueError("The orchestration requires exactly the five specified modules")
-            result.append(f"{group}.{key}={json.dumps(value)}")
+            result.append(f"{group}.{key}={_hydra_value(value)}")
     for key in ("init_checkpoint", "data_bundle"):
         value = values.get(key)
         if value is not None:
-            result.append(f"{key}={json.dumps(value)}")
+            result.append(f"{key}={_hydra_value(value)}")
     if checkpoint is not None:
-        result.append(f"checkpoint={json.dumps(checkpoint)}")
+        result.append(f"checkpoint={_hydra_value(checkpoint)}")
     if init_checkpoint is not None:
-        result.append(f"init_checkpoint={json.dumps(init_checkpoint)}")
+        result.append(f"init_checkpoint={_hydra_value(init_checkpoint)}")
     return result
 
 
@@ -168,7 +177,12 @@ def _run_model(config: DictConfig, model_name: str, experiment_choice: str) -> N
         experiment_choice=experiment_choice,
     )
     sft_run = workspace_path(
-        "runs", str(config.experiment.name), model_name, "sft", f"seed{int(config.seed)}"
+        isolated_training_run_dir(
+            config,
+            model=model_name,
+            arm="sft",
+            runs_root=str(workspace_path("runs")),
+        )
     )
     sft_checkpoint = str(sft_run / "best.pt")
     _run(
@@ -181,7 +195,12 @@ def _run_model(config: DictConfig, model_name: str, experiment_choice: str) -> N
             init_checkpoint=sft_checkpoint, experiment_choice=experiment_choice,
         )
         grpo_checkpoint = workspace_path(
-            "runs", str(config.experiment.name), model_name, "grpo", f"seed{int(config.seed)}",
+            isolated_training_run_dir(
+                config,
+                model=model_name,
+                arm="grpo",
+                runs_root=str(workspace_path("runs")),
+            ),
             "latest.pt",
         )
         _run(
@@ -190,7 +209,12 @@ def _run_model(config: DictConfig, model_name: str, experiment_choice: str) -> N
         )
     if config.orchestration.run_continued_sft:
         control_run = workspace_path(
-            "runs", str(config.experiment.name), model_name, "continued_sft", f"seed{int(config.seed)}"
+            isolated_training_run_dir(
+                config,
+                model=model_name,
+                arm="continued_sft",
+                runs_root=str(workspace_path("runs")),
+            )
         )
         _run(
             "train_sft.py", config, model=model_name, trainer="continued_sft",

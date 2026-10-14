@@ -18,9 +18,22 @@ LOGGER = logging.getLogger(__name__)
 
 @hydra.main(version_base="1.3", config_path="../configs", config_name="config")
 def main(config: DictConfig) -> None:
-    run_dir = workspace_path(
-        "runs", str(config.experiment.name), "comparison", f"seed{int(config.seed)}"
-    )
+    experiment = config.experiment
+    phase = str(experiment.get("phase", "main"))
+    if int(experiment.get("number", 0) or 0) == 11 and phase in {"smoke", "pilot"}:
+        examples = int(experiment.data_budget)
+        updates = int(experiment.updates)
+        run_dir = workspace_path(
+            "runs",
+            str(experiment.name),
+            "comparison",
+            f"{phase}-{examples}-examples-{updates}-updates",
+            f"seed{int(config.seed)}",
+        )
+    else:
+        run_dir = workspace_path(
+            "runs", str(experiment.name), "comparison", f"seed{int(config.seed)}"
+        )
     output_dir = workspace_path(str(config.reporting.output_dir))
     run = initialize_wandb(config, run_dir, job_type="comparison")
     try:
