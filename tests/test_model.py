@@ -31,3 +31,30 @@ def test_model_rejects_context_overflow_and_invalid_head_width():
         assert "even attention head" in str(error)
     else:
         raise AssertionError("odd head width should fail")
+
+
+def test_cached_forward_matches_full_prefix_logits():
+    config = GPTConfig(vocab_size=24, context_length=16, n_layers=2, n_heads=2, d_model=16, d_ff=32)
+    model = TinyMathGPT(config).eval()
+    ids = torch.randint(0, config.vocab_size, (2, 8))
+    full = model(ids)
+    cache = None
+    pieces = []
+    for position in range(ids.shape[1]):
+        logits, cache = model.forward_with_cache(ids[:, position : position + 1], cache)
+        pieces.append(logits)
+    incremental = torch.cat(pieces, dim=1)
+    torch.testing.assert_close(incremental, full, rtol=2e-5, atol=2e-6)
+
+
+def test_cached_generate_matches_reference_greedy_decode():
+    config = GPTConfig(vocab_size=24, context_length=16, n_layers=2, n_heads=2, d_model=16, d_ff=32)
+    model = TinyMathGPT(config).eval()
+    ids = torch.randint(0, config.vocab_size, (2, 5))
+    expected = ids
+    with torch.no_grad():
+        for _ in range(6):
+            next_id = model(expected)[:, -1].argmax(dim=-1, keepdim=True)
+            expected = torch.cat((expected, next_id), dim=1)
+    actual = model.generate(ids, max_new_tokens=6, temperature=0)
+    assert torch.equal(actual, expected)

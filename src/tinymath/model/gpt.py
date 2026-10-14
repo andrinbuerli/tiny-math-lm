@@ -84,6 +84,33 @@ class CausalSelfAttention(nn.Module):
         )
         return self.out(attended.transpose(1, 2).contiguous().view(batch, length, width))
 
+    def forward_with_cache(
+        self,
+        x: torch.Tensor,
+        past_key_value: tuple[torch.Tensor, torch.Tensor] | None = None,
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        """Run attention incrementally, returning the concatenated KV cache."""
+        batch, length, width = x.shape
+        q, k, v = self.qkv(x).view(batch, length, 3, self.n_heads, self.head_dim).unbind(dim=2)
+        q, k, v = (value.transpose(1, 2) for value in (q, k, v))
+        past_length = past_key_value[0].shape[-2] if past_key_value is not None else 0
+        positions = torch.arange(past_length, past_length + length, device=x.device)
+        q, k = _apply_rope(q, positions, self.theta), _apply_rope(k, positions, self.theta)
+        if past_key_value is not None:
+            past_key, past_value = past_key_value
+            k = torch.cat((past_key, k), dim=-2)
+            v = torch.cat((past_value, v), dim=-2)
+        # Cached calls only contain the causal prefix and current token. A
+        # noncausal kernel is correct there and avoids SDPA's upper-left mask
+        # alignment when query and key lengths differ.
+        attended = F.scaled_dot_product_attention(
+            q, k, v,
+            is_causal=past_key_value is None,
+            dropout_p=self.dropout if self.training else 0.0,
+        )
+        result = self.out(attended.transpose(1, 2).contiguous().view(batch, length, width))
+        return result, (k, v)
+
 
 class SwiGLU(nn.Module):
     def __init__(self, config: GPTConfig):
@@ -107,6 +134,15 @@ class TransformerBlock(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x + self.attn(self.attn_norm(x))
         return x + self.ffn(self.ffn_norm(x))
+
+    def forward_with_cache(
+        self,
+        x: torch.Tensor,
+        past_key_value: tuple[torch.Tensor, torch.Tensor] | None = None,
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        attended, present = self.attn.forward_with_cache(self.attn_norm(x), past_key_value)
+        x = x + attended
+        return x + self.ffn(self.ffn_norm(x)), present
 
 
 class TinyMathGPT(nn.Module):
@@ -134,6 +170,27 @@ class TinyMathGPT(nn.Module):
             x = block(x)
         return F.linear(self.final_norm(x), self.token_embedding.weight)
 
+    def forward_with_cache(
+        self,
+        input_ids: torch.Tensor,
+        past_key_values: tuple[tuple[torch.Tensor, torch.Tensor], ...] | None = None,
+    ) -> tuple[torch.Tensor, tuple[tuple[torch.Tensor, torch.Tensor], ...]]:
+        """Return logits and per-layer KV state for prefix-cached decoding."""
+        if input_ids.ndim != 2 or input_ids.shape[1] == 0:
+            raise ValueError("input_ids must be a nonempty [batch, sequence] tensor")
+        past_length = 0 if past_key_values is None else past_key_values[0][0].shape[-2]
+        if past_length + input_ids.shape[1] > self.config.context_length:
+            raise ValueError("cached input exceeds configured context length")
+        if past_key_values is not None and len(past_key_values) != len(self.blocks):
+            raise ValueError("KV cache layer count does not match the model")
+        x = self.dropout(self.token_embedding(input_ids))
+        present: list[tuple[torch.Tensor, torch.Tensor]] = []
+        for index, block in enumerate(self.blocks):
+            cached = None if past_key_values is None else past_key_values[index]
+            x, layer_present = block.forward_with_cache(x, cached)
+            present.append(layer_present)
+        return F.linear(self.final_norm(x), self.token_embedding.weight), tuple(present)
+
     def count_parameters(self) -> int:
         return sum(parameter.numel() for parameter in self.parameters() if parameter.requires_grad)
 
@@ -151,9 +208,16 @@ class TinyMathGPT(nn.Module):
         was_training = self.training
         self.eval()
         output = input_ids
-        for _ in range(max_new_tokens):
-            context = output[:, -self.config.context_length :]
-            logits = self(context)[:, -1]
+        cacheable = output.shape[1] + max_new_tokens <= self.config.context_length
+        cache = None
+        for step in range(max_new_tokens):
+            if cacheable:
+                token_input = input_ids if step == 0 else output[:, -1:]
+                logits, cache = self.forward_with_cache(token_input, cache)
+                logits = logits[:, -1]
+            else:
+                context = output[:, -self.config.context_length :]
+                logits = self(context)[:, -1]
             if temperature == 0:
                 next_id = logits.argmax(dim=-1, keepdim=True)
             else:

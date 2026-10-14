@@ -54,9 +54,12 @@ def sample_group_rollouts(
     masks: list[torch.Tensor] = []
     old_log_probs: list[torch.Tensor] = []
     entropies: list[torch.Tensor] = []
+    cache = None
     try:
         for _ in range(max_completion_tokens):
-            logits = model(sequences[:, -model.config.context_length :])[:, -1].float() / temperature
+            token_input = sequences if cache is None else sequences[:, -1:]
+            logits, cache = model.forward_with_cache(token_input, cache)
+            logits = logits[:, -1].float() / temperature
             log_probs = F.log_softmax(logits, dim=-1)
             probabilities = log_probs.exp()
             sampled = torch.multinomial(probabilities, num_samples=1).squeeze(-1)
