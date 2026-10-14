@@ -11,6 +11,7 @@ import pandas as pd
 import streamlit as st
 
 from tinymath.data.browser import discover_bundles, read_jsonl
+from tinymath.data.trace_explanations import TRACE_KEY, explain_reasoning_trace
 
 SPLIT_LABELS = {
     "sft_train": "SFT train",
@@ -83,7 +84,7 @@ def main() -> None:
         return
     try:
         rows = cached_jsonl(str(split_path), split_path.stat().st_mtime_ns)
-    except (OSError, json.JSONDecodeError, ValueError) as exc:
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
         st.error(f"Could not load this split: {exc}")
         return
 
@@ -179,6 +180,20 @@ def main() -> None:
             st.markdown(f"**Question**\n\n{selected.get('question', '')}")
             st.markdown(f"**Answer**\n\n{selected.get('answer', '')}")
             st.caption(f"{selected.get('module', '')} · {selected.get('category', '')}")
+            if selected.get("scratchpad"):
+                st.markdown("#### Reasoning trace walkthrough")
+                st.caption(
+                    "A plain-language reading of the verified reference trace for this example."
+                )
+                for index, step in enumerate(
+                    explain_reasoning_trace(selected["scratchpad"]), start=1
+                ):
+                    st.markdown(f"**Step {index}.** {step}")
+                with st.expander("Trace notation and full reference trace"):
+                    st.markdown("**Notation key**")
+                    for notation, description in TRACE_KEY.items():
+                        st.markdown(f"- `{notation}` — {description}")
+                    st.code(selected["scratchpad"], language="text")
 
 
 if __name__ == "__main__":
