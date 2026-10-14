@@ -11,6 +11,7 @@ experiment:
   phase: main
   seed: 18
   data_budget: 500000
+  ood_examples_per_module: 1000
   updates: 100000
   max_steps: 100000
   run_optimization: true
