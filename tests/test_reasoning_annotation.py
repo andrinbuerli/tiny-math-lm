@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from copy import deepcopy
 from fractions import Fraction
 
@@ -60,6 +61,24 @@ def test_carries_borrows_and_arbitrary_operation_indices() -> None:
     nested = row(" + ".join(["1"] * 12), "12", "arithmetic__mixed")
     trace = annotate_row(nested)["scratchpad"]
     assert "t10=" in trace
+
+
+def test_seeded_random_signed_addition_and_subtraction_transitions() -> None:
+    rng = random.Random(11018)
+    for _ in range(40):
+        left = rng.randint(-999_999, 999_999)
+        right = rng.randint(-999_999, 999_999)
+        operation = rng.choice(("+", "-"))
+        answer = left + right if operation == "+" else left - right
+        result = annotate_row(
+            row(
+                f"What is {left} {operation} {right}?",
+                str(answer),
+                "arithmetic__add_or_sub",
+            )
+        )
+        assert result["retained_length"] <= 512
+        assert result["scratchpad"]
 
 
 def test_multiplication_has_partial_products_zero_rows_and_golden_budget_reduction() -> None:
