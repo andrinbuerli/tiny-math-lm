@@ -201,13 +201,22 @@ class _Builder:
         if symbol in "+-":
             sa, sb = _scale(a), _scale(b)
             scale = max(sa, sb)
-            factor = 10**scale
-            ai, bi, ri = int(a * factor), int(b * factor), int(result * factor)
-            detail = _add_lines(ai, bi, ri) if symbol == "+" else _add_lines(ai, -bi, ri)
             expression = f"{symbol}({_decimal(a)},{_decimal(b)})={_decimal(result)}"
-            detail_text = expression + "\n" + "\n".join(detail)
-            if scale:
-                detail_text += f"\nscale:{scale}=>{_decimal(result)}"
+            # Fractions with non-terminating decimal expansions have no finite
+            # base-10 digit trace. Keep their exact rational operation as the
+            # mathematical step instead of truncating operands with int().
+            has_nonterminating_operand = any(
+                value.denominator != 1 and _scale(value) == 0 for value in (a, b)
+            )
+            if has_nonterminating_operand:
+                detail_text = expression
+            else:
+                factor = 10**scale
+                ai, bi, ri = int(a * factor), int(b * factor), int(result * factor)
+                detail = _add_lines(ai, bi, ri) if symbol == "+" else _add_lines(ai, -bi, ri)
+                detail_text = expression + "\n" + "\n".join(detail)
+                if scale:
+                    detail_text += f"\nscale:{scale}=>{_decimal(result)}"
         elif symbol == "*" and (
             a.denominator == 1 or _scale(a) > 0
         ) and (b.denominator == 1 or _scale(b) > 0):
@@ -666,6 +675,414 @@ def annotate_row(
         "collapsed_count": sum(collapsed.values()),
     })
     return annotated
+
+
+_DEFINITION = re.compile(r"^([tp]\d+)=(.*)$")
+_TRANSITION = re.compile(r"^(\d+),(\d+),(\d+):(\d+),(\d+)$")
+
+
+def _verify_addition_rows(a: int, b: int, rows: list[str]) -> int:
+    """Independently replay the emitted right-to-left carry/borrow rows."""
+    rows = [row for row in rows if not row.startswith("scale:")]
+    if a < 0 and b < 0:
+        return -_verify_addition_rows(-a, -b, rows)
+    if (a < 0) != (b < 0):
+        minuend, subtrahend = (b, -a) if a < 0 else (a, -b)
+        return _verify_subtraction_rows(minuend, subtrahend, rows)
+    da, db = _integer_digits(a), _integer_digits(b)
+    carry = 0
+    out_digits = []
+    row_index = 0
+    for index in range(max(len(da), len(db))):
+        x = da[-1 - index] if index < len(da) else 0
+        y = db[-1 - index] if index < len(db) else 0
+        total = x + y + carry
+        digit, next_carry = total % 10, total // 10
+        if row_index >= len(rows) or rows[row_index] != f"{x},{y},{carry}:{digit},{next_carry}":
+            raise ValueError("Addition carry transition does not replay")
+        out_digits.append(digit)
+        carry = next_carry
+        row_index += 1
+    if carry:
+        if row_index >= len(rows) or rows[row_index] != f"carry:{carry}":
+            raise ValueError("Addition final carry is missing or incorrect")
+        out_digits.append(carry)
+        row_index += 1
+    if row_index != len(rows):
+        raise ValueError("Addition trace has unexpected transition rows")
+    return sum(digit * 10**index for index, digit in enumerate(out_digits))
+
+
+def _verify_decimal_scale(a: Fraction, b: Fraction, result: Fraction, rows: list[str]) -> list[str]:
+    scale = max(_scale(a), _scale(b))
+    scale_lines = [line for line in rows if line.startswith("scale:")]
+    if scale:
+        expected_line = f"scale:{scale}=>{_decimal(result)}"
+        if scale_lines != [expected_line]:
+            raise ValueError(f"Decimal scale annotation must be exactly {expected_line!r}")
+    elif scale_lines:
+        raise ValueError("Unexpected decimal scale annotation for integer arithmetic")
+    return [line for line in rows if not line.startswith("scale:")]
+
+
+def _verify_subtraction_rows(a: int, b: int, rows: list[str]) -> int:
+    rows = [row for row in rows if not row.startswith("scale:")]
+    if a < b:
+        return -_verify_subtraction_rows(b, a, rows)
+    da, db = _integer_digits(a), _integer_digits(b)
+    borrow = 0
+    out_digits = []
+    if len(rows) != len(da):
+        raise ValueError("Subtraction trace has the wrong number of digit rows")
+    for index, row in enumerate(rows):
+        x = da[-1 - index]
+        y = db[-1 - index] if index < len(db) else 0
+        raw = x - y - borrow
+        next_borrow = int(raw < 0)
+        digit = raw + (10 if next_borrow else 0)
+        if row != f"{x},{y},{borrow}:{digit},{next_borrow}":
+            raise ValueError("Subtraction borrow transition does not replay")
+        out_digits.append(digit)
+        borrow = next_borrow
+    return sum(digit * 10**index for index, digit in enumerate(out_digits))
+
+
+def _verify_multiplier_rows(
+    multiplier: Fraction, shift: int, lines: list[str], multiplicand: Fraction | None = None
+) -> int:
+    scale = _scale(multiplier)
+    multiplier_integer = abs(int(multiplier * 10**scale))
+    digits = _integer_digits(multiplier_integer)
+    if shift >= len(digits):
+        multiplier_digit = 0
+    else:
+        multiplier_digit = digits[-1 - shift]
+    if multiplicand is not None:
+        multiplicand_scale = _scale(multiplicand)
+        multiplicand_integer = abs(int(multiplicand * 10**multiplicand_scale))
+        expected_digits = list(reversed(_integer_digits(multiplicand_integer)))
+        actual_digits = [
+            int(match.group(1))
+            for line in lines
+            if (match := re.fullmatch(r"(\d+),(\d+):(\d+),(\d+)", line))
+        ]
+        if actual_digits != expected_digits:
+            raise ValueError("Multiplication rows do not use the source multiplicand digits")
+    previous_carry = 0
+    stated_final_carry: int | None = None
+    for line in lines:
+        if line.startswith(("M", "digit:")):
+            continue
+        if line.startswith("carry:"):
+            stated_final_carry = int(line.split(":", 1)[1])
+            continue
+        match = re.fullmatch(r"(\d+),(\d+):(\d+),(\d+)", line)
+        if not match:
+            raise ValueError(f"Malformed multiplication transition: {line!r}")
+        digit, carry_in, result_digit, carry_out = map(int, match.groups())
+        product = digit * multiplier_digit + carry_in
+        if product % 10 != result_digit or product // 10 != carry_out:
+            raise ValueError("Multiplication digit/carry transition does not replay")
+        if carry_in != previous_carry:
+            raise ValueError("Multiplication carry chain is discontinuous")
+        previous_carry = carry_out
+    if (stated_final_carry or 0) != previous_carry:
+        raise ValueError("Multiplication final carry is missing or incorrect")
+    # Re-read rows to collect result digits in their emitted least-significant
+    # first order, then append the explicit final carry when present.
+    result_digits = []
+    final_carry = 0
+    for line in lines:
+        if line.startswith("carry:"):
+            final_carry = int(line.split(":", 1)[1])
+            continue
+        match = re.fullmatch(r"(\d+),(\d+):(\d+),(\d+)", line)
+        if match:
+            result_digits.append(int(match.group(3)))
+            final_carry = int(match.group(4))
+    if final_carry:
+        result_digits.append(final_carry)
+    raw = sum(digit * 10**index for index, digit in enumerate(result_digits))
+    return raw * 10**shift
+
+
+def verify_annotation(row: dict[str, str], annotation: dict[str, object] | str) -> None:
+    """Independently replay a rendered scratchpad against its source row.
+
+    Raises ``ValueError`` at the first malformed or mathematically inconsistent
+    definition. This validates emitted local digit transitions, reference
+    equations, division remainder/GCD steps, final answers, and algebra
+    substitution. It accepts either an annotated row or scratchpad text.
+    """
+    scratchpad = (
+        str(annotation["scratchpad"])
+        if isinstance(annotation, dict)
+        else annotation
+    )
+    module = row.get("module", "")
+    answer = _fraction(row["answer"])
+    if module == "algebra__linear_1d":
+        _, _, source_value = _linear_trace(row["question"], row["answer"])
+    else:
+        source_expression, _ = _source_expression(row["question"], module)
+        source_expression = re.sub(r"(?<=\d)\s+(?=[+-]?\d)", " ", source_expression)
+        source_value = _ExpressionParser(source_expression, _Builder()).parse().value
+    if source_value != answer:
+        raise ValueError("Source-row arithmetic does not produce its labeled answer")
+    source_operands = None
+    if module in {"arithmetic__add_or_sub", "arithmetic__mul", "arithmetic__div"}:
+        source_expression, _ = _source_expression(row["question"], module)
+        simple = re.fullmatch(
+            rf"\s*({NUMBER})\s*([+*/-])\s*({NUMBER})\s*", source_expression
+        )
+        if simple:
+            source_operands = (_fraction(simple.group(1)), simple.group(2), _fraction(simple.group(3)))
+    definitions: dict[str, list[str]] = {}
+    for line in scratchpad.splitlines():
+        match = _DEFINITION.fullmatch(line)
+        if match:
+            name, detail = match.groups()
+            if name in definitions:
+                raise ValueError(f"Duplicate scratchpad definition {name}")
+            definitions[name] = [detail]
+        elif not definitions:
+            raise ValueError(f"Scratchpad line precedes its first definition: {line!r}")
+        else:
+            definitions[next(reversed(definitions))].append(line)
+
+    values: dict[str, Fraction] = {}
+
+    def operand(text: str) -> Fraction:
+        text = text.strip()
+        reference = re.fullmatch(r"([+-]?)([tp]\d+)", text)
+        if reference:
+            sign, name = reference.groups()
+            if name not in values:
+                raise ValueError(f"Reference {name} is missing or used before definition")
+            return -values[name] if sign == "-" else values[name]
+        return _fraction(text)
+
+    for name, detail_lines in definitions.items():
+        lines = detail_lines
+        detail = "\n".join(lines)
+        head = lines[0]
+        if name.startswith("p"):
+            partial_collapse = re.fullmatch(r"(-?1)\*(\d+)\*(\d+)\*10\^(\d+)=(-?\d+)", head)
+            if partial_collapse:
+                sign, multiplicand, digit, shift_text, value_text = partial_collapse.groups()
+                shift = int(shift_text)
+                if source_operands and source_operands[1] == "*":
+                    source_multiplicand, _, source_multiplier = source_operands
+                    source_scale = _scale(source_multiplicand)
+                    if abs(int(source_multiplicand * 10**source_scale)) != int(multiplicand):
+                        raise ValueError("Collapsed partial product multiplicand disagrees with source")
+                    multiplier_integer = abs(int(source_multiplier * 10**_scale(source_multiplier)))
+                    source_digits = _integer_digits(multiplier_integer)
+                    expected_digit = source_digits[-1 - shift] if shift < len(source_digits) else 0
+                    if int(digit) != expected_digit:
+                        raise ValueError("Collapsed partial-product digit disagrees with source multiplier")
+                result = int(multiplicand) * int(digit) * 10**int(shift_text)
+                result *= int(sign)
+                if result != int(value_text):
+                    raise ValueError(f"Collapsed partial product {name} is incorrect")
+                values[name] = Fraction(result)
+                continue
+            multiplication_header = next(
+                (line for line in lines if line.startswith("M") and "@" in line), None
+            )
+            if multiplication_header is None:
+                raise ValueError(f"Partial product {name} has no multiplier/shift header")
+            match = re.fullmatch(r"M(.+?)@(\d+)=(?:sign:)?(-?\d+)", multiplication_header)
+            if not match:
+                raise ValueError(f"Malformed partial-product header: {multiplication_header!r}")
+            multiplier_text, shift_text, value_text = match.groups()
+            shift = int(shift_text)
+            source_multiplicand = None
+            if source_operands and source_operands[1] == "*":
+                source_multiplicand, _, source_multiplier = source_operands
+                if _fraction(multiplier_text) != source_multiplier:
+                    raise ValueError("Partial-product multiplier disagrees with the source row")
+            expected = _verify_multiplier_rows(
+                _fraction(multiplier_text), shift,
+                lines[lines.index(multiplication_header) + 1 :], source_multiplicand
+            )
+            signed = "sign:" in multiplication_header
+            if signed:
+                expected = -expected
+            if expected != int(value_text):
+                raise ValueError(f"Partial product {name} disagrees with its digit rows")
+            values[name] = Fraction(expected)
+            continue
+
+        sum_header = re.fullmatch(r"([+-]?[tp]\d+)\+([+-]?[tp]\d+)(?:=| ->)(-?\d+)?", head)
+        if sum_header:
+            left, right, result_text = sum_header.groups()
+            a, b = operand(left), operand(right)
+            if a.denominator != 1 or b.denominator != 1:
+                raise ValueError("Digit addition references must resolve to integers")
+            result = a + b
+            if len(lines) > 1:
+                replayed = _verify_addition_rows(int(a), int(b), lines[1:])
+                if Fraction(replayed) != result:
+                    raise ValueError(f"Referenced addition {name} disagrees with its digit rows")
+            elif result_text and int(result_text) != result:
+                raise ValueError(f"Referenced addition {name} has an incorrect result")
+            values[name] = result
+            continue
+
+        header_index = 1 if head == "sign:-" else 0
+        operation_head = lines[header_index]
+        binary = re.fullmatch(r"([+*/-])\(([^,]+),([^)]*)\)=([^\s]+)", operation_head)
+        if binary:
+            symbol, left, right, result_text = binary.groups()
+            a, b, stated = operand(left), operand(right), _fraction(result_text)
+            if source_operands and name == "t0":
+                source_a, source_symbol, source_b = source_operands
+                if (symbol, a, b) != (source_symbol, source_a, source_b):
+                    raise ValueError("First operation operands disagree with the source row")
+            if symbol == "+":
+                expected = a + b
+            elif symbol == "-":
+                expected = a - b
+            elif symbol == "*":
+                expected = a * b
+            else:
+                if b == 0:
+                    raise ValueError("Division trace has a zero divisor")
+                expected = a / b
+            if stated != expected:
+                raise ValueError(f"Arithmetic result in {name} is incorrect")
+            operation_rows = lines[header_index + 1 :]
+            if symbol in "+-" and operation_rows:
+                operation_rows = _verify_decimal_scale(a, b, expected, operation_rows)
+                scale = max(_scale(a), _scale(b))
+                ai, bi = int(a * 10**scale), int(b * 10**scale)
+                replayed = (
+                    _verify_addition_rows(ai, bi if symbol == "+" else -bi, operation_rows)
+                )
+                if Fraction(replayed, 10**scale) != expected:
+                    raise ValueError(f"Digit arithmetic in {name} disagrees with its equation")
+            if symbol == "/" and operation_rows:
+                _verify_division_detail(a, b, expected, operation_rows)
+            values[name] = expected
+            continue
+
+        atom = r"[+-]?(?:[tp]\d+|\d+(?:/\d+)?)"
+        equation = re.fullmatch(rf"({atom})([+*/-])({atom})=(-?\d+(?:/\d+)?)", head)
+        if equation:
+            left, symbol, right, result_text = equation.groups()
+            a, b, stated = operand(left), operand(right), _fraction(result_text)
+            expected = {"+": a + b, "-": a - b, "*": a * b, "/": a / b if b else None}[symbol]
+            if expected is None or stated != expected:
+                raise ValueError(f"Referenced operation {name} is incorrect")
+            values[name] = expected
+            if symbol in "+-" and len(lines) > 1:
+                if a.denominator != 1 or b.denominator != 1:
+                    raise ValueError("Referenced digit addition must use integer values")
+                detail_rows = _verify_decimal_scale(a, b, expected, lines[1:])
+                replayed = _verify_addition_rows(
+                    int(a), int(b) if symbol == "+" else -int(b), detail_rows
+                )
+                if Fraction(replayed) != expected:
+                    raise ValueError(f"Referenced digit transitions in {name} are incorrect")
+            if symbol == "/" and len(lines) > 1:
+                _verify_division_detail(a, b, expected, lines[1:])
+            continue
+
+        if head.startswith("scale:"):
+            scale_match = re.fullmatch(r"scale:(-?\d+)/(\d+)=([^\s]+)", head)
+            if not scale_match:
+                raise ValueError(f"Malformed multiplication scale line: {head!r}")
+            numerator, denominator, rendered = scale_match.groups()
+            expected = Fraction(int(numerator), int(denominator))
+            if _fraction(rendered) != expected:
+                raise ValueError(f"Scale result in {name} is incorrect")
+            prior_values = list(values.values())
+            if not prior_values or prior_values[-1] != int(numerator):
+                raise ValueError("Multiplication scale numerator disagrees with prior result")
+            values[name] = expected
+            continue
+        collapsed_scale = re.fullmatch(r"([tp]\d+)/(\d+)=([^\s]+)", head)
+        if collapsed_scale:
+            previous, denominator_text, answer_text = collapsed_scale.groups()
+            expected = operand(previous) / int(denominator_text)
+            if expected != _fraction(answer_text):
+                raise ValueError("Collapsed multiplication scale reference is incorrect")
+            values[name] = expected
+            continue
+
+        # Algebra is rendered as one essential node with explicit source
+        # substitution. Its arithmetic subexpressions are checked below.
+        if head.startswith("collect:"):
+            _verify_algebra(row, lines)
+            solution = re.search(r"(?m)^([a-z])=([^\n]+)$", detail)
+            if not solution:
+                raise ValueError("Algebra trace has no solution line")
+            values[name] = _fraction(solution.group(2))
+            continue
+        raise ValueError(f"Unrecognized mathematical definition {name}: {head!r}")
+
+    answer = _fraction(row["answer"])
+    if not values or list(values.values())[-1] != answer:
+        raise ValueError("Final trace value does not match the source answer")
+
+
+def _verify_division_detail(a: Fraction, b: Fraction, result: Fraction, rows: list[str]) -> None:
+    common = math.lcm(a.denominator, b.denominator)
+    dividend = abs(a.numerator * (common // a.denominator))
+    divisor = abs(b.numerator * (common // b.denominator))
+    transitions = rows
+    gcd_line = next((line for line in transitions if line.startswith("gcd=")), None)
+    digit_lines = [line for line in transitions if not line.startswith("sign:") and line != gcd_line]
+    if divisor == 0:
+        raise ValueError("Division trace has zero divisor")
+    remainder = 0
+    if len(digit_lines) != len(str(dividend)):
+        raise ValueError("Division trace has the wrong number of brought-down digits")
+    for digit, line in zip(str(dividend), digit_lines):
+        brought = remainder * 10 + int(digit)
+        quotient_digit, remainder = divmod(brought, divisor)
+        if line != f"{brought}:{quotient_digit},{remainder}":
+            raise ValueError("Long-division quotient/remainder transition does not replay")
+    if gcd_line is None:
+        raise ValueError("Division trace has no GCD reduction")
+    match = re.fullmatch(r"gcd=(\d+);(-?\d+)/(\d+)", gcd_line)
+    if not match:
+        raise ValueError("Malformed division GCD line")
+    stated_gcd, numerator, denominator = map(int, match.groups())
+    actual_gcd = _gcd(dividend, divisor)
+    sign = -1 if a * b < 0 else 1
+    if (stated_gcd != actual_gcd or Fraction(numerator, denominator) != result
+            or numerator != sign * dividend // actual_gcd or denominator != divisor // actual_gcd):
+        raise ValueError("Division GCD reduction does not match the source operands")
+
+
+def _verify_algebra(row: dict[str, str], lines: list[str]) -> None:
+    equation, variable = _source_expression(row["question"], "algebra__linear_1d")
+    left, right = equation.split("=", 1)
+    solution_line = next((line for line in lines if line.startswith(f"{variable}=")), None)
+    verification = next((line for line in lines if line.startswith("verify:")), None)
+    if solution_line is None or verification is None:
+        raise ValueError("Algebra trace lacks substitution verification")
+    solution = _fraction(solution_line.split("=", 1)[1])
+    if solution != _fraction(row["answer"]):
+        raise ValueError("Algebra solution disagrees with source answer")
+    left_value = _linear_value(left, variable, solution)
+    right_value = _linear_value(right, variable, solution)
+    stated = verification.removeprefix("verify:").split("=", 1)
+    if len(stated) != 2 or _fraction(stated[0]) != left_value or _fraction(stated[1]) != right_value:
+        raise ValueError("Algebra substitution values do not replay from the source equation")
+    if left_value != right_value:
+        raise ValueError("Algebra solution does not satisfy the source equation")
+
+
+def _linear_value(text: str, variable: str, value: Fraction) -> Fraction:
+    tokens = re.findall(r"\d+(?:\.\d*)?|\.\d+|[a-z]|[()+*/-]", text)
+    if "".join(tokens) != re.sub(r"\s+", "", text):
+        raise ValueError("Unsupported syntax in algebra verification")
+    replaced = "".join(_scalar(value) if token == variable else token for token in tokens)
+    expression = _ExpressionParser(replaced, _Builder()).parse()
+    return expression.value
 
 
 def annotation_hash(rows: Iterable[dict[str, object]]) -> str:

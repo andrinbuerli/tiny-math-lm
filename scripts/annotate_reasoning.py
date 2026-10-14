@@ -16,7 +16,7 @@ from omegaconf import DictConfig
 
 from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.data.prompts import format_prompt
-from tinymath.data.reasoning import annotate_row, distribution
+from tinymath.data.reasoning import annotate_row, distribution, verify_annotation
 from tinymath.tracking.wandb import finish_wandb, initialize_wandb
 
 LOGGER = logging.getLogger(__name__)
@@ -122,6 +122,13 @@ def main(config: DictConfig) -> None:
                         ) from exc
                     if any(annotated.get(key) != row.get(key) for key in row):
                         raise AssertionError(f"Source fields changed at {split_name}[{index}]")
+                    try:
+                        verify_annotation(row, annotated)
+                    except Exception as exc:
+                        raise ValueError(
+                            f"Trace replay failed at {split_name}[{index}] "
+                            f"({row.get('module')}): {row.get('question')!r}: {exc}"
+                        ) from exc
                     encoded_line = _json_line(annotated)
                     handle.write(encoded_line)
                     annotated_digest.update(encoded_line.encode("utf-8"))

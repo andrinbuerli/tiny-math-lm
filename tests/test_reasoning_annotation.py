@@ -16,6 +16,7 @@ from tinymath.data.reasoning import (
     annotate_row,
     default_sequence_length,
     reduce_to_budget,
+    verify_annotation,
 )
 
 
@@ -46,18 +47,29 @@ def test_golden_module_rows_derive_exact_answer(source: str, answer: str, module
 
 
 def test_decimal_arithmetic_and_negative_subtraction_are_exact() -> None:
-    result = annotate_row(row("-6.14+0.4764252833", "-5.6635747167", "arithmetic__add_or_sub"))
+    decimal_row = row("-6.14+0.4764252833", "-5.6635747167", "arithmetic__add_or_sub")
+    decimal_annotation = annotate_row(decimal_row)
+    verify_annotation(decimal_row, decimal_annotation)
+    result = decimal_annotation
     assert "scale:10=>-5.6635747167" in result["scratchpad"]
-    result = annotate_row(row("Subtract -324470729 from 11.422.", "324470740.422", "arithmetic__add_or_sub"))
+    subtraction_row = row("Subtract -324470729 from 11.422.", "324470740.422", "arithmetic__add_or_sub")
+    result = annotate_row(subtraction_row)
+    verify_annotation(subtraction_row, result)
     assert result["scratchpad"]
     assert _fraction("-5.6635747167") == Fraction(-56635747167, 10**10)
     assert _decimal(Fraction(1, 2)) == "0.5"
 
 
 def test_carries_borrows_and_arbitrary_operation_indices() -> None:
-    carry = annotate_row(row("999 + 1", "1000", "arithmetic__add_or_sub"))["scratchpad"]
+    carry_row = row("999 + 1", "1000", "arithmetic__add_or_sub")
+    carry_annotation = annotate_row(carry_row)
+    verify_annotation(carry_row, carry_annotation)
+    carry = carry_annotation["scratchpad"]
     assert "9,1,0:0,1" in carry and "carry:1" in carry
-    borrow = annotate_row(row("1000 - 1", "999", "arithmetic__add_or_sub"))["scratchpad"]
+    borrow_row = row("1000 - 1", "999", "arithmetic__add_or_sub")
+    borrow_annotation = annotate_row(borrow_row)
+    verify_annotation(borrow_row, borrow_annotation)
+    borrow = borrow_annotation["scratchpad"]
     assert "0,1,0:9,1" in borrow
     nested = row(" + ".join(["1"] * 12), "12", "arithmetic__mixed")
     trace = annotate_row(nested)["scratchpad"]
@@ -83,7 +95,9 @@ def test_seeded_random_signed_addition_and_subtraction_transitions() -> None:
 
 
 def test_multiplication_has_partial_products_zero_rows_and_golden_budget_reduction() -> None:
-    annotated = annotate_row(row("12345 * 6789", "83810205", "arithmetic__mul"))
+    source = row("12345 * 6789", "83810205", "arithmetic__mul")
+    annotated = annotate_row(source)
+    verify_annotation(source, annotated)
     assert "p0=digit:9,8,7,6" in annotated["scratchpad"]
     assert "M6789@0=111105" in annotated["scratchpad"]
     assert "M6789@1=987600" in annotated["scratchpad"]
@@ -102,7 +116,10 @@ def test_multiplication_has_partial_products_zero_rows_and_golden_budget_reducti
 
 
 def test_long_division_keeps_quotient_zero_and_reduces_fraction_exactly() -> None:
-    trace = annotate_row(row("What is 1 divided by 20?", "1/20", "arithmetic__div"))["scratchpad"]
+    source = row("What is 1 divided by 20?", "1/20", "arithmetic__div")
+    annotation = annotate_row(source)
+    verify_annotation(source, annotation)
+    trace = annotation["scratchpad"]
     assert ":0," in trace
     assert "gcd=1;1/20" in trace
     source_trace = annotate_row(row("What is 12 divided by 3?", "4", "arithmetic__div"))["scratchpad"]
@@ -112,15 +129,29 @@ def test_long_division_keeps_quotient_zero_and_reduces_fraction_exactly() -> Non
 
 def test_mixed_expression_postorder_and_nested_parentheses() -> None:
     source = row("Calculate (47 - (-83 - -142))*(-1)/(2/(-4)).", "-24", "arithmetic__mixed")
-    trace = annotate_row(source)["scratchpad"]
+    annotation = annotate_row(source)
+    verify_annotation(source, annotation)
+    trace = annotation["scratchpad"]
     ids = [line.split("=", 1)[0] for line in trace.splitlines() if line.startswith("t")]
     assert ids == [f"t{i}" for i in range(len(ids))]
     assert "t" in trace and "=" in trace
 
 
+def test_mixed_nonterminating_rational_intermediate_uses_exact_equation() -> None:
+    source = row("Calculate 2869/29 + -99.", "-2/29", "arithmetic__mixed")
+    annotation = annotate_row(source)
+    verify_annotation(source, annotation)
+    trace = annotation["scratchpad"]
+    assert "t0=/(2869,29)=2869/29" in trace
+    assert "t1=+(t0,-99)=-2/29" in trace
+    assert trace.splitlines()[-1] == "t1=+(t0,-99)=-2/29"
+
+
 def test_repeated_multiplication_nodes_have_unique_references_and_fit_budget() -> None:
     source = row("(-6)/4*((-9)/(-8) - 1)*149804/(-6609)", "17/4", "arithmetic__mixed")
-    trace = annotate_row(source)["scratchpad"]
+    annotation = annotate_row(source)
+    verify_annotation(source, annotation)
+    trace = annotation["scratchpad"]
     identifiers = [line.split("=", 1)[0] for line in trace.splitlines() if line[:1] in {"p", "t"}]
     assert len(identifiers) == len(set(identifiers))
     assert "p8=" in trace and "t12=" in trace
@@ -128,10 +159,34 @@ def test_repeated_multiplication_nodes_have_unique_references_and_fit_budget() -
 
 
 def test_linear_equation_collects_and_substitutes_exactly() -> None:
-    trace = annotate_row(row("Solve -74*d + 5537428 = 5540240 for d.", "-38", "algebra__linear_1d"))["scratchpad"]
+    source = row("Solve -74*d + 5537428 = 5540240 for d.", "-38", "algebra__linear_1d")
+    annotation = annotate_row(source)
+    verify_annotation(source, annotation)
+    trace = annotation["scratchpad"]
     assert "move:" in trace
     assert "verify:" in trace
     assert trace.endswith("verify:5540240=5540240")
+
+
+def test_trace_verifier_rejects_corrupted_digit_and_substitution_steps() -> None:
+    source = row("999 + 1", "1000", "arithmetic__add_or_sub")
+    annotation = annotate_row(source)
+    corrupted = dict(annotation, scratchpad=annotation["scratchpad"].replace("9,1,0:0,1", "9,1,0:1,1", 1))
+    with pytest.raises(ValueError, match="transition"):
+        verify_annotation(source, corrupted)
+    decimal = row("0.2 + 9386818", "9386818.2", "arithmetic__add_or_sub")
+    annotation = annotate_row(decimal)
+    corrupted = dict(
+        annotation,
+        scratchpad=annotation["scratchpad"].replace("\nscale:1=>9386818.2", ""),
+    )
+    with pytest.raises(ValueError, match="scale annotation"):
+        verify_annotation(decimal, corrupted)
+    algebra = row("Solve -74*d + 5537428 = 5540240 for d.", "-38", "algebra__linear_1d")
+    annotation = annotate_row(algebra)
+    corrupted = dict(annotation, scratchpad=annotation["scratchpad"].replace("verify:5540240=5540240", "verify:5540241=5540240"))
+    with pytest.raises(ValueError, match="substitution"):
+        verify_annotation(algebra, corrupted)
 
 
 def test_source_answer_mismatch_and_unsupported_syntax_fail_closed() -> None:
