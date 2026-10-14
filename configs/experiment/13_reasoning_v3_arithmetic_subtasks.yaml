@@ -1,0 +1,30 @@
+# @package _global_
+# Experiment 13 — compare SFT, GRPO/RLVR, and continued-SFT with the
+# reasoning-v3 arithmetic and subtask bundle.
+experiment:
+  number: 13
+  name: exp13_reasoning_v3_arithmetic_subtasks
+  title: "Experiment 13 — Reasoning-v3 arithmetic subtasks"
+  baseline: restarted_100k_greedy_restart_2
+  lineage: restarted_100k_greedy_restart_2
+  protocol: reasoning_v3
+  phase: main
+  seed: 18
+  data_budget: 500000
+  updates: 100000
+  max_steps: 100000
+  run_optimization: true
+  context_length: 512
+seed: 18
+data_bundle: data/processed/exp13_reasoning_v3_arithmetic_subtasks-seed18
+
+model:
+  context_length: 512
+data:
+  context_length: 512
+rlvr:
+  max_completion_tokens: 512
+eval:
+  max_new_tokens: 512
+reporting:
+  annotation_bundle_dir: ${paths.root}/data/processed/exp13_reasoning_v3_arithmetic_subtasks-seed18
