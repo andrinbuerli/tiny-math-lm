@@ -22,7 +22,7 @@ def parse_reasoning_completion(
     The parser operates on reserved structural IDs before decoding ordinary text so
     question text that happens to spell a marker cannot affect completion structure.
     """
-    if tokenizer.protocol not in {"reasoning_v1", "reasoning_v2"}:
+    if tokenizer.protocol not in {"reasoning_v1", "reasoning_v2", "reasoning_v3"}:
         raise ValueError("Reasoning completions require a reasoning tokenizer")
     ids = list(token_ids)
     if not ids or ids[-1] != tokenizer.eos_id:
@@ -30,6 +30,20 @@ def parse_reasoning_completion(
     body = ids[:-1]
     if any(token in (tokenizer.pad_id, tokenizer.bos_id, tokenizer.unk_id) for token in body):
         raise ValueError("Reasoning completion contains a reserved token outside its protocol")
+    if tokenizer.protocol == "reasoning_v3":
+        rendered = tokenizer.decode(body)
+        prefix, separator, suffix = rendered.partition("\n</scp>\nA: ")
+        if not separator or not prefix.startswith("<scp>\n") or prefix.count("<scp>") != 1:
+            raise ValueError("reasoning_v3 completion needs one character-encoded scratchpad block")
+        scratchpad = prefix[len("<scp>\n"):]
+        answer = suffix
+        if not scratchpad.strip() or not answer or answer != answer.strip() or "\n" in answer or "\r" in answer:
+            raise ValueError("Reasoning completion has a missing, multiline, or trailing answer")
+        try:
+            parse_answer(answer)
+        except AnswerFormatError as exc:
+            raise ValueError("Reasoning completion answer is not a valid scalar") from exc
+        return ReasoningCompletion(scratchpad=scratchpad, answer=answer)
     starts = [i for i, token in enumerate(body) if token == tokenizer.scp_id]
     ends = [i for i, token in enumerate(body) if token == tokenizer.scp_end_id]
     if len(starts) != 1 or len(ends) != 1 or starts[0] >= ends[0]:

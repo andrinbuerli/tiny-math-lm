@@ -102,6 +102,23 @@ class _Trace:
     ref: str
 
 
+@dataclass(frozen=True)
+class ArithmeticCall:
+    """One exact binary expression node, recorded in source evaluation order."""
+
+    operation: str
+    left: Fraction
+    right: Fraction
+    result: Fraction
+    symbol: str
+
+    def render(self) -> str:
+        return (
+            f"call:{self.operation}({_scalar(self.left)},{_scalar(self.right)})"
+            f" -> {_scalar(self.result)}"
+        )
+
+
 def _add_lines(a: int, b: int, result: int) -> list[str]:
     """Right-to-left signed integer addition, including carry/borrow states."""
     # Rows in this compact form operate on magnitudes; sign handling is stated
@@ -168,6 +185,7 @@ class _Builder:
         self.lines: list[str] = []
         self.counter = 0
         self.partial_counter = 0
+        self.calls: list[ArithmeticCall] = []
 
     def op(self, category: str, detailed: str, collapsed: str,
            *, children: Iterable[str] = (), essential: bool = False,
@@ -196,6 +214,8 @@ class _Builder:
             result = a / b
         else:
             raise ValueError(f"Unsupported operation {symbol!r}")
+        operation = {"+": "add", "-": "subtract", "*": "multiply", "/": "divide"}[symbol]
+        self.calls.append(ArithmeticCall(operation, a, b, result, symbol))
         name = {"+": "addition", "-": "addition", "*": "multiplication", "/": "division"}[symbol]
         detail: list[str] = []
         if symbol in "+-":
@@ -630,13 +650,14 @@ def annotate_row(
     protocol: str = "reasoning_v1",
 ) -> dict[str, str | int | dict[str, int]]:
     """Verify and annotate a source row without mutating it."""
-    if protocol not in {"reasoning_v1", "reasoning_v2"}:
+    if protocol not in {"reasoning_v1", "reasoning_v2", "reasoning_v3"}:
         raise ValueError(f"Unsupported trace protocol: {protocol}")
     if not MODULES.__contains__(row.get("module", "")):
         raise ValueError(f"Unsupported module: {row.get('module')!r}")
     answer = row["answer"].strip()
     expected = _fraction(answer)
     module = row["module"]
+    arithmetic_calls: list[ArithmeticCall] = []
     if module == "algebra__linear_1d":
         _, operations, value = _linear_trace(row["question"], answer)
         if value != expected:
@@ -647,6 +668,7 @@ def annotate_row(
         expression = re.sub(r"(?<=\d)\s+(?=[+-]?\d)", " ", expression)
         builder = _Builder()
         trace = _ExpressionParser(expression, builder).parse()
+        arithmetic_calls = list(builder.calls)
         value = trace.value
         if value != expected:
             raise ValueError(f"Derived answer {_scalar(value)} disagrees with label {answer!r}")
@@ -665,9 +687,14 @@ def annotate_row(
     full_text = render_operations(operations)
     if protocol == "reasoning_v2":
         full_text = _forward_trace(full_text, operations, value)
+    elif protocol == "reasoning_v3":
+        full_text = _reasoning_v3_trace(row, operations, arithmetic_calls, value)
     full_length = length_fn(row, full_text)
-    scratch, collapsed, retained_length = reduce_to_budget(
-        row, operations, max_tokens=max_tokens, length_fn=length_fn)
+    if protocol == "reasoning_v3":
+        scratch, collapsed, retained_length = full_text, {}, full_length
+    else:
+        scratch, collapsed, retained_length = reduce_to_budget(
+            row, operations, max_tokens=max_tokens, length_fn=length_fn)
     if protocol == "reasoning_v2":
         scratch = _forward_trace(scratch, operations, value)
         retained_length = length_fn(row, scratch)
@@ -690,6 +717,11 @@ def annotate_row(
             chosen.collapsed_now = True
             collapsed[chosen.category] = collapsed.get(chosen.category, 0) + 1
             retained_length = length_fn(row, scratch)
+    elif protocol == "reasoning_v3":
+        if retained_length > max_tokens:
+            raise ValueError(
+                f"reasoning_v3 call trace exceeds {max_tokens} tokens: {retained_length}"
+            )
     if _fraction(answer) != value:
         raise AssertionError("Final scalar changed during annotation")
     annotated = dict(row)
@@ -701,9 +733,84 @@ def annotate_row(
         "collapsed_categories": collapsed,
         "collapsed_count": sum(collapsed.values()),
     })
-    if protocol == "reasoning_v2":
+    if protocol in {"reasoning_v2", "reasoning_v3"}:
         annotated["trace_version"] = protocol
+    if protocol == "reasoning_v3":
+        annotated["annotation_max_tokens"] = max_tokens
     return annotated
+
+
+_V3_CALL = re.compile(
+    r"^call:(add|subtract|multiply|divide)\(([^,]+),([^)]*)\) -> "
+    r"([+-]?(?:\d+/\d+|\d+))$"
+)
+
+
+def generate_subtask_rows(
+    source_row: dict[str, str],
+    annotation: dict[str, object],
+    *,
+    source_split: str,
+    parent_row_index: int,
+    max_tokens: int = 512,
+    length_fn: Callable[[dict[str, str], str], int] = default_sequence_length,
+) -> list[dict[str, object]]:
+    """Turn visible v3 calls into standalone, oracle-verified v2 math samples."""
+    if annotation.get("trace_version") != "reasoning_v3":
+        raise ValueError("Subtask generation requires a reasoning_v3 parent")
+    results: list[dict[str, object]] = []
+    for call_index, line in enumerate(
+        line for line in str(annotation.get("scratchpad", "")).splitlines()
+        if line.startswith("call:")
+    ):
+        match = _V3_CALL.fullmatch(line)
+        if match is None:
+            raise ValueError(f"Malformed reasoning_v3 call line: {line!r}")
+        operation, left_text, right_text, result_text = match.groups()
+        left, right, result = map(_fraction, (left_text, right_text, result_text))
+        symbol = {"add": "+", "subtract": "-", "multiply": "*", "divide": "/"}[operation]
+        actual = {"+": left + right, "-": left - right, "*": left * right,
+                  "/": left / right if right else None}[symbol]
+        if actual is None:
+            raise ValueError("reasoning_v3 call divides by zero")
+        if actual != result:
+            raise ValueError(f"Incorrect reasoning_v3 call result in {line!r}")
+        operands = (_scalar(left), _scalar(right))
+        module = {
+            "+": "arithmetic__add_or_sub", "-": "arithmetic__add_or_sub",
+            "*": "arithmetic__mul", "/": "arithmetic__div",
+        }[symbol]
+        if any(value.denominator != 1 for value in (left, right, result)):
+            module = "arithmetic__mixed"
+        question_operands = tuple(
+            f"({text})" if value.denominator != 1 else text
+            for text, value in zip(operands, (left, right))
+        )
+        question = f"Calculate {question_operands[0]} {symbol} {question_operands[1]}."
+        subtask_source = {
+            "question": question,
+            "answer": _scalar(result),
+            "module": module,
+            "category": "reasoning_v3_subtask",
+        }
+        subtask = annotate_row(
+            subtask_source, max_tokens=max_tokens, length_fn=length_fn, protocol="reasoning_v2"
+        )
+        verify_annotation(subtask_source, subtask)
+        results.append({
+            **subtask,
+            "trace_version": "reasoning_v2",
+            "source_split": source_split,
+            "parent_row_index": parent_row_index,
+            "call_index": call_index,
+            "call_operation": operation,
+            "call_operands": list(operands),
+            "call_result": _scalar(result),
+            "parent_module": source_row.get("module", ""),
+            "task_key": f"{operation}({operands[0]},{operands[1]})",
+            "training_eligible": True,
+        })
+    return results
 
 
 _DEFINITION = re.compile(r"^([tp]\d+)=(.*)$")
@@ -889,6 +996,45 @@ def _verify_forward_annotation(row: dict[str, str], scratchpad: str) -> None:
         raise ValueError("reasoning_v2 trace is malformed, result-first, incomplete, or inconsistent")
 
 
+def _reasoning_v3_trace(
+    row: dict[str, str], operations: list[Operation], calls: list[ArithmeticCall], value: Fraction
+) -> str:
+    """Render parent algebra steps and explicit oracle arithmetic calls."""
+    if row.get("module") != "algebra__linear_1d":
+        if not calls:
+            raise ValueError("reasoning_v3 needs at least one arithmetic call")
+        return "\n".join(
+            ["step:evaluate arithmetic operations in expression order"]
+            + [call.render() for call in calls]
+        )
+
+    # The existing linear reference contains exact collect/move/substitution
+    # steps. Replace its no-result division instruction with a real call.
+    forward = _forward_trace(render_operations(operations), operations, value)
+    detail = operations[0].detailed
+    move = next((line.removeprefix("move:") for line in detail.splitlines()
+                 if line.startswith("move:")), None)
+    if move is None:
+        raise ValueError("Linear trace is missing its move step")
+    match = re.fullmatch(r"([+-]?(?:\d+/\d+|\d+))[a-z]=([+-]?(?:\d+/\d+|\d+))", move)
+    if match is None:
+        raise ValueError("Linear moved equation has unsupported operands")
+    coefficient, constant = (_fraction(part) for part in match.groups())
+    result = Fraction(constant, coefficient)
+    if result != value:
+        raise ValueError("Linear delegated division disagrees with the source answer")
+    call = ArithmeticCall("divide", constant, coefficient, result, "/")
+    output = []
+    for line in forward.splitlines():
+        if line.startswith(("step:divide both sides by ", "divide both sides by ")):
+            output.append(call.render())
+        else:
+            output.append(line)
+    if not any(line.startswith("call:divide(") for line in output):
+        raise ValueError("Linear trace is missing its delegated division")
+    return "\n".join(output)
+
+
 def _verify_decimal_scale(a: Fraction, b: Fraction, result: Fraction, rows: list[str]) -> list[str]:
     scale = max(_scale(a), _scale(b))
     scale_lines = [line for line in rows if line.startswith("scale:")]
@@ -995,6 +1141,15 @@ def verify_annotation(row: dict[str, str], annotation: dict[str, object] | str) 
         if isinstance(annotation, dict)
         else annotation
     )
+    if isinstance(annotation, dict) and annotation.get("trace_version") == "reasoning_v3":
+        expected = annotate_row(
+            row,
+            max_tokens=int(annotation.get("annotation_max_tokens", 512)),
+            protocol="reasoning_v3",
+        )
+        if scratchpad != expected["scratchpad"]:
+            raise ValueError("reasoning_v3 calls are malformed, out of order, or inconsistent")
+        return
     if isinstance(annotation, dict) and annotation.get("trace_version") == "reasoning_v2":
         _verify_forward_annotation(row, scratchpad)
         return

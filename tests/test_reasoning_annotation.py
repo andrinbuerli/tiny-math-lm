@@ -15,6 +15,7 @@ from tinymath.data.reasoning import (
     _source_expression,
     annotate_row,
     default_sequence_length,
+    generate_subtask_rows,
     reduce_to_budget,
     verify_annotation,
 )
@@ -237,6 +238,72 @@ def test_reasoning_v2_linear_trace_keeps_division_and_verification_without_answe
     assert "o=9" not in trace
     assert "-189" in trace
     verify_annotation(source, annotation)
+
+
+@pytest.mark.parametrize(
+    ("question", "answer", "module", "call"),
+    [
+        ("Calculate 25 + 32.", "57", "arithmetic__add_or_sub", "call:add(25,32) -> 57"),
+        ("Calculate 25 - 32.", "-7", "arithmetic__add_or_sub", "call:subtract(25,32) -> -7"),
+        ("Calculate -7 * 8.", "-56", "arithmetic__mul", "call:multiply(-7,8) -> -56"),
+        ("Calculate -189 / -21.", "9", "arithmetic__div", "call:divide(-189,-21) -> 9"),
+        ("Calculate 2869/29 + -99.", "-2/29", "arithmetic__mixed", "call:add(2869/29,-99) -> -2/29"),
+    ],
+)
+def test_reasoning_v3_emits_verified_visible_calls_and_separate_subtasks(
+    question: str, answer: str, module: str, call: str
+) -> None:
+    source = row(question, answer, module)
+    annotation = annotate_row(source, protocol="reasoning_v3")
+    assert annotation["trace_version"] == "reasoning_v3"
+    assert call in annotation["scratchpad"]
+    verify_annotation(source, annotation)
+    subtasks = generate_subtask_rows(
+        source, annotation, source_split="sft_train", parent_row_index=7
+    )
+    assert len(subtasks) == annotation["scratchpad"].count("call:")
+    assert subtasks[-1]["answer"] == answer
+    assert subtasks[0]["trace_version"] == "reasoning_v2"
+    assert subtasks[0]["source_split"] == "sft_train"
+    assert subtasks[0]["parent_row_index"] == 7
+    assert subtasks[0]["call_index"] == 0
+    assert "call:" not in subtasks[0]["scratchpad"]
+    verify_annotation(
+        {key: subtasks[0][key] for key in ("question", "answer", "module", "category")},
+        subtasks[0],
+    )
+
+
+def test_reasoning_v3_nested_calls_are_postorder_and_fraction_tasks_are_parenthesized():
+    source = row(
+        "Calculate (47 - (-83 - -142))*(-1)/(2/(-4)).", "-24", "arithmetic__mixed"
+    )
+    annotation = annotate_row(source, protocol="reasoning_v3")
+    calls = [line for line in annotation["scratchpad"].splitlines() if line.startswith("call:")]
+    assert calls == [
+        "call:subtract(-83,-142) -> 59",
+        "call:subtract(47,59) -> -12",
+        "call:multiply(-12,-1) -> 12",
+        "call:divide(2,-4) -> -1/2",
+        "call:divide(12,-1/2) -> -24",
+    ]
+    subtasks = generate_subtask_rows(source, annotation, source_split="sft_train", parent_row_index=0)
+    assert subtasks[-1]["question"] == "Calculate 12 / (-1/2)."
+    assert subtasks[-1]["answer"] == "-24"
+
+
+def test_reasoning_v3_algebra_delegates_final_division_and_verifier_rejects_edits():
+    source = row("Solve -21*o + 32 + 120 = -37 for o.", "9", "algebra__linear_1d")
+    annotation = annotate_row(source, protocol="reasoning_v3")
+    trace = annotation["scratchpad"]
+    assert "step:collect:" in trace
+    assert "move:-21o=-189" in trace
+    assert "call:divide(-189,-21) -> 9" in trace
+    assert "o=9" not in trace
+    verify_annotation(source, annotation)
+    corrupted = dict(annotation, scratchpad=trace.replace("-> 9", "-> 8"))
+    with pytest.raises(ValueError, match="reasoning_v3 calls"):
+        verify_annotation(source, corrupted)
 
 
 def test_trace_verifier_rejects_corrupted_digit_and_substitution_steps() -> None:

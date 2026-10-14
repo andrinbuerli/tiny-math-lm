@@ -36,6 +36,18 @@ uv run python scripts/annotate_reasoning.py --config-name exp12_reasoning_forwar
 
 This creates a new Experiment 12 bundle and a W&B-tracked annotation run. It does not start training or evaluation. Do not point `output_bundle` at an existing Experiment 11 path.
 
+## Experiment 13 reasoning_v3 arithmetic subtasks
+
+Experiment 13 adds visible `call:add(a,b) -> result`, `call:subtract(...)`, `call:multiply(...)` and `call:divide(...)` lines to parent scratchpads. Calls use exact integer or reduced-fraction operands and results. Each call also creates a separate ordinary math sample with a verified `reasoning_v2` scratchpad; generated subtask rows live under `subtasks/<split>.jsonl` and record their parent split, row index and call index. Training examples whose canonical arithmetic task also occurs in a held-out pool are marked ineligible.
+
+Generate the separate bundle with:
+
+```bash
+uv run python scripts/annotate_reasoning.py --config-name reasoning_v3
+```
+
+The output goes to `data/processed/exp13_reasoning_v3_arithmetic_subtasks-seed18`. This command is a W&B-tracked data annotation run; it does not train a model or implement inference dispatch. V3's `<scp>` delimiters are ordinary character tokens, while existing v1/v2 tokenizer files retain their reserved markers.
+
 ## Train and evaluate
 
 ```bash

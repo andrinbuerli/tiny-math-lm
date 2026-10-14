@@ -20,11 +20,13 @@ class CharacterTokenizer:
     """Map each ordinary Unicode code point to one stable token ID."""
 
     def __init__(self, characters: Iterable[str], *, protocol: str = "answer_only"):
-        if protocol not in {"answer_only", "reasoning_v1", "reasoning_v2"}:
+        if protocol not in {"answer_only", "reasoning_v1", "reasoning_v2", "reasoning_v3"}:
             raise ValueError(f"Unsupported tokenizer protocol: {protocol}")
         self.protocol = protocol
         self.special_tokens = (
-            LEGACY_SPECIAL_TOKENS if protocol == "answer_only" else REASONING_SPECIAL_TOKENS
+            REASONING_SPECIAL_TOKENS
+            if protocol in {"reasoning_v1", "reasoning_v2"}
+            else LEGACY_SPECIAL_TOKENS
         )
         unique = set(characters)
         if any(len(character) != 1 for character in unique):
@@ -99,6 +101,13 @@ class CharacterTokenizer:
             if scratchpad is not None:
                 raise ValueError("Legacy answer-only completions cannot contain scratchpads")
             return self.encode(answer, add_eos=True)
+        if self.protocol == "reasoning_v3":
+            if not answer.strip() or not scratchpad or not scratchpad.strip():
+                raise ValueError("Reasoning completions require a nonempty scratchpad and answer")
+            return self.encode(
+                "<scp>\n" + scratchpad + "\n</scp>\nA: " + answer,
+                add_eos=True,
+            )
         if not answer.strip() or not scratchpad or not scratchpad.strip():
             raise ValueError("Reasoning completions require a nonempty scratchpad and answer")
         return (
@@ -144,6 +153,9 @@ class CharacterTokenizer:
         destination.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "version": (
+                4
+                if self.protocol == "reasoning_v3"
+                else
                 3
                 if self.protocol == "reasoning_v2"
                 else TOKENIZER_VERSION
@@ -165,8 +177,12 @@ class CharacterTokenizer:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
         version = payload.get("version")
         protocol = "answer_only" if version == 1 else payload.get("protocol")
-        expected = LEGACY_SPECIAL_TOKENS if protocol == "answer_only" else REASONING_SPECIAL_TOKENS
-        if version not in (1, TOKENIZER_VERSION, 3) or payload.get("special_tokens") != list(expected):
+        expected = (
+            REASONING_SPECIAL_TOKENS
+            if protocol in {"reasoning_v1", "reasoning_v2"}
+            else LEGACY_SPECIAL_TOKENS
+        )
+        if version not in (1, TOKENIZER_VERSION, 3, 4) or payload.get("special_tokens") != list(expected):
             raise ValueError("Unsupported tokenizer format")
         tokenizer = cls(payload["id_to_token"][len(expected) :], protocol=protocol)
         if tokenizer.id_to_token != payload["id_to_token"] or tokenizer.sha256 != payload["sha256"]:

@@ -18,6 +18,7 @@ from tinymath.config import workspace_path
 from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.data.prompts import format_prompt
 from tinymath.data.reasoning import annotate_row, distribution, verify_annotation
+from tinymath.data.reasoning_v3_bundle import build_reasoning_v3_bundle
 from tinymath.tracking.wandb import finish_wandb, initialize_wandb
 
 LOGGER = logging.getLogger(__name__)
@@ -68,6 +69,28 @@ def main(config: DictConfig) -> None:
     )
     run = initialize_wandb(config, run_dir, job_type="data-annotation")
     try:
+        if str(config.protocol) == "reasoning_v3":
+            result = build_reasoning_v3_bundle(
+                source, destination, max_tokens=int(config.max_tokens)
+            )
+            run.config.update({
+                "source_manifest_sha256": result["source_manifest_sha256"],
+                "annotation_sha256": result["annotation"]["annotation_sha256"],
+                "annotation_output_bundle": str(destination),
+                "split_counts": {
+                    name: value["examples"] for name, value in result["splits"].items()
+                },
+                "subtask_split_counts": {
+                    name: value["examples"] for name, value in result["subtask_splits"].items()
+                },
+            }, allow_val_change=True)
+            run.log({
+                "annotation/parent_rows": sum(v["examples"] for v in result["splits"].values()),
+                "annotation/subtask_rows": sum(v["examples"] for v in result["subtask_splits"].values()),
+                "annotation/eligible_subtask_tasks": result["subtask_training_eligible"],
+            })
+            LOGGER.info("Wrote reasoning_v3 bundle to %s", destination)
+            return
         # Fit on SFT training questions, answers and complete reference traces,
         # plus the fixed trace grammar. Held-out scratchpads are only checked
         # against this frozen vocabulary in the second pass.

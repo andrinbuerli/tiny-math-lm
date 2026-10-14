@@ -58,3 +58,21 @@ def test_count_example_tokens_answer_only_has_no_scratchpad_segment():
     assert counts["prompt"] == len(tokenizer.encode(format_prompt(row["question"]), add_bos=True))
     assert counts["scratchpad"] == 0
     assert counts["answer"] == len(tokenizer.encode("4")) + 1
+
+
+def test_count_example_tokens_reasoning_v3_counts_character_encoded_markers():
+    row = {
+        "question": "Calculate 25 + 32.",
+        "scratchpad": "step:evaluate arithmetic operations in expression order\ncall:add(25,32) -> 57",
+        "answer": "57",
+    }
+    tokenizer = CharacterTokenizer.from_texts(
+        [format_prompt(row["question"], protocol="reasoning_v3"), row["scratchpad"],
+         "<scp>\n</scp>\nA: 57"],
+        protocol="reasoning_v3",
+    )
+    counts = count_example_tokens(row, tokenizer)
+    assert counts["scratchpad"] == len(
+        tokenizer.encode("<scp>\n" + row["scratchpad"] + "\n</scp>")
+    )
+    assert counts["answer"] == len(tokenizer.encode("\nA: 57")) + 1

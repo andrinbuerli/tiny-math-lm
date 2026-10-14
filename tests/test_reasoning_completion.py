@@ -61,3 +61,22 @@ def test_reasoning_v2_completion_keeps_answer_after_forward_trace():
         parse_reasoning_completion(
             tokenizer.encode_completion("5", scratchpad="step:+(2,3)\nA: 5"), tokenizer
         )
+
+
+def test_reasoning_v3_encodes_markers_as_characters_and_parses_visible_call_result(workspace_tmpdir):
+    trace = "step:evaluate arithmetic operations in expression order\ncall:add(25,32) -> 57"
+    tokenizer = CharacterTokenizer.from_texts(
+        [trace, "<scp>\n</scp>\nA: 57", "Q: Calculate 25 + 32."], protocol="reasoning_v3"
+    )
+    ids = tokenizer.encode_completion("57", scratchpad=trace)
+    assert tokenizer.id_to_token[:4] == ["<PAD>", "<BOS>", "<EOS>", "<UNK>"]
+    assert all(len(token) == 1 for token in tokenizer.id_to_token[4:])
+    parsed = parse_reasoning_completion(ids, tokenizer)
+    assert parsed.scratchpad == trace
+    assert parsed.answer == "57"
+    path = workspace_tmpdir / "reasoning-v3-tokenizer.json"
+    tokenizer.save(path)
+    restored = CharacterTokenizer.load(path)
+    assert restored.protocol == "reasoning_v3"
+    assert restored.special_tokens == ("<PAD>", "<BOS>", "<EOS>", "<UNK>")
+    assert restored.sha256 == tokenizer.sha256

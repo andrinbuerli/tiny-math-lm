@@ -45,7 +45,10 @@ def count_example_tokens(
     )
     answer = row.get("answer", "")
     scratchpad = row.get("scratchpad", "")
-    if tokenizer.protocol in {"reasoning_v1", "reasoning_v2"}:
+    if tokenizer.protocol == "reasoning_v3":
+        scratchpad_tokens = len(tokenizer.encode("<scp>\n" + scratchpad + "\n</scp>")) if scratchpad else 0
+        answer_tokens = len(tokenizer.encode("\nA: " + answer)) + 1
+    elif tokenizer.protocol in {"reasoning_v1", "reasoning_v2"}:
         scratchpad_tokens = (
             len(tokenizer.encode("\n" + scratchpad + "\n")) + 2 if scratchpad else 0
         )
