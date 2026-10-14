@@ -14,8 +14,11 @@ uv run python scripts/prepare_data.py experiment=01_smoke
 The default W&B mode is `online`. The tracking helper reads `WANDB_API_KEY` from the environment or `/workspace/.env` at runtime. It also accepts the legacy `WANDBKEY` assignment found in the supplied workspace file. To deliberately create a local, unsynced run when authentication or network access is unavailable, pass `tracking.mode=offline`; every such run records `tracking/sync_status=unsynced`. Its local W&B directory is printed at the end and can later be uploaded with:
 
 ```bash
-uv run wandb sync /workspace/runs/<experiment>/<model>/<stage>/seed<seed>/wandb/offline-run-<timestamp>-<id>
+uv run wandb sync --yes --entity <wandb-entity> --project <wandb-project> \
+  /workspace/runs/<experiment>/<model>/<stage>/seed<seed>/wandb/offline-run-<timestamp>-<id>
 ```
+
+The W&B CLI does not load `/workspace/.env` itself. Before running this command, load its key into the `WANDB_API_KEY` environment variable with `python-dotenv` (the experiment tracking helper does this automatically), without printing the value or passing it as a command-line argument. Use the entity from the authenticated W&B account and the project recorded in the run's `wandb_run.json`. Add `--include-synced` when retrying a run that the CLI has already marked as synced locally.
 
 The data config pins `d0rj/mathematics_dataset` to revision `d9f78d0665b3a13dad21c6830b9b358c8a25ae74`, matching the prepared bundle used by the current 100k runs. To reproduce against a different revision, set `data.revision=<commit-sha>` explicitly.
 

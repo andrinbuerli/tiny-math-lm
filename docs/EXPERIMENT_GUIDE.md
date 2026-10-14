@@ -14,7 +14,13 @@ Experimental entry points compose Hydra YAML configurations. W&B tracking is onl
 uv run python scripts/train_sft.py model=1m trainer=sft experiment=02_pilot seed=17 tracking.project=tinymath-rl tracking.group=pilot-seed17 tracking.name=pilot-1m-seed17 tracking.mode=online
 ```
 
-Use `tracking.mode=offline` only when online tracking cannot connect; offline runs are marked unsynced and can be uploaded later with `uv run wandb sync <run-directory>`.
+Use `tracking.mode=offline` only when online tracking cannot connect; offline runs are marked unsynced. To upload one later, load its W&B API key into `WANDB_API_KEY` at runtime with `python-dotenv` (the W&B CLI does not read `/workspace/.env`), then run:
+
+```bash
+uv run wandb sync --yes --entity <wandb-entity> --project <wandb-project> <offline-run-directory>
+```
+
+Use the authenticated account's entity and the project recorded in the run's `wandb_run.json`. Do not print the key or pass it as a command-line argument. Add `--include-synced` when retrying a run that the CLI has already marked synced locally.
 
 ## Prepare data and run experiments
 
