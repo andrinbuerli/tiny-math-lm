@@ -124,6 +124,54 @@ def test_reasoning_evaluation_resumes_and_keeps_structural_predictions(workspace
     assert json.loads((output / "results.json").read_text())["protocol"] == "reasoning_v1"
 
 
+def test_evaluation_batches_equal_length_prompts(workspace_tmpdir, monkeypatch):
+    bundle, checkpoint, tokenizer = _reasoning_fixture(workspace_tmpdir)
+    seen_batch_sizes = []
+
+    def complete(model, prompts, **kwargs):
+        seen_batch_sizes.append(prompts.shape[0])
+        completions = [
+            tokenizer.encode_completion("2", scratchpad="+(1,1)\n1,1,0:2,0"),
+            tokenizer.encode_completion("4", scratchpad="+(2,2)\n2,2,0:4,0"),
+        ]
+        assert len({len(completion) for completion in completions}) == 1
+        return torch.tensor(
+            [prompt.tolist() + completion for prompt, completion in zip(prompts, completions)],
+            dtype=torch.long,
+            device=prompts.device,
+        )
+
+    monkeypatch.setattr(TinyMathGPT, "generate", complete)
+    result = evaluate_checkpoint(
+        checkpoint_path=checkpoint,
+        bundle_dir=bundle,
+        output_dir=workspace_tmpdir / "batched-evaluation",
+        split_names=["test"],
+        max_new_tokens=2,
+        batch_size=2,
+    )
+
+    assert seen_batch_sizes == [2]
+    assert result["splits"]["test"]["scored_examples"] == 2
+    assert result["splits"]["test"]["accuracy"] == 1.0
+
+
+def test_greedy_generation_is_invariant_to_equal_length_batching():
+    torch.manual_seed(18)
+    model = TinyMathGPT(
+        GPTConfig(vocab_size=16, context_length=16, n_layers=1, n_heads=2, d_model=16, d_ff=32)
+    ).eval()
+    prompts = torch.tensor([[1, 4, 5], [1, 6, 7]], dtype=torch.long)
+
+    batched = model.generate(prompts, max_new_tokens=5, temperature=0.0)
+    separate = torch.cat(
+        [model.generate(prompt.unsqueeze(0), max_new_tokens=5, temperature=0.0) for prompt in prompts],
+        dim=0,
+    )
+
+    assert torch.equal(batched, separate)
+
+
 def test_reasoning_progress_refuses_changed_split_identity(workspace_tmpdir, monkeypatch):
     bundle, checkpoint, tokenizer = _reasoning_fixture(workspace_tmpdir, questions=("1 + 1",))
     output = workspace_tmpdir / "evaluation"

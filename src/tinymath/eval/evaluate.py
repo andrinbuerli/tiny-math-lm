@@ -205,9 +205,10 @@ def evaluate_checkpoint(
     batch_size: int = 1,
     max_examples_per_split: int | None = None,
 ) -> dict[str, Any]:
-    del batch_size  # autoregressive generation uses one unpadded prompt at a time
     if max_new_tokens < 1:
         raise ValueError("max_new_tokens must be positive")
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
     if not greedy and temperature <= 0:
         raise ValueError("Sampled evaluation requires a positive temperature")
     checkpoint_path = Path(checkpoint_path)
@@ -321,6 +322,7 @@ def evaluate_checkpoint(
     for split_name in split_names:
         examples = split_rows[split_name]
         completed = {int(record["row_index"]) for record in scored[split_name]}
+        by_prompt_length: dict[int, list[tuple[int, dict[str, str], list[int]]]] = {}
         for row_index, row in enumerate(examples):
             if row_index in completed:
                 continue
@@ -330,60 +332,78 @@ def evaluate_checkpoint(
             available = model_config.context_length - len(prompt_ids)
             if available < 1:
                 raise ValueError("Evaluation prompt leaves no room for generated output")
+            by_prompt_length.setdefault(len(prompt_ids), []).append(
+                (row_index, row, prompt_ids)
+            )
+
+        # The causal model has no padding mask, so only batch prompts with equal
+        # lengths. This preserves each prompt's token positions and generation cap.
+        for prompt_length, pending in sorted(by_prompt_length.items()):
             generation_cap = (
-                available if tokenizer.protocol == "reasoning_v1"
-                else min(max_new_tokens, available)
+                model_config.context_length - prompt_length
+                if tokenizer.protocol == "reasoning_v1"
+                else min(max_new_tokens, model_config.context_length - prompt_length)
             )
-            prompt = torch.tensor([prompt_ids], dtype=torch.long, device=device)
-            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_bf16):
-                generated = model.generate(
-                    prompt,
-                    max_new_tokens=generation_cap,
-                    temperature=0.0 if greedy else temperature,
-                    eos_id=tokenizer.eos_id,
-                )[0, len(prompt_ids) :].tolist()
-            saw_eos = tokenizer.eos_id in generated
-            if saw_eos:
-                generated = generated[: generated.index(tokenizer.eos_id) + 1]
-            capped = not saw_eos and len(generated) >= generation_cap
-            prediction = tokenizer.decode(generated, skip_special=True).strip()
-            scratchpad = ""
-            trace_structure_valid: bool | None = None
-            trace_reference_exact_match: bool | None = None
-            if tokenizer.protocol == "reasoning_v1":
-                try:
-                    parsed = parse_reasoning_completion(generated, tokenizer)
-                    scratchpad = parsed.scratchpad
-                    trace_structure_valid = True
-                    if row.get("scratchpad") is not None:
-                        trace_reference_exact_match = scratchpad == row["scratchpad"]
-                    correct, valid = verify_answer(
-                        parsed.answer, row["answer"], question=row["question"]
+            for offset in range(0, len(pending), batch_size):
+                batch = pending[offset : offset + batch_size]
+                prompts = torch.tensor(
+                    [prompt_ids for _, _, prompt_ids in batch],
+                    dtype=torch.long,
+                    device=device,
+                )
+                with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_bf16):
+                    outputs = model.generate(
+                        prompts,
+                        max_new_tokens=generation_cap,
+                        temperature=0.0 if greedy else temperature,
+                        eos_id=tokenizer.eos_id,
                     )
-                except ValueError:
-                    trace_structure_valid = False
-                    if row.get("scratchpad") is not None:
-                        trace_reference_exact_match = False
-                    correct, valid = False, False
-            else:
-                correct, valid = verify_answer(prediction, row["answer"], question=row["question"])
-            if capped:
-                correct, valid = False, False
-            digit_width, operator_count = question_features(row["question"])
-            scored[split_name].append(
-                {
-                    "row_index": row_index,
-                    "module": row["module"], "question": row["question"],
-                    "target": row["answer"], "prediction": prediction,
-                    "scratchpad": scratchpad, "correct": int(correct),
-                    "format_valid": int(valid),
-                    "trace_structure_valid": trace_structure_valid,
-                    "trace_reference_exact_match": trace_reference_exact_match,
-                    "capped": int(capped),
-                    "output_tokens": len(generated), "digit_width": digit_width,
-                    "operator_count": operator_count,
-                }
-            )
-            scored[split_name].sort(key=lambda item: item["row_index"])
-            persist()
+                for batch_index, (row_index, row, _) in enumerate(batch):
+                    generated = outputs[batch_index, prompt_length:].tolist()
+                    saw_eos = tokenizer.eos_id in generated
+                    if saw_eos:
+                        generated = generated[: generated.index(tokenizer.eos_id) + 1]
+                    capped = not saw_eos and len(generated) >= generation_cap
+                    prediction = tokenizer.decode(generated, skip_special=True).strip()
+                    scratchpad = ""
+                    trace_structure_valid: bool | None = None
+                    trace_reference_exact_match: bool | None = None
+                    if tokenizer.protocol == "reasoning_v1":
+                        try:
+                            parsed = parse_reasoning_completion(generated, tokenizer)
+                            scratchpad = parsed.scratchpad
+                            trace_structure_valid = True
+                            if row.get("scratchpad") is not None:
+                                trace_reference_exact_match = scratchpad == row["scratchpad"]
+                            correct, valid = verify_answer(
+                                parsed.answer, row["answer"], question=row["question"]
+                            )
+                        except ValueError:
+                            trace_structure_valid = False
+                            if row.get("scratchpad") is not None:
+                                trace_reference_exact_match = False
+                            correct, valid = False, False
+                    else:
+                        correct, valid = verify_answer(
+                            prediction, row["answer"], question=row["question"]
+                        )
+                    if capped:
+                        correct, valid = False, False
+                    digit_width, operator_count = question_features(row["question"])
+                    scored[split_name].append(
+                        {
+                            "row_index": row_index,
+                            "module": row["module"], "question": row["question"],
+                            "target": row["answer"], "prediction": prediction,
+                            "scratchpad": scratchpad, "correct": int(correct),
+                            "format_valid": int(valid),
+                            "trace_structure_valid": trace_structure_valid,
+                            "trace_reference_exact_match": trace_reference_exact_match,
+                            "capped": int(capped),
+                            "output_tokens": len(generated), "digit_width": digit_width,
+                            "operator_count": operator_count,
+                        }
+                    )
+                scored[split_name].sort(key=lambda item: item["row_index"])
+                persist()
     return persist()
