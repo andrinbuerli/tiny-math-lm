@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from pathlib import Path
 
 from hydra import compose, initialize_config_dir
 
@@ -38,7 +39,7 @@ def test_budget_rows_redistribute_quotas_when_one_module_is_small():
 
 
 def test_smoke_and_pilot_run_paths_are_isolated_from_main():
-    with initialize_config_dir(version_base=None, config_dir="/workspace/configs"):
+    with initialize_config_dir(version_base=None, config_dir=str(Path(__file__).resolve().parents[1] / "configs")):
         main = compose(
             config_name="config", overrides=["experiment=11_reasoning_500k_100k"]
         )

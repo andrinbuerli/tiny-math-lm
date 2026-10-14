@@ -5,14 +5,14 @@ from pathlib import Path
 
 from hydra import compose, initialize_config_dir
 
-spec = importlib.util.spec_from_file_location("run_all", Path("/workspace/scripts/run_all.py"))
+spec = importlib.util.spec_from_file_location("run_all", Path(__file__).resolve().parents[1] / "scripts" / "run_all.py")
 assert spec is not None and spec.loader is not None
 run_all = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(run_all)
 
 
 def test_orchestrator_emits_hydra_valid_mapping_overrides_and_pilot_budgets():
-    with initialize_config_dir(version_base=None, config_dir="/workspace/configs"):
+    with initialize_config_dir(version_base=None, config_dir=str(Path(__file__).resolve().parents[1] / "configs")):
         config = compose(
             config_name="config",
             overrides=[

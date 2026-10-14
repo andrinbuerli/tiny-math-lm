@@ -146,3 +146,28 @@ def test_fractional_groups_and_action_only_loss():
     assert torch.isfinite(metrics.loss)
     assert torch.isfinite(current.grad).all()
     assert (current.grad[~mask] == 0).all()
+
+
+def test_real_model_cached_logs_and_conditioning_across_inserted_result(monkeypatch):
+    text = "<scp>\nstep:x\ncall:add(1,2) -> 3\n</scp>\nA: 3"
+    tokenizer = CharacterTokenizer.from_texts([text + "4"], protocol="reasoning_v3")
+    model = TinyMathGPT(GPTConfig(vocab_size=tokenizer.vocab_size, context_length=128,
+                                n_layers=1, n_heads=1, d_model=16, d_ff=32))
+    model.eval()
+    result_start = text.index(" -> ") + 4
+    policy_ids = tokenizer.encode(text[:result_start] + text[result_start + 1:], add_eos=True)
+    actions = iter(policy_ids)
+    def scripted_sample(probabilities, num_samples):
+        return torch.tensor([[next(actions)]], device=probabilities.device)
+    monkeypatch.setattr(torch, "multinomial", scripted_sample)
+    prompt = torch.tensor([[tokenizer.bos_id]])
+    result = generate_rollouts(model, prompt, max_completion_tokens=100, temperature=0.8,
+                               eos_id=tokenizer.eos_id, pad_id=tokenizer.pad_id, tokenizer=tokenizer,
+                               rollout=RolloutConfig(executor="exact"))
+    logs = completion_log_probs(model, prompt, result.completion_ids, temperature=0.8)
+    assert torch.allclose(logs[result.loss_mask], result.old_log_probs[result.loss_mask], atol=1e-6)
+    assert not result.loss_mask[0, 0, result_start]
+    changed = result.completion_ids.clone()
+    changed[0, 0, result_start] = tokenizer.token_to_id["4"]
+    changed_logs = completion_log_probs(model, prompt, changed, temperature=0.8)
+    assert not torch.allclose(logs[0, 0, result_start + 1], changed_logs[0, 0, result_start + 1], atol=1e-8)

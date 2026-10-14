@@ -90,6 +90,14 @@ def _compatible_with_runtime_extension(
     normalized = copy.deepcopy(current)
     saved_normalized = copy.deepcopy(saved)
 
+    # The default rollout group is inert for legacy non-v3 experiments.
+    if ("rollout" not in saved_normalized
+            and normalized.get("experiment", {}).get("protocol") != "reasoning_v3"):
+        from tinymath.generation import RolloutConfig
+
+        if normalized.get("rollout") == RolloutConfig().identity():
+            normalized.pop("rollout")
+
     # Tracking mode changes do not alter the experiment or its checkpoint.
     # This permits an exact resume to move an offline run online (or vice
     # versa) while keeping the same local W&B identity and scientific config.
@@ -242,7 +250,7 @@ def initialize_wandb(
             dir=str(run_path),
             job_type=job_type,
             config=metadata,
-            settings=wandb.Settings(code_dir="/workspace"),
+            settings=wandb.Settings(code_dir=str(WORKSPACE)),
         )
         _ACTIVE_STATE_PATHS[str(getattr(run, "id", run_id))] = state_path
         state["url"] = getattr(run, "url", None)

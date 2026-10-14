@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from hydra import compose, initialize_config_dir
 
 from tinymath.tracking.naming import build_run_naming
@@ -119,7 +121,7 @@ def test_legacy_experiment_names_are_returned_unchanged():
 
 
 def test_exp11_hydra_preset_resolves_identity_bundle_seed_and_context():
-    with initialize_config_dir(version_base=None, config_dir="/workspace/configs"):
+    with initialize_config_dir(version_base=None, config_dir=str(Path(__file__).resolve().parents[1] / "configs")):
         config = compose(config_name="config", overrides=["experiment=11_reasoning_500k_100k"])
 
     assert config.experiment.number == 11
@@ -139,7 +141,7 @@ def test_exp11_hydra_preset_resolves_identity_bundle_seed_and_context():
 
 def test_annotation_hydra_config_uses_derived_bundle_and_canonical_wandb_identity():
     with initialize_config_dir(
-        version_base=None, config_dir="/workspace/configs/annotation"
+        version_base=None, config_dir=str(Path(__file__).resolve().parents[1] / "configs" / "annotation")
     ):
         config = compose(config_name="default")
 

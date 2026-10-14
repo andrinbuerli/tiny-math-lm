@@ -26,7 +26,7 @@ from tinymath.tracking.provenance import read_wandb_run_id
 
 
 def test_hydra_composes_all_experiment_groups_and_overrides():
-    with initialize_config_dir(version_base="1.3", config_dir="/workspace/configs"):
+    with initialize_config_dir(version_base="1.3", config_dir=str(Path(__file__).resolve().parents[1] / "configs")):
         config = compose(
             config_name="config",
             overrides=["model=10m", "experiment=02_pilot", "tracking.project=unit-test", "seed=23"],
@@ -54,7 +54,7 @@ def test_hydra_composes_all_experiment_groups_and_overrides():
 
 
 def test_parallel_gpu_admission_requires_utilization_and_vram_headroom():
-    with initialize_config_dir(version_base="1.3", config_dir="/workspace/configs"):
+    with initialize_config_dir(version_base="1.3", config_dir=str(Path(__file__).resolve().parents[1] / "configs")):
         config = compose(config_name="config")
     script = Path(__file__).parents[1] / "scripts" / "run_all.py"
     spec = spec_from_file_location("tinymath_run_all_gpu", script)
@@ -68,7 +68,7 @@ def test_parallel_gpu_admission_requires_utilization_and_vram_headroom():
 
 
 def test_wandb_go_service_thread_limit_respects_runtime_and_environment(monkeypatch):
-    with initialize_config_dir(version_base="1.3", config_dir="/workspace/configs"):
+    with initialize_config_dir(version_base="1.3", config_dir=str(Path(__file__).resolve().parents[1] / "configs")):
         config = compose(config_name="config", overrides=["runtime.wandb_service_gomaxprocs=3"])
 
     monkeypatch.delenv("GOMAXPROCS", raising=False)
@@ -125,7 +125,7 @@ def test_resume_allows_reasoning_generation_ceiling_to_match_context():
 
 def test_wandb_entity_defaults_to_configured_team(monkeypatch):
     monkeypatch.delenv("WANDB_ENTITY", raising=False)
-    with initialize_config_dir(version_base="1.3", config_dir="/workspace/configs"):
+    with initialize_config_dir(version_base="1.3", config_dir=str(Path(__file__).resolve().parents[1] / "configs")):
         config = compose(
             config_name="config",
             overrides=["experiment=11_reasoning_500k_100k", "model=1m"],
@@ -134,7 +134,7 @@ def test_wandb_entity_defaults_to_configured_team(monkeypatch):
 
 
 def test_continued_sft_config_approximately_matches_grpo_compute():
-    with initialize_config_dir(version_base="1.3", config_dir="/workspace/configs"):
+    with initialize_config_dir(version_base="1.3", config_dir=str(Path(__file__).resolve().parents[1] / "configs")):
         config = compose(
             config_name="config",
             overrides=["trainer=continued_sft", "experiment=10_restarted_100k_greedy"],
@@ -164,7 +164,7 @@ def test_experiment_presets_are_contiguously_numbered_and_documented():
 
 
 def test_resolved_config_is_sanitized_and_saved(workspace_tmpdir):
-    with initialize_config_dir(version_base="1.3", config_dir="/workspace/configs"):
+    with initialize_config_dir(version_base="1.3", config_dir=str(Path(__file__).resolve().parents[1] / "configs")):
         config = compose(config_name="config", overrides=["+tracking.api_key=do-not-write"])
     values = sanitized_config(config)
     assert values["tracking"]["api_key"] == "<redacted>"
@@ -247,7 +247,7 @@ def test_wandb_offline_initialization_reuses_id(workspace_tmpdir, monkeypatch):
     )
     monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
     monkeypatch.setattr(tracking, "_load_workspace_credentials", lambda: None)
-    with initialize_config_dir(version_base="1.3", config_dir="/workspace/configs"):
+    with initialize_config_dir(version_base="1.3", config_dir=str(Path(__file__).resolve().parents[1] / "configs")):
         config = compose(config_name="config", overrides=["tracking.mode=offline"])
     tracking.initialize_wandb(config, workspace_tmpdir, job_type="unit")
     first_id = captured[0]["id"]
@@ -289,7 +289,7 @@ def test_exp11_wandb_uses_canonical_group_and_training_name(workspace_tmpdir, mo
         ),
     )
     monkeypatch.setattr(tracking, "_load_workspace_credentials", lambda: None)
-    with initialize_config_dir(version_base="1.3", config_dir="/workspace/configs"):
+    with initialize_config_dir(version_base="1.3", config_dir=str(Path(__file__).resolve().parents[1] / "configs")):
         config = compose(
             config_name="config",
             overrides=["experiment=11_reasoning_500k_100k", "model=10m", "tracking.mode=offline"],
@@ -406,7 +406,7 @@ def test_wandb_initialization_failure_preserves_id_and_marks_failed(
     )
     monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
     monkeypatch.setattr(tracking, "_load_workspace_credentials", lambda: None)
-    with initialize_config_dir(version_base="1.3", config_dir="/workspace/configs"):
+    with initialize_config_dir(version_base="1.3", config_dir=str(Path(__file__).resolve().parents[1] / "configs")):
         config = compose(config_name="config", overrides=["tracking.mode=offline"])
 
     with pytest.raises(tracking.TrackingError, match="simulated service startup failure"):
@@ -438,7 +438,7 @@ def test_wandb_resume_accepts_safe_config_extensions(workspace_tmpdir, monkeypat
     )
     monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
     monkeypatch.setattr(tracking, "_load_workspace_credentials", lambda: None)
-    with initialize_config_dir(version_base="1.3", config_dir="/workspace/configs"):
+    with initialize_config_dir(version_base="1.3", config_dir=str(Path(__file__).resolve().parents[1] / "configs")):
         current = compose(
             config_name="config",
             overrides=[
@@ -464,7 +464,7 @@ def test_wandb_resume_accepts_safe_config_extensions(workspace_tmpdir, monkeypat
 def test_online_tracking_fails_clearly_without_credentials(workspace_tmpdir, monkeypatch):
     monkeypatch.delenv("WANDB_API_KEY", raising=False)
     monkeypatch.setattr(tracking, "_load_workspace_credentials", lambda: None)
-    with initialize_config_dir(version_base="1.3", config_dir="/workspace/configs"):
+    with initialize_config_dir(version_base="1.3", config_dir=str(Path(__file__).resolve().parents[1] / "configs")):
         config = compose(config_name="config")
     with pytest.raises(tracking.TrackingError, match="requires WANDB_API_KEY"):
         tracking.initialize_wandb(config, workspace_tmpdir, job_type="unit")
@@ -528,7 +528,7 @@ def test_wandb_starts_before_cuda_runtime_metadata(workspace_tmpdir, monkeypatch
         "runtime_info",
         lambda: events.append(("runtime_info",)) or types.SimpleNamespace(as_dict=lambda: {"cuda": True}),
     )
-    with initialize_config_dir(version_base="1.3", config_dir="/workspace/configs"):
+    with initialize_config_dir(version_base="1.3", config_dir=str(Path(__file__).resolve().parents[1] / "configs")):
         config = compose(config_name="config", overrides=["tracking.mode=offline"])
 
     run = tracking.initialize_wandb(config, workspace_tmpdir, job_type="unit")

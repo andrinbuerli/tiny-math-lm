@@ -21,7 +21,9 @@ from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.data.completions import parse_reasoning_completion
 from tinymath.data.prompts import format_prompt
 from tinymath.data.splits import question_features
+from tinymath.generation import RolloutConfig, generate_rollouts
 from tinymath.model.gpt import GPTConfig, TinyMathGPT
+from tinymath.rewards.reasoning import score_v3
 from tinymath.rewards.verify import verify_answer
 
 
@@ -94,6 +96,8 @@ def _atomic_predictions(path: Path, records: list[dict[str, Any]]) -> None:
         "module", "question", "target", "prediction", "scratchpad", "correct",
         "format_valid", "trace_structure_valid", "trace_reference_exact_match",
         "capped", "output_tokens", "digit_width", "operator_count",
+        "reward", "format_reward", "success_reward", "full_success", "answer_correct",
+        "call_count", "correct_calls", "policy_tokens", "executor_tokens", "termination_reason",
     ]
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
@@ -143,6 +147,17 @@ def _summarize(records: list[dict[str, Any]], prediction_path: str) -> dict[str,
         expression_counts[int(record["operator_count"])][1] += int(record["correct"])
     count = len(records)
     return {
+        "mean_reward": sum(float(row.get("reward", row["correct"])) for row in records) / count if count else None,
+        "full_success_rate": sum(int(row.get("full_success", row["correct"])) for row in records) / count if count else None,
+        "format_only_rate": sum(row.get("reward", 0) > 0 and not row.get("full_success", False) for row in records) / count if count else None,
+        "mean_format_reward": sum(row.get("format_reward", 0) for row in records) / count if count else None,
+        "mean_success_reward": sum(row.get("success_reward", 0) for row in records) / count if count else None,
+        "call_correctness": sum(row.get("correct_calls", 0) for row in records) / max(1, sum(row.get("call_count", 0) for row in records)),
+        "calls_per_completion": sum(row.get("call_count", 0) for row in records) / count if count else None,
+        "no_call_success_rate": sum(row.get("full_success", False) and row.get("call_count", 0) == 0 for row in records) / max(1, sum(row["format_valid"] and row.get("call_count", 0) == 0 for row in records)),
+        "executor_failures": sum(row.get("termination_reason", "eos") not in {"eos", "budget_exceeded"} for row in records),
+        "policy_tokens": sum(row.get("policy_tokens", row["output_tokens"]) for row in records),
+        "executor_tokens": sum(row.get("executor_tokens", 0) for row in records),
         "examples": count,
         "scored_examples": count,
         "accuracy": sum(int(row["correct"]) for row in records) / count if count else None,
@@ -204,6 +219,7 @@ def evaluate_checkpoint(
     temperature: float = 0.8,
     batch_size: int = 1,
     max_examples_per_split: int | None = None,
+    rollout: RolloutConfig | None = None,
 ) -> dict[str, Any]:
     if max_new_tokens < 1:
         raise ValueError("max_new_tokens must be positive")
@@ -211,12 +227,15 @@ def evaluate_checkpoint(
         raise ValueError("batch_size must be positive")
     if not greedy and temperature <= 0:
         raise ValueError("Sampled evaluation requires a positive temperature")
+    rollout_config = RolloutConfig.from_config(rollout)
     checkpoint_path = Path(checkpoint_path)
     bundle_dir = Path(bundle_dir)
     output_dir = Path(output_dir)
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     training_arm, source_sft_checkpoint = _checkpoint_provenance(checkpoint_path, checkpoint)
     tokenizer = CharacterTokenizer.load(bundle_dir / "char_tokenizer.json")
+    if rollout_config.executor == "exact" and tokenizer.protocol != "reasoning_v3":
+        raise ValueError("Exact execution requires reasoning_v3")
     model_config = GPTConfig.from_mapping(checkpoint["model_config"])
     manifest_path = bundle_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
@@ -251,7 +270,7 @@ def evaluate_checkpoint(
         if not source.is_file():
             raise FileNotFoundError(f"Evaluation split not found: {source}")
         split_digests[split_name] = sha256_file(source)
-        split_rows[split_name] = _balanced_limit(_read_jsonl(source), max_examples_per_split)
+        split_rows[split_name] = _balanced_limit([row for row in _read_jsonl(source) if not row.get("is_sub_task", False)], max_examples_per_split)
     identity = {
         "checkpoint_sha256": sha256_file(checkpoint_path),
         "bundle_sha256": bundle_digest,
@@ -268,12 +287,19 @@ def evaluate_checkpoint(
             "max_new_tokens": max_new_tokens,
         },
     }
+    if tokenizer.protocol == "reasoning_v3":
+        identity["rollout"] = rollout_config.identity()
+        identity["population"] = "parents_only"
     progress_path = output_dir / "progress.json"
     if progress_path.is_file():
         progress = json.loads(progress_path.read_text(encoding="utf-8"))
         if progress.get("identity") != identity:
             raise ValueError("Existing evaluation progress belongs to a different checkpoint, split, or protocol")
         scored: dict[str, list[dict[str, Any]]] = progress.get("scored", {})
+        if tokenizer.protocol == "reasoning_v3" and "torch_rng_state" in progress:
+            torch.set_rng_state(torch.tensor(progress["torch_rng_state"], dtype=torch.uint8))
+            if device.type == "cuda" and "cuda_rng_states" in progress:
+                torch.cuda.set_rng_state_all([torch.tensor(state, dtype=torch.uint8) for state in progress["cuda_rng_states"]])
     else:
         scored = {name: [] for name in split_names}
     for split_name in split_names:
@@ -302,6 +328,11 @@ def evaluate_checkpoint(
         },
     }
 
+    if tokenizer.protocol == "reasoning_v3":
+        summary_base["rollout"] = rollout_config.identity()
+        summary_base["assisted"] = rollout_config.executor == "exact"
+        summary_base["population"] = "parents_only"
+
     def persist() -> dict[str, Any]:
         partial_splits = {}
         for name in split_names:
@@ -313,6 +344,10 @@ def evaluate_checkpoint(
             "scored": scored,
             "splits": partial_splits,
         }
+        if tokenizer.protocol == "reasoning_v3":
+            payload["torch_rng_state"] = torch.get_rng_state().tolist()
+            if device.type == "cuda":
+                payload["cuda_rng_states"] = [state.tolist() for state in torch.cuda.get_rng_state_all()]
         _atomic_json(progress_path, payload)
         result = {**summary_base, "splits": partial_splits}
         _atomic_json(output_dir / "results.json", result)
@@ -352,14 +387,25 @@ def evaluate_checkpoint(
                     device=device,
                 )
                 with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_bf16):
-                    outputs = model.generate(
-                        prompts,
-                        max_new_tokens=generation_cap,
-                        temperature=0.0 if greedy else temperature,
-                        eos_id=tokenizer.eos_id,
-                    )
+                    v3_rollouts = None
+                    if tokenizer.protocol == "reasoning_v3":
+                        v3_rollouts = generate_rollouts(
+                            model, prompts, max_completion_tokens=generation_cap,
+                            temperature=0.0 if greedy else temperature,
+                            eos_id=tokenizer.eos_id, pad_id=tokenizer.pad_id,
+                            tokenizer=tokenizer, rollout=rollout_config,
+                        )
+                    else:
+                        outputs = model.generate(
+                            prompts, max_new_tokens=generation_cap,
+                            temperature=0.0 if greedy else temperature, eos_id=tokenizer.eos_id,
+                        )
                 for batch_index, (row_index, row, _) in enumerate(batch):
-                    generated = outputs[batch_index, prompt_length:].tolist()
+                    extra = {}
+                    if v3_rollouts is not None:
+                        generated = v3_rollouts.completion_ids[batch_index, 0][v3_rollouts.completion_mask[batch_index, 0]].tolist()
+                    else:
+                        generated = outputs[batch_index, prompt_length:].tolist()
                     saw_eos = tokenizer.eos_id in generated
                     if saw_eos:
                         generated = generated[: generated.index(tokenizer.eos_id) + 1]
@@ -368,7 +414,28 @@ def evaluate_checkpoint(
                     scratchpad = ""
                     trace_structure_valid: bool | None = None
                     trace_reference_exact_match: bool | None = None
-                    if tokenizer.protocol in {"reasoning_v1", "reasoning_v2"}:
+                    if tokenizer.protocol == "reasoning_v3":
+                        reason = v3_rollouts.termination_reasons[batch_index]
+                        capped = reason == "budget_exceeded"
+                        score = score_v3(
+                            generated, tokenizer, row, capped=capped,
+                            failure=reason if reason not in {"eos", "budget_exceeded"} else None,
+                            **rollout_config.scoring_kwargs(),
+                        )
+                        scratchpad = score.scratchpad
+                        trace_structure_valid = score.trace_valid
+                        trace_reference_exact_match = score.reference_match if row.get("scratchpad") is not None else None
+                        correct, valid = score.answer_correct, score.format_valid
+                        extra = {
+                            "reward": score.reward, "full_success": score.full_success,
+                            "answer_correct": score.answer_correct,
+                            "format_reward": score.format_reward, "success_reward": score.success_reward,
+                            "call_count": score.call_count, "correct_calls": score.correct_calls,
+                            "policy_tokens": int(v3_rollouts.loss_mask[batch_index, 0].sum()),
+                            "executor_tokens": int((v3_rollouts.completion_mask[batch_index, 0] & ~v3_rollouts.loss_mask[batch_index, 0]).sum()),
+                            "termination_reason": reason,
+                        }
+                    elif tokenizer.protocol in {"reasoning_v1", "reasoning_v2"}:
                         try:
                             parsed = parse_reasoning_completion(generated, tokenizer)
                             scratchpad = parsed.scratchpad
@@ -392,6 +459,7 @@ def evaluate_checkpoint(
                     digit_width, operator_count = question_features(row["question"])
                     scored[split_name].append(
                         {
+                            **extra,
                             "row_index": row_index,
                             "module": row["module"], "question": row["question"],
                             "target": row["answer"], "prediction": prediction,

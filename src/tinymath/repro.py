@@ -14,6 +14,8 @@ from typing import Any
 import numpy as np
 import torch
 
+from tinymath.config import WORKSPACE
+
 
 @dataclass(frozen=True)
 class RuntimeInfo:
@@ -60,7 +62,7 @@ def _git_commit() -> str | None:
         return None
 
 
-def runtime_info(workspace: str | Path = "/workspace") -> RuntimeInfo:
+def runtime_info(workspace: str | Path = WORKSPACE) -> RuntimeInfo:
     lockfile = Path(workspace) / "uv.lock"
     lock_hash = hashlib.sha256(lockfile.read_bytes()).hexdigest() if lockfile.exists() else None
     available = torch.cuda.is_available()

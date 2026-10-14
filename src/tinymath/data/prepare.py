@@ -9,6 +9,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from tinymath.config import WORKSPACE
 from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.data.load import DatasetInspection
 from tinymath.data.prompts import format_completion, format_prompt
@@ -68,8 +69,8 @@ def write_data_bundle(
 ) -> dict[str, Any]:
     """Persist all disjoint pools and return the split manifest."""
     destination = Path(output_dir).resolve()
-    if Path("/workspace") not in destination.parents:
-        raise ValueError("Prepared data must stay inside /workspace")
+    if WORKSPACE not in destination.parents:
+        raise ValueError(f"Prepared data must stay inside {WORKSPACE}")
     destination.mkdir(parents=True, exist_ok=True)
     split_files: dict[str, dict[str, Any]] = {}
     selected_counts: dict[str, dict[str, dict[str, int]]] = {}

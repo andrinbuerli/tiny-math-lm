@@ -1,0 +1,24 @@
+# V3 assisted training/evaluation; select the existing annotated bundle explicitly.
+defaults:
+  - config
+  - override rollout: v3_exact
+  - _self_
+
+seed: 18
+data_bundle: data/processed/exp13_reasoning_v3_arithmetic_subtasks-seed18
+experiment:
+  number: 13
+  name: exp13_reasoning_v3_arithmetic_subtasks
+  protocol: reasoning_v3
+  data_budget: 500000
+  max_steps: 100000
+  run_optimization: true
+  ood_examples_per_module: 1000
+model:
+  context_length: 512
+data:
+  context_length: 512
+rlvr:
+  max_completion_tokens: 512
+eval:
+  max_new_tokens: 512

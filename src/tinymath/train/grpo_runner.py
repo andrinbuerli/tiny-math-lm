@@ -6,6 +6,7 @@ import csv
 import json
 import random
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +25,9 @@ from tinymath.data.completions import parse_reasoning_completion
 from tinymath.data.prompts import format_prompt
 from tinymath.data.trace_explanations import transcribe_scratchpad
 from tinymath.eval.qualitative import build_qualitative_table
+from tinymath.generation import RolloutConfig
 from tinymath.model.gpt import GPTConfig, TinyMathGPT
+from tinymath.rewards.reasoning import score_v3
 from tinymath.rewards.verify import verify_answer
 from tinymath.train.budgets import budget_rows
 from tinymath.train.grpo import (
@@ -36,6 +39,10 @@ from tinymath.train.grpo import (
 )
 from tinymath.train.metrics import elapsed_seconds_through_step, truncate_csv_after_step
 
+CALL_FAILURES = (
+    "malformed_request", "scalar_limit", "noncanonical_operand", "division_by_zero",
+    "incorrect_call_result", "call_limit", "unencodable_result",
+)
 
 def _load_rows(path: Path) -> list[dict[str, str]]:
     with path.open(encoding="utf-8") as handle:
@@ -44,8 +51,11 @@ def _load_rows(path: Path) -> list[dict[str, str]]:
 
 def _score_completion(
     token_ids: list[int], tokenizer: CharacterTokenizer, row: dict[str, str]
-) -> tuple[bool, bool, str | None, bool | None, bool | None]:
+) -> tuple[float, bool, str | None, bool | None, bool | None]:
     """Return reward, answer validity, trace, reference match, and trace validity."""
+    if tokenizer.protocol == "reasoning_v3":
+        score = score_v3(token_ids, tokenizer, row)
+        return score.reward, score.format_valid, score.scratchpad, score.reference_match, score.trace_valid
     if tokenizer.protocol in {"reasoning_v1", "reasoning_v2"}:
         try:
             parsed = parse_reasoning_completion(token_ids, tokenizer)
@@ -76,7 +86,13 @@ def train_grpo(
     if not init_checkpoint.is_file():
         raise FileNotFoundError(f"SFT initialization checkpoint not found: {init_checkpoint}")
     tokenizer = CharacterTokenizer.load(bundle_dir / "char_tokenizer.json")
-    prompts = _load_rows(bundle_dir / "rlvr.jsonl")
+    rollout_config = RolloutConfig.from_config(getattr(config, "rollout", None))
+    rollout_identity = rollout_config.identity()
+    if rollout_config.executor == "exact" and tokenizer.protocol != "reasoning_v3":
+        raise ValueError("Exact call execution requires reasoning_v3")
+    if tokenizer.protocol == "reasoning_v3" and hasattr(run, "config"):
+        run.config.update({"rollout": rollout_identity}, allow_val_change=True)
+    prompts = [row for row in _load_rows(bundle_dir / "rlvr.jsonl") if not row.get("is_sub_task", False)]
     experiment = getattr(config, "experiment", {})
     if (
         int(experiment.get("number", 0) or 0) == 11
@@ -106,7 +122,7 @@ def train_grpo(
             bundle_sha256=sha256_file(manifest_path),
             context_length=model_config.context_length,
         )
-    elif tokenizer.protocol in {"reasoning_v1", "reasoning_v2"}:
+    elif tokenizer.protocol != "answer_only":
         raise ValueError("Reasoning GRPO requires a provenance-bearing annotated bundle")
     if compatibility is not None:
         validate_checkpoint_compatibility(
@@ -135,6 +151,8 @@ def train_grpo(
     start_update = 0
     tokens_seen = 0
     examples_drawn = 0
+    policy_tokens_seen = executor_tokens_seen = 0
+    reward_mean = 0.0
     nonpadding_input_tokens = 0
     padded_compute_positions = 0
     estimated_flops_seen = 0
@@ -149,9 +167,14 @@ def train_grpo(
                 compatibility,
                 allow_legacy_answer_only=(tokenizer.protocol == "answer_only"),
             )
+        if tokenizer.protocol == "reasoning_v3" and resumed.get("rollout") != rollout_identity:
+            raise ValueError("GRPO resume rollout/reward settings do not match checkpoint")
+        policy_tokens_seen = int(resumed.get("policy_tokens_seen", resumed.get("tokens_seen", 0)))
+        executor_tokens_seen = int(resumed.get("executor_tokens_seen", 0))
         model.load_state_dict(resumed["model"])
         optimizer.load_state_dict(resumed["optimizer"])
         start_update = int(resumed["update"])
+        reward_mean = float(resumed.get("last_reward_mean", 0.0))
         tokens_seen = int(resumed.get("tokens_seen", 0))
         examples_drawn = int(resumed.get("examples_drawn", 0))
         nonpadding_input_tokens = int(resumed.get("nonpadding_input_tokens", 0))
@@ -196,12 +219,16 @@ def train_grpo(
         "reward/capped_rate", "reward/malformed_rate",
         "group/mixed_rate", "group/all_correct_rate", "group/all_wrong_rate", "loss",
         "policy_loss", "kl", "entropy", "clip_fraction", "grad_norm", "tokens_seen",
+        "policy_tokens", "executor_tokens", "transcript_tokens", "group/all_format_only_rate",
+        "reward/format_component", "reward/success_component", "reward/full_success_rate",
+        "reward/answer_accuracy", "reward/format_only_rate", "calls/per_completion",
+        "calls/correctness", "calls/executor_failure_rate", "calls/no_call_success_rate",
         "generated_tokens", "examples_drawn", "nonpadding_input_tokens",
         "padded_compute_positions", "wall_seconds",
         "tokens_per_second", "estimated_flops", "peak_gpu_memory_bytes",
         "flops_estimator_version", "train/greedy_accuracy", "val/greedy_accuracy",
         "test/greedy_accuracy",
-    ]
+    ] + [f"calls/failure/{reason}" for reason in CALL_FAILURES]
     writer = csv.DictWriter(metrics_file, fieldnames=fields)
     if mode == "w":
         writer.writeheader()
@@ -212,6 +239,11 @@ def train_grpo(
             optimizer.zero_grad(set_to_none=True)
             metric_groups: list[dict[str, torch.Tensor]] = []
             batch_correct = batch_valid = batch_total = token_total = 0
+            reward_total = 0.0
+            format_component = success_component = answer_correct = format_only = 0
+            calls_total = correct_calls = no_call_count = no_call_success = 0
+            policy_token_total = executor_token_total = 0
+            failures: Counter[str] = Counter()
             batch_capped = batch_malformed = batch_trace_valid = batch_trace_reference_match = 0
             optimized_groups = 0
             policy_losses: list[float] = []
@@ -238,20 +270,47 @@ def train_grpo(
                         temperature=temperature,
                         eos_id=tokenizer.eos_id,
                         pad_id=tokenizer.pad_id,
+                        tokenizer=tokenizer, rollout=rollout_config,
                     )
                 completions = rollouts.completion_ids[0]
                 generated_ids = [
                     completion[: int(mask.sum().item())].tolist()
                     for completion, mask in zip(completions, rollouts.completion_mask[0], strict=True)
                 ]
-                outcomes = [_score_completion(ids, tokenizer, row) for ids in generated_ids]
+                v3_scores = []
+                if tokenizer.protocol == "reasoning_v3":
+                    reasons = rollouts.termination_reasons or tuple(
+                        "eos" if ids and ids[-1] == tokenizer.eos_id else "budget_exceeded"
+                        for ids in generated_ids
+                    )
+                    for ids, reason in zip(generated_ids, reasons, strict=True):
+                        failed = reason not in {"eos", "budget_exceeded"}
+                        if failed:
+                            failures[reason] += 1
+                        score = score_v3(
+                            ids, tokenizer, row, capped=reason == "budget_exceeded",
+                            failure=reason if failed else None, **rollout_config.scoring_kwargs(),
+                        )
+                        v3_scores.append(score)
+                        format_component += score.format_reward
+                        success_component += score.success_reward
+                        answer_correct += score.answer_correct
+                        format_only += score.format_valid and not score.full_success
+                        calls_total += score.call_count
+                        correct_calls += score.correct_calls
+                        no_call_count += score.format_valid and score.call_count == 0
+                        no_call_success += score.full_success and score.call_count == 0
+                    outcomes = [(v.reward, v.format_valid, v.scratchpad, v.reference_match, v.trace_valid)
+                                for v in v3_scores]
+                else:
+                    outcomes = [_score_completion(ids, tokenizer, row) for ids in generated_ids]
                 rewards = torch.tensor(
-                    [int(correct) for correct, _valid, _trace, _reference_match, _trace_valid in outcomes],
+                    [float(correct) for correct, _valid, _trace, _reference_match, _trace_valid in outcomes],
                     dtype=torch.float32,
                     device=device,
                 )
                 valid_count = sum(int(valid) for _correct, valid, _trace, _match, _trace_valid in outcomes)
-                batch_capped += sum(
+                batch_capped += sum(reason == "budget_exceeded" for reason in reasons) if v3_scores else sum(
                     int(len(ids) >= min(max_completion, room) and (not ids or ids[-1] != tokenizer.eos_id))
                     for ids in generated_ids
                 )
@@ -264,7 +323,10 @@ def train_grpo(
                     int(reference_match is True)
                     for _correct, _valid, _trace, reference_match, _trace_valid in outcomes
                 )
-                batch_correct += int(rewards.sum().item())
+                reward_total += float(rewards.sum().item())
+                batch_correct += int((rewards == 1).sum().item())
+                policy_token_total += int(rollouts.loss_mask.sum().item())
+                executor_token_total += int((rollouts.completion_mask & ~rollouts.loss_mask).sum().item())
                 batch_valid += valid_count
                 batch_total += group_size
                 token_total += int(rollouts.completion_mask.sum().item())
@@ -284,7 +346,7 @@ def train_grpo(
                     current,
                     rollouts.old_log_probs,
                     advantages,
-                    rollouts.completion_mask,
+                    rollouts.loss_mask,
                     clip_epsilon=clip_epsilon,
                     reference_log_probs=reference_logs,
                     kl_coefficient=kl_coefficient,
@@ -320,11 +382,13 @@ def train_grpo(
                 )
                 optimizer.step()
             tokens_seen += token_total
+            policy_tokens_seen += policy_token_total
+            executor_tokens_seen += executor_token_total
             examples_drawn += len(chosen)
             nonpadding_input_tokens += nonpadding_input_tokens_update
             padded_compute_positions += padded_compute_positions_update
             estimated_flops_seen += estimated_flops_update
-            reward_mean = batch_correct / batch_total
+            reward_mean = reward_total / batch_total
 
             def mean(values: list[float]) -> float:
                 return sum(values) / max(1, len(values))
@@ -335,6 +399,20 @@ def train_grpo(
             values = {
                 "update": update,
                 "reward/mean": reward_mean,
+                **{f"calls/failure/{reason}": failures[reason] for reason in CALL_FAILURES},
+                "reward/full_success_rate": batch_correct / batch_total,
+                "reward/format_component": format_component / batch_total,
+                "reward/success_component": success_component / batch_total,
+                "reward/answer_accuracy": answer_correct / batch_total if v3_scores else batch_correct / batch_total,
+                "reward/format_only_rate": format_only / batch_total,
+                "group/all_format_only_rate": mean([item["all_format_only_group_rate"].item() for item in metric_groups]),
+                "calls/per_completion": calls_total / batch_total,
+                "calls/correctness": correct_calls / calls_total if calls_total else 0.0,
+                "calls/executor_failure_rate": sum(failures.values()) / batch_total,
+                "calls/no_call_success_rate": no_call_success / no_call_count if no_call_count else 0.0,
+                "policy_tokens": policy_tokens_seen,
+                "executor_tokens": executor_tokens_seen,
+                "transcript_tokens": tokens_seen,
                 "reward/format_valid_rate": batch_valid / batch_total,
                 "reward/verifier_failure_rate": 1 - batch_valid / batch_total,
                 "reward/trace_valid_rate": batch_trace_valid / batch_total,
@@ -353,7 +431,7 @@ def train_grpo(
                 "tokens_seen": tokens_seen,
                 "examples_drawn": examples_drawn,
                 "nonpadding_input_tokens": nonpadding_input_tokens,
-                "generated_tokens": tokens_seen,
+                "generated_tokens": policy_tokens_seen,
                 "padded_compute_positions": padded_compute_positions,
                 "wall_seconds": elapsed,
                 "tokens_per_second": tokens_seen / max(1e-9, elapsed),
@@ -370,7 +448,11 @@ def train_grpo(
                         "model": model.state_dict(),
                         "optimizer": optimizer.state_dict(),
                         "update": update,
+                        "last_reward_mean": reward_mean,
                         "tokens_seen": tokens_seen,
+                        "policy_tokens_seen": policy_tokens_seen,
+                        "executor_tokens_seen": executor_tokens_seen,
+                        **({"rollout": rollout_identity} if tokenizer.protocol == "reasoning_v3" else {}),
                         "examples_drawn": examples_drawn,
                         "nonpadding_input_tokens": nonpadding_input_tokens,
                         "padded_compute_positions": padded_compute_positions,
@@ -389,6 +471,7 @@ def train_grpo(
                     {
                         "model": model.state_dict(),
                         "update": update,
+                        **({"rollout": rollout_identity} if tokenizer.protocol == "reasoning_v3" else {}),
                         "tokenizer_sha256": tokenizer.sha256,
                         **({"compatibility": compatibility} if compatibility is not None else {}),
                         "model_config": model_config.__dict__,
@@ -411,6 +494,7 @@ def train_grpo(
                     max_new_tokens=int(
                         getattr(getattr(config, "eval", None), "max_new_tokens", max_completion)
                     ),
+                    rollout=rollout_config,
                     examples_per_module=int(
                         getattr(getattr(config, "qualitative", None), "examples_per_module", 2)
                     ),
@@ -442,6 +526,8 @@ def train_grpo(
                         logged[key] = value
                     else:
                         logged[f"grpo/{key}"] = value
+                for reason, count in failures.items():
+                    logged[f"grpo/calls/failure/{reason}"] = count
                 run.log(logged)
             writer.writerow({key: value for key, value in values.items() if key in fields})
             metrics_file.flush()
@@ -451,7 +537,9 @@ def train_grpo(
         "update": updates,
         "prompt_examples": len(prompts),
         "tokens_seen": tokens_seen,
-        "generated_tokens": tokens_seen,
+        "policy_tokens": policy_tokens_seen,
+        "executor_tokens": executor_tokens_seen,
+        "generated_tokens": policy_tokens_seen,
         "examples_drawn": examples_drawn,
         "nonpadding_input_tokens": nonpadding_input_tokens,
         "padded_compute_positions": padded_compute_positions,

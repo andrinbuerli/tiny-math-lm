@@ -15,6 +15,7 @@ from tinymath.checkpoint import sha256_file
 from tinymath.config import workspace_path
 from tinymath.data.load import SELECTED_MODULES
 from tinymath.eval.evaluate import evaluate_checkpoint
+from tinymath.generation import RolloutConfig
 from tinymath.tracking.provenance import read_wandb_run_id
 from tinymath.tracking.wandb import finish_wandb, initialize_tracked_run
 
@@ -111,6 +112,7 @@ def main(config: DictConfig) -> None:
             output_dir=run_dir,
             split_names=list(config.eval.splits),
             max_new_tokens=int(config.eval.max_new_tokens),
+            rollout=RolloutConfig.from_config(config.get("rollout")),
             greedy=bool(config.eval.greedy),
             temperature=float(config.eval.temperature),
             batch_size=int(config.eval.batch_size),
@@ -121,6 +123,8 @@ def main(config: DictConfig) -> None:
         )
         run.config.update(
             {
+                "rollout": summary.get("rollout"),
+                "assisted": summary.get("assisted", False),
                 "training_arm": summary["training_arm"],
                 "source_sft_checkpoint": summary["source_sft_checkpoint"],
                 "source_sft_wandb_run_id": (
@@ -146,6 +150,9 @@ def main(config: DictConfig) -> None:
                 "trace_structure_validity",
                 "trace_reference_exact_match_rate",
                 "mean_output_tokens",
+                "mean_reward", "full_success_rate", "format_only_rate", "mean_format_reward",
+                "mean_success_reward", "call_correctness", "calls_per_completion",
+                "no_call_success_rate", "executor_failures", "policy_tokens", "executor_tokens",
             ):
                 value = result[metric]
                 if value is not None:

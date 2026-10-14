@@ -23,8 +23,16 @@ class RolloutConfig:
     max_scalar_chars: int = 128
     format_weight: float = 0.1
     success_weight: float = 0.9
+    scorer_version: int = SCORER_VERSION
+    executor_version: int = EXECUTOR_VERSION
+    rollout_version: int = ROLLOUT_VERSION
+    token_accounting: str = "transcript_includes_executor_v1"
 
     def __post_init__(self):
+        if (self.scorer_version != SCORER_VERSION or self.executor_version != EXECUTOR_VERSION
+                or self.rollout_version != ROLLOUT_VERSION
+                or self.token_accounting != "transcript_includes_executor_v1"):
+            raise ValueError("Unsupported rollout/scorer/executor/accounting version")
         if self.executor not in {"none", "exact"}:
             raise ValueError("executor must be none or exact")
         if self.max_calls < 1 or not 1 <= self.max_scalar_chars <= 1024:
@@ -42,14 +50,12 @@ class RolloutConfig:
         return cls(**dict(config))
 
     def identity(self) -> dict[str, Any]:
-        return {
-            **asdict(self), "scorer_version": SCORER_VERSION,
-            "executor_version": EXECUTOR_VERSION, "rollout_version": ROLLOUT_VERSION,
-            "token_accounting": "transcript_includes_executor_v1",
-        }
+        return asdict(self)
 
     def scoring_kwargs(self) -> dict[str, Any]:
-        return {key: value for key, value in asdict(self).items() if key != "executor"}
+        return {key: getattr(self, key) for key in (
+            "max_calls", "max_scalar_chars", "format_weight", "success_weight",
+        )}
 
 
 @dataclass(frozen=True)

@@ -4,6 +4,7 @@ defaults:
   - data: default
   - trainer: sft
   - rlvr: grpo
+  - rollout: default
   - eval: default
   - qualitative: default
   - runtime: default
@@ -21,7 +22,7 @@ orchestration:
   run_grpo: true
   run_continued_sft: true
 paths:
-  root: /workspace
+  root: ${oc.env:WORKSPACE_ROOT,/workspace}
   data: ${paths.root}/data
   runs: ${paths.root}/runs
   outputs: ${paths.root}/outputs

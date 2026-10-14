@@ -12,6 +12,8 @@ from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.data.completions import parse_reasoning_completion
 from tinymath.data.prompts import format_prompt
 from tinymath.data.trace_explanations import transcribe_scratchpad
+from tinymath.generation import RolloutConfig, generate_rollouts
+from tinymath.rewards.reasoning import score_v3
 from tinymath.rewards.verify import verify_answer
 
 
@@ -20,6 +22,8 @@ def _selected_rows(
 ) -> list[dict[str, str]]:
     by_module: dict[str, list[dict[str, str]]] = {}
     for row in rows:
+        if row.get("is_sub_task", False):
+            continue
         by_module.setdefault(row["module"], []).append(row)
     selected: list[dict[str, str]] = []
     for module, module_rows in sorted(by_module.items()):
@@ -37,6 +41,9 @@ def _predicted_scratchpad(
     generated: Sequence[int], tokenizer: CharacterTokenizer
 ) -> str:
     """Return generated scratchpad text for inspection, even when parsing fails."""
+    if tokenizer.protocol == "reasoning_v3":
+        text = tokenizer.decode(generated)
+        return text.removeprefix("<scp>\n").partition("\n</scp>")[0] if text.startswith("<scp>\n") else ""
     if tokenizer.protocol not in {"reasoning_v1", "reasoning_v2"}:
         return ""
     try:
@@ -63,10 +70,12 @@ def build_qualitative_table(
     seed: int,
     max_new_tokens: int = 128,
     examples_per_module: int = 2,
+    rollout: RolloutConfig | None = None,
 ) -> tuple[Any, int, dict[str, float | None]]:
     """Build a deterministic W&B table with generated train/validation/test answers."""
     if examples_per_module < 1 or max_new_tokens < 1:
         raise ValueError("Qualitative sample and generation limits must be positive")
+    rollout_config = RolloutConfig.from_config(rollout)
     device = next(model.parameters()).device
     context_length = int(model.config.context_length)
     was_training = model.training
@@ -94,23 +103,45 @@ def build_qualitative_table(
                 if available < 1:
                     raise ValueError(f"Qualitative {split} prompt leaves no room for an answer")
                 with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_bf16):
-                    generated = model.generate(
-                        prompt,
-                        max_new_tokens=(
-                            available
-                            if tokenizer.protocol in {"reasoning_v1", "reasoning_v2"}
-                            else min(max_new_tokens, available)
-                        ),
-                        temperature=0.0,
-                        eos_id=tokenizer.eos_id,
-                    )[0, prompt.shape[1] :].tolist()
+                    v3_rollouts = None
+                    if tokenizer.protocol == "reasoning_v3":
+                        v3_rollouts = generate_rollouts(
+                            model, prompt, max_completion_tokens=min(max_new_tokens, available),
+                            temperature=0.0, eos_id=tokenizer.eos_id, pad_id=tokenizer.pad_id,
+                            tokenizer=tokenizer, rollout=rollout_config,
+                        )
+                        generated = v3_rollouts.completion_ids[0, 0][v3_rollouts.completion_mask[0, 0]].tolist()
+                    else:
+                        generated = model.generate(
+                            prompt,
+                            max_new_tokens=(available if tokenizer.protocol in {"reasoning_v1", "reasoning_v2"}
+                                            else min(max_new_tokens, available)),
+                            temperature=0.0, eos_id=tokenizer.eos_id,
+                        )[0, prompt.shape[1]:].tolist()
                 if tokenizer.eos_id in generated:
                     generated = generated[: generated.index(tokenizer.eos_id) + 1]
                 completion = tokenizer.decode(generated, skip_special=True).strip()
                 predicted_scratchpad = _predicted_scratchpad(generated, tokenizer)
                 transcribed_scratchpad = ""
                 trace_structure_valid: bool | None = None
-                if tokenizer.protocol in {"reasoning_v1", "reasoning_v2"}:
+                extra = [None, None, None, None, None, None]
+                if tokenizer.protocol == "reasoning_v3":
+                    reason = v3_rollouts.termination_reasons[0]
+                    score = score_v3(
+                        generated, tokenizer, example, capped=reason == "budget_exceeded",
+                        failure=reason if reason not in {"eos", "budget_exceeded"} else None,
+                        **rollout_config.scoring_kwargs(),
+                    )
+                    prediction = score.answer
+                    predicted_scratchpad = score.scratchpad or predicted_scratchpad
+                    correct, valid = score.answer_correct, score.format_valid
+                    trace_structure_valid = score.trace_valid
+                    if score.trace_valid:
+                        transcribed_scratchpad = "\n".join(transcribe_scratchpad(score.scratchpad, version="reasoning_v3"))
+                    extra = [score.reward, score.full_success, rollout_config.executor == "exact",
+                             reason, int(v3_rollouts.loss_mask.sum()),
+                             int((v3_rollouts.completion_mask & ~v3_rollouts.loss_mask).sum())]
+                elif tokenizer.protocol in {"reasoning_v1", "reasoning_v2"}:
                     try:
                         parsed = parse_reasoning_completion(generated, tokenizer)
                         predicted_scratchpad = parsed.scratchpad
@@ -154,9 +185,10 @@ def build_qualitative_table(
                         valid,
                         len(generated),
                         int(
-                            len(generated) >= available
+                            len(generated) >= min(max_new_tokens, available)
                             and (not generated or generated[-1] != tokenizer.eos_id)
                         ),
+                        *(extra if tokenizer.protocol == "reasoning_v3" else []),
                     ]
                 )
     finally:
@@ -181,7 +213,8 @@ def build_qualitative_table(
             "format_valid",
             "output_tokens",
             "capped",
-        ],
+        ] + (["reward", "full_success", "assisted", "termination_reason", "policy_tokens", "executor_tokens"]
+             if tokenizer.protocol == "reasoning_v3" else []),
         data=rows,
     )
     accuracy = {
@@ -202,6 +235,7 @@ def log_qualitative_examples(
     step: int,
     max_new_tokens: int = 128,
     examples_per_module: int = 2,
+    rollout: RolloutConfig | None = None,
 ) -> int:
     """Log deterministic train/validation/test prompts with generated answers."""
     table, count, accuracy = build_qualitative_table(
@@ -212,6 +246,7 @@ def log_qualitative_examples(
         seed=seed,
         max_new_tokens=max_new_tokens,
         examples_per_module=examples_per_module,
+        rollout=rollout,
     )
     # The resumed W&B history may already be past the sampled checkpoint step.
     # Keep optimizer_step as a column and let W&B assign the next history step.

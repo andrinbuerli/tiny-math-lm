@@ -76,7 +76,7 @@ def _bundle_compatibility(
 ) -> dict[str, Any] | None:
     manifest_path = bundle_dir / "manifest.json"
     if not manifest_path.is_file():
-        if tokenizer.protocol in {"reasoning_v1", "reasoning_v2"}:
+        if tokenizer.protocol != "answer_only":
             raise ValueError("Reasoning training requires a provenance-bearing annotated bundle")
         return None
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -463,6 +463,7 @@ def train_sft(
                     max_new_tokens=int(
                         getattr(getattr(config, "eval", None), "max_new_tokens", 128)
                     ),
+                    rollout=getattr(config, "rollout", None),
                     examples_per_module=int(
                         getattr(getattr(config, "qualitative", None), "examples_per_module", 2)
                     ),
