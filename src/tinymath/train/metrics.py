@@ -8,6 +8,29 @@ import tempfile
 from pathlib import Path
 
 
+def elapsed_seconds_through_step(path: Path, *, step_column: str, step: int) -> float:
+    """Return cumulative elapsed time through a checkpoint's metric row, if present."""
+    if not path.is_file():
+        return 0.0
+    elapsed = 0.0
+    matched = False
+    with path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if not reader.fieldnames or step_column not in reader.fieldnames:
+            raise ValueError(f"Metric CSV {path} has no {step_column!r} step column")
+        for row in reader:
+            raw_step = row.get(step_column)
+            if raw_step is None or not raw_step.strip():
+                continue
+            row_step = int(raw_step)
+            if row_step <= step:
+                raw_elapsed = row.get("wall_seconds")
+                if raw_elapsed is not None and raw_elapsed.strip():
+                    elapsed = float(raw_elapsed)
+                    matched = True
+    return elapsed if matched else 0.0
+
+
 def truncate_csv_after_step(path: Path, *, step_column: str, step: int) -> None:
     """Drop metrics newer than a resumed checkpoint before replaying optimizer steps."""
     if not path.is_file():

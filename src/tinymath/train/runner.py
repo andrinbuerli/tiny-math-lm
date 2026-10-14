@@ -24,7 +24,7 @@ from tinymath.data.prompts import format_completion, format_prompt
 from tinymath.eval.qualitative import build_qualitative_table
 from tinymath.model.gpt import GPTConfig, TinyMathGPT
 from tinymath.train.budgets import budget_rows
-from tinymath.train.metrics import truncate_csv_after_step
+from tinymath.train.metrics import elapsed_seconds_through_step, truncate_csv_after_step
 from tinymath.train.sft import build_completion_batch, completion_only_loss
 
 
@@ -261,6 +261,11 @@ def train_sft(
 
     run_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = run_dir / "metrics.csv"
+    elapsed_before = (
+        elapsed_seconds_through_step(metrics_path, step_column="optimizer_step", step=start_step)
+        if start_step
+        else 0.0
+    )
     if start_step:
         truncate_csv_after_step(metrics_path, step_column="optimizer_step", step=start_step)
     is_new_metrics = not metrics_path.exists() or start_step == 0
@@ -365,7 +370,7 @@ def train_sft(
                         source_sft_checkpoint=source_sft_checkpoint,
                         training_arm=str(config.trainer.name),
                     )
-            elapsed = time.monotonic() - started
+            elapsed = elapsed_before + time.monotonic() - started
             row = {
                 "optimizer_step": step,
                 "train/loss": loss_value,

@@ -33,7 +33,7 @@ from tinymath.train.grpo import (
     grpo_objective,
     sample_group_rollouts,
 )
-from tinymath.train.metrics import truncate_csv_after_step
+from tinymath.train.metrics import elapsed_seconds_through_step, truncate_csv_after_step
 
 
 def _load_rows(path: Path) -> list[dict[str, str]]:
@@ -174,6 +174,11 @@ def train_grpo(
     if prompts_per_batch < 1 or group_size < 2 or updates < 1:
         raise ValueError("GRPO requires positive updates/prompts and group_size >= 2")
     metrics_path = run_dir / "metrics.csv"
+    elapsed_before = (
+        elapsed_seconds_through_step(metrics_path, step_column="update", step=start_update)
+        if start_update
+        else 0.0
+    )
     if start_update:
         truncate_csv_after_step(metrics_path, step_column="update", step=start_update)
     mode = "a" if metrics_path.exists() and start_update else "w"
@@ -319,6 +324,7 @@ def train_grpo(
             mixed = mean([item["mixed_group_rate"].item() for item in metric_groups])
             all_correct = mean([item["all_correct_group_rate"].item() for item in metric_groups])
             all_wrong = mean([item["all_wrong_group_rate"].item() for item in metric_groups])
+            elapsed = elapsed_before + time.monotonic() - started
             values = {
                 "update": update,
                 "reward/mean": reward_mean,
@@ -342,8 +348,8 @@ def train_grpo(
                 "nonpadding_input_tokens": nonpadding_input_tokens,
                 "generated_tokens": tokens_seen,
                 "padded_compute_positions": padded_compute_positions,
-                "wall_seconds": time.monotonic() - started,
-                "tokens_per_second": tokens_seen / max(1e-9, time.monotonic() - started),
+                "wall_seconds": elapsed,
+                "tokens_per_second": tokens_seen / max(1e-9, elapsed),
                 "estimated_flops": estimated_flops_seen,
                 "flops_estimator_version": "kv_cached_position_v3",
                 "peak_gpu_memory_bytes": (
