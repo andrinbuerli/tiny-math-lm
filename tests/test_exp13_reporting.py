@@ -60,11 +60,12 @@ def test_exp13_report_lists_all_rows_and_marks_missing_evaluations_not_run(works
 
     assert report["row_count"] == 27
     assert {row["status"] for row in report["rows"]} == {"not-run"}
+    assert {item["status"] for item in report["compute_matching"].values()} == {"pending"}
     assert len(outputs) == 5
     assert all(path.exists() for path in outputs)
     markdown = (output / "intermediate_results.md").read_text(encoding="utf-8")
     assert "| Model | Arm | Split | Baseline accuracy (scored) | +Reasoning accuracy (scored) | Δ percentage points | Status |" in markdown
-    assert markdown.count("| 1m |") == 9
+    assert markdown.split("## Provenance", 1)[0].count("| 1m |") == 9
     assert "not-run" in markdown
 
 

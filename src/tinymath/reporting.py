@@ -1995,11 +1995,54 @@ def make_exp13_report(
                     "baseline_evaluation_wandb": baseline_wandb.get(model, {}).get(arm, {}),
                 })
 
+    compute_matching: dict[str, dict[str, Any]] = {}
+    for model in MODELS:
+        grpo_metrics = _metric_at_checkpoint(
+            runs_dir / experiment / model / "grpo" / f"seed{seed}" / "metrics.csv", "grpo", None
+        )
+        control_metrics = _metric_at_checkpoint(
+            runs_dir / experiment / model / "continued_sft" / f"seed{seed}" / "metrics.csv",
+            "continued_sft", None,
+        )
+
+        def number(metrics: dict[str, str], key: str) -> float | None:
+            try:
+                value = float(metrics.get(key, ""))
+            except (TypeError, ValueError):
+                return None
+            return value if math.isfinite(value) and value > 0 else None
+
+        grpo_flops = number(grpo_metrics, "estimated_flops")
+        continued_additional_flops = number(control_metrics, "additional_estimated_flops")
+        if continued_additional_flops is None:
+            control_total = number(control_metrics, "estimated_flops")
+            sft_total = number(_metric_at_checkpoint(
+                runs_dir / experiment / model / "sft" / f"seed{seed}" / "metrics.csv", "sft", None
+            ), "estimated_flops")
+            if control_total is not None and sft_total is not None:
+                continued_additional_flops = max(0.0, control_total - sft_total) or None
+        grpo_step = grpo_metrics.get("update")
+        control_step = control_metrics.get("optimizer_step")
+        ratio = (
+            continued_additional_flops / grpo_flops
+            if grpo_flops and continued_additional_flops else None
+        )
+        complete_budgets = grpo_step == "100000" and control_step == "100000"
+        compute_matching[model] = {
+            "grpo_step": int(grpo_step) if grpo_step and grpo_step.isdigit() else None,
+            "grpo_estimated_flops": grpo_flops,
+            "continued_sft_step": int(control_step) if control_step and control_step.isdigit() else None,
+            "continued_sft_additional_estimated_flops": continued_additional_flops,
+            "continued_sft_to_grpo_flop_ratio": ratio,
+            "status": "measured" if complete_budgets and ratio is not None else "pending",
+        }
+
     report = {
         "experiment": experiment,
         "seed": seed,
         "row_count": len(rows),
         "rows": rows,
+        "compute_matching": compute_matching,
         "baseline_provenance": {
             "experiment": baseline_name,
             "snapshot_path": str(baseline_snapshot),
@@ -2057,6 +2100,19 @@ def make_exp13_report(
         "- Evaluation population: parent rows only; the bundle’s added standalone subtask rows are excluded so the question IDs match the frozen baseline.",
         "", "## Evaluation diagnostics", "",
         "Module accuracy, format and trace validity, mean output tokens, cap counts, checkpoint hashes, question identity hashes, and W&B run metadata are recorded per row in `comparison.json` and `comparison.csv`.",
+        "", "## Approximate compute matching", "",
+        "Continued-SFT uses effective batch 128. The ratio uses measured cumulative FLOPs after subtracting the initial SFT cost; it is marked measured only when GRPO and continued-SFT both reach 100,000 updates.",
+        "", "| Model | GRPO update | GRPO estimated FLOPs | Continued-SFT update | Continued-SFT additional FLOPs | Continued-SFT / GRPO | Status |",
+        "|---|---:|---:|---:|---:|---:|---|",
+        *[
+            f"| {model} | {values['grpo_step'] or '—'} | {values['grpo_estimated_flops'] or '—'} | "
+            f"{values['continued_sft_step'] or '—'} | {values['continued_sft_additional_estimated_flops'] or '—'} | "
+            f"{values['continued_sft_to_grpo_flop_ratio']:.4f}× | {values['status']} |"
+            if values['continued_sft_to_grpo_flop_ratio'] is not None else
+            f"| {model} | {values['grpo_step'] or '—'} | {values['grpo_estimated_flops'] or '—'} | "
+            f"{values['continued_sft_step'] or '—'} | {values['continued_sft_additional_estimated_flops'] or '—'} | — | {values['status']} |"
+            for model, values in compute_matching.items()
+        ],
         "", "## Limitations", "", *[f"- {item}" for item in report["limitations"]], "",
     ])
     markdown_path.write_text("\n".join(lines), encoding="utf-8")
