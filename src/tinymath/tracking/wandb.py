@@ -90,9 +90,10 @@ def _compatible_with_runtime_extension(
     # versa) while keeping the same local W&B identity and scientific config.
     saved_tracking = saved_normalized.get("tracking", {})
     current_tracking = normalized.get("tracking", {})
-    if "mode" in saved_tracking and "mode" in current_tracking:
-        saved_tracking.pop("mode")
-        current_tracking.pop("mode")
+    for key in ("mode", "entity"):
+        if key in saved_tracking and key in current_tracking:
+            saved_tracking.pop(key)
+            current_tracking.pop(key)
 
     # This group was added to cap thread usage on resume. It does not change the
     # model, batches, optimizer, or objective.

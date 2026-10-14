@@ -92,8 +92,14 @@ def test_resume_accepts_wandb_thread_limit_runtime_extension():
 
 
 def test_resume_allows_wandb_mode_change_without_training_config_changes():
-    saved = {"tracking": {"mode": "offline"}, "trainer": {"max_steps": 100}}
-    current = {"tracking": {"mode": "online"}, "trainer": {"max_steps": 100}}
+    saved = {
+        "tracking": {"mode": "offline", "entity": None},
+        "trainer": {"max_steps": 100},
+    }
+    current = {
+        "tracking": {"mode": "online", "entity": "verified-entity"},
+        "trainer": {"max_steps": 100},
+    }
     assert tracking._compatible_with_runtime_extension(saved, current)
 
     changed_training = {"tracking": {"mode": "online"}, "trainer": {"max_steps": 101}}
