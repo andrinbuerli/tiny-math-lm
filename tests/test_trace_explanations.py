@@ -102,6 +102,19 @@ gcd=1"""
     assert any("greatest common divisor, 1" in step for step in division_steps)
 
 
+def test_transcriber_supports_reasoning_v3_delegated_arithmetic_calls():
+    trace = """step:evaluate arithmetic operations in expression order
+call:add(25,32) -> 57
+call:multiply(57,2) -> 114"""
+
+    explanation = transcribe_scratchpad(trace, version="reasoning_v3")
+
+    assert any("Add 25 and 32" in step for step in explanation)
+    assert any("This gives 57" in step for step in explanation)
+    assert any("Multiply 57 by 2" in step for step in explanation)
+    assert any("This gives 114" in step for step in explanation)
+
+
 def test_transcriber_rejects_unknown_or_mismatched_trace_versions():
     try:
         transcribe_scratchpad("t0=+(1,2)=3", version="reasoning_v2")

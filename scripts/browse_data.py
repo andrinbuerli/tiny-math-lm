@@ -204,17 +204,25 @@ def main() -> None:
             if selected.get("scratchpad"):
                 st.markdown("#### Reasoning trace walkthrough")
                 st.caption(
-                    "A plain-language reading of the verified reference trace for this example."
+                    "A plain-language reading of the reference trace for this example."
                 )
-                for index, step in enumerate(
-                    transcribe_scratchpad(
+                trace_version = (
+                    selected.get("trace_version")
+                    or manifest.get("tokenizer", {}).get("protocol")
+                )
+                try:
+                    explanation = transcribe_scratchpad(
                         selected["scratchpad"],
-                        version=selected.get("trace_version")
-                        or manifest.get("tokenizer", {}).get("protocol"),
-                    ),
-                    start=1,
-                ):
-                    st.markdown(f"**Step {index}.** {step}")
+                        version=trace_version,
+                    )
+                except ValueError as exc:
+                    st.warning(
+                        f"Natural-language explanation is unavailable for trace version "
+                        f"{trace_version!r}: {exc}"
+                    )
+                else:
+                    for index, step in enumerate(explanation, start=1):
+                        st.markdown(f"**Step {index}.** {step}")
                 st.markdown("#### Original reasoning / scratchpad trace")
                 st.code(selected["scratchpad"], language="text")
                 with st.expander("Trace notation key"):
