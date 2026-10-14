@@ -795,6 +795,7 @@ def _wandb_provenance(run_dir: Path) -> dict[str, Any]:
         "phase": (identity.get("metadata") or {}).get("phase"),
         "mode": state.get("mode"),
         "sync_status": state.get("sync_status"),
+        "run_status": state.get("run_status"),
         "url": url,
         "local_path": str(run_dir),
     }
@@ -1769,8 +1770,9 @@ def make_exp11_report(
         label = f"[{run_name}]({url})" if url else run_name
         mode = provenance.get("mode") or "unknown mode"
         sync_status = provenance.get("sync_status") or "unknown sync"
+        run_status = provenance.get("run_status") or "unknown status"
         local_path = provenance.get("local_path") or ""
-        return f"{label} (`{run_id}`; {mode}/{sync_status}; `{local_path}`)"
+        return f"{label} (`{run_id}`; {mode}/{sync_status}; {run_status}; `{local_path}`)"
 
     for (model, arm), row in sorted(provenance_rows.items()):
         lines.append(

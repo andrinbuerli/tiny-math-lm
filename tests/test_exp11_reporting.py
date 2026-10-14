@@ -280,6 +280,7 @@ def test_main_report_does_not_promote_pilot_evaluation(workspace_tmpdir):
     assert row["additional_flops"] == 5000
     assert row["training_wandb"]["run_id"] == "main-run-id"
     assert row["training_wandb"]["sync_status"] == "unsynced"
+    assert row["training_wandb"]["run_status"] == "running"
     assert row["training_wandb"]["url"] is None
     assert row["evaluation_wandb"]["run_id"] is None
     markdown = (workspace_tmpdir / "reports" / "intermediate_results.md").read_text(
@@ -287,6 +288,7 @@ def test_main_report_does_not_promote_pilot_evaluation(workspace_tmpdir):
     )
     assert "## Experiment and W&B provenance" in markdown
     assert "exp11-main-1m-sft-seed18" in markdown
+    assert "offline/unsynced; running;" in markdown
 
 
 def test_exp11_report_measures_continued_sft_to_grpo_flop_ratio(workspace_tmpdir):
