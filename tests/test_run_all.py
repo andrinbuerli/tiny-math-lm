@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import subprocess
 from pathlib import Path
 
+import pytest
 from hydra import compose, initialize_config_dir
 
 spec = importlib.util.spec_from_file_location("run_all", Path(__file__).resolve().parents[1] / "scripts" / "run_all.py")
@@ -87,6 +89,11 @@ def test_exp13_evaluation_uses_canonical_reasoning_v3_bundle(workspace_tmpdir, m
         '{"annotation":{"protocol":"reasoning_v3"}}', encoding="utf-8"
     )
     monkeypatch.setattr(run_all, "workspace_path", lambda *_: bundle)
+    monkeypatch.setattr(
+        run_all,
+        "EXP13_CANONICAL_MANIFEST_SHA256",
+        hashlib.sha256((bundle / "manifest.json").read_bytes()).hexdigest(),
+    )
     with initialize_config_dir(version_base="1.3", config_dir=str(Path(__file__).resolve().parents[1] / "configs")):
         config = compose(
             config_name="config",
@@ -100,6 +107,10 @@ def test_exp13_evaluation_uses_canonical_reasoning_v3_bundle(workspace_tmpdir, m
     assert config.data_bundle == "data/processed/filtered-bundle"
     assert evaluation.data_bundle == run_all.EXP13_CANONICAL_BUNDLE
     assert evaluation.reporting.annotation_bundle_dir == str(bundle)
+
+    monkeypatch.setattr(run_all, "EXP13_CANONICAL_MANIFEST_SHA256", "wrong-hash")
+    with pytest.raises(ValueError, match="does not match the verified canonical bundle"):
+        run_all._evaluation_config(config)
 
 
 def test_orchestrator_preserves_literal_backslash_in_saved_experiment_title():

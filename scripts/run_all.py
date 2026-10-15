@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -23,6 +24,7 @@ from tinymath.train.budgets import isolated_training_run_dir
 LOGGER = logging.getLogger(__name__)
 _GPU_LAUNCH_LOCK = threading.Lock()
 EXP13_CANONICAL_BUNDLE = "data/processed/exp13_reasoning_v3_arithmetic_subtasks-seed18"
+EXP13_CANONICAL_MANIFEST_SHA256 = "5d493a0f4c961b84b873036ea1bc93ebb6d01b6f022d7ed81997b094da3a018f"
 
 
 def _hydra_value(value: object) -> str:
@@ -228,6 +230,12 @@ def _evaluation_config(config: DictConfig) -> DictConfig:
     if not manifest_path.is_file():
         raise FileNotFoundError(f"Canonical Experiment 13 bundle not found: {manifest_path}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    if manifest_sha256 != EXP13_CANONICAL_MANIFEST_SHA256:
+        raise ValueError(
+            "Experiment 13 evaluation bundle manifest does not match the verified canonical bundle: "
+            f"expected {EXP13_CANONICAL_MANIFEST_SHA256}, got {manifest_sha256}"
+        )
     protocol = manifest.get("annotation", {}).get("protocol")
     if protocol != "reasoning_v3":
         raise ValueError(
