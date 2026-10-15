@@ -1,0 +1,51 @@
+source_bundle: data/processed/exp13_reasoning_v3_arithmetic_subtasks-seed18
+output_bundle: data/processed/exp13_reasoning_v3_arithmetic_subtasks-seed18-excluding-7-invalid-traces
+expected_manifest_sha256: 5d493a0f4c961b84b873036ea1bc93ebb6d01b6f022d7ed81997b094da3a018f
+expected_error: reasoning_v2 trace is malformed, result-first, incomplete, or inconsistent
+exclusions:
+  - split: sft_train
+    line: 561339
+    module: arithmetic__mul
+    question: "Calculate (-1/8) * -587304."
+    answer: "73413"
+  - split: sft_train
+    line: 565765
+    module: arithmetic__mul
+    question: "Calculate (33/2) * -555506."
+    answer: "-9165849"
+  - split: sft_train
+    line: 652834
+    module: arithmetic__mul
+    question: "Calculate (-45/32) * -7216."
+    answer: "20295/2"
+  - split: sft_train
+    line: 785640
+    module: arithmetic__mul
+    question: "Calculate (7/8) * 1186596."
+    answer: "2076543/2"
+  - split: rlvr
+    line: 26194
+    module: arithmetic__mul
+    question: "Calculate (5/4) * 108584."
+    answer: "135730"
+  - split: test
+    line: 46672
+    module: arithmetic__mul
+    question: "Calculate (-3/16) * 149804."
+    answer: "-112353/4"
+  - split: test
+    line: 55608
+    module: arithmetic__mul
+    question: "Calculate (-13/2) * 272664."
+    answer: "-1772316"
+
+hydra:
+  run:
+    dir: ${paths.outputs}/filter_invalid_reasoning_bundle
+  job:
+    chdir: false
+  output_subdir: hydra
+
+paths:
+  root: ${oc.env:WORKSPACE_ROOT,/workspace}
+  outputs: ${paths.root}/outputs
