@@ -66,9 +66,14 @@ def _wait_for_gpu_capacity(config: DictConfig, model: str) -> None:
         try:
             utilization, free_mib = _gpu_load()
         except (OSError, subprocess.CalledProcessError, ValueError, IndexError) as error:
-            raise RuntimeError(
-                "Cannot verify GPU utilization and VRAM before launching training or evaluation"
-            ) from error
+            LOGGER.warning(
+                "Cannot verify GPU utilization and VRAM for model=%s; "
+                "waiting before any GPU launch (%s)",
+                model,
+                error,
+            )
+            time.sleep(float(config.runtime.parallel_gpu_poll_seconds))
+            continue
         if _gpu_capacity_available(config, model, utilization, free_mib):
             LOGGER.info(
                 "GPU admits model=%s (utilization=%d%%, free_vram=%.1f GiB)",

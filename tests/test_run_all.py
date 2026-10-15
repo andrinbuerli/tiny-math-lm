@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 from pathlib import Path
 
 from hydra import compose, initialize_config_dir
@@ -53,3 +54,24 @@ def test_orchestrator_propagates_reasoning_v3_rollout_to_child_runs():
     )
     assert 'rollout.executor="exact"' in values
     assert "rollout.token_accounting=\"transcript_includes_executor_v1\"" in values
+
+
+def test_gpu_admission_waits_for_telemetry_before_launch(monkeypatch):
+    config_dir = str(Path(__file__).resolve().parents[1] / "configs")
+    with initialize_config_dir(version_base="1.3", config_dir=config_dir):
+        config = compose(
+            config_name="reasoning_v3",
+            overrides=["experiment=13_reasoning_v3_arithmetic_subtasks"],
+        )
+
+    readings = iter([subprocess.CalledProcessError(1, "nvidia-smi"), (25, 20 * 1024)])
+
+    def read_gpu():
+        reading = next(readings)
+        if isinstance(reading, Exception):
+            raise reading
+        return reading
+
+    monkeypatch.setattr(run_all, "_gpu_load", read_gpu)
+    monkeypatch.setattr(run_all.time, "sleep", lambda _seconds: None)
+    run_all._wait_for_gpu_capacity(config, "100m")
