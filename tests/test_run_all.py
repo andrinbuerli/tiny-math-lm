@@ -56,6 +56,30 @@ def test_orchestrator_propagates_reasoning_v3_rollout_to_child_runs():
     assert "rollout.token_accounting=\"transcript_includes_executor_v1\"" in values
 
 
+def test_orchestrator_names_each_fresh_arm_run_and_wandb_group():
+    with initialize_config_dir(version_base="1.3", config_dir=str(Path(__file__).resolve().parents[1] / "configs")):
+        config = compose(
+            config_name="reasoning_v3",
+            overrides=[
+                "experiment=13_reasoning_v3_arithmetic_subtasks",
+                "experiment.name=exp13-fresh-test",
+                "tracking.group=exp13-fresh-test",
+            ],
+        )
+    values = run_all._overrides(
+        config,
+        model="10m",
+        trainer="sft",
+        experiment_choice="13_reasoning_v3_arithmetic_subtasks",
+        run_arm="grpo",
+        run_label="training",
+    )
+
+    assert 'tracking.name="exp13-fresh-test-10m-grpo-training-seed18"' in values
+    assert 'tracking.group="exp13-fresh-test-10m-grpo"' in values
+    assert 'tracking.tags=["exp13-fresh-test", "10m", "grpo"]' in values
+
+
 def test_gpu_admission_waits_for_telemetry_before_launch(monkeypatch):
     config_dir = str(Path(__file__).resolve().parents[1] / "configs")
     with initialize_config_dir(version_base="1.3", config_dir=config_dir):

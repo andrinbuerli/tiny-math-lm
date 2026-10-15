@@ -99,6 +99,8 @@ def _overrides(
     experiment_choice: str | None = None,
     checkpoint: str | None = None,
     init_checkpoint: str | None = None,
+    run_arm: str | None = None,
+    run_label: str | None = None,
 ) -> list[str]:
     values = OmegaConf.to_container(config, resolve=True)
     assert isinstance(values, dict)
@@ -134,6 +136,19 @@ def _overrides(
         result.append(f"checkpoint={_hydra_value(checkpoint)}")
     if init_checkpoint is not None:
         result.append(f"init_checkpoint={_hydra_value(init_checkpoint)}")
+    if run_arm is not None:
+        experiment_name = str(values["experiment"]["name"])
+        run_name = (
+            f"{experiment_name}-{model}-{run_arm}-{run_label or trainer}-"
+            f"seed{int(values['seed'])}"
+        )
+        run_group = f"{experiment_name}-{model}-{run_arm}"
+        run_tags = [experiment_name, model, run_arm]
+        result.extend([
+            f"tracking.name={_hydra_value(run_name)}",
+            f"tracking.group={_hydra_value(run_group)}",
+            f"tracking.tags={_hydra_value(run_tags)}",
+        ])
     return result
 
 
@@ -146,6 +161,8 @@ def _run(
     checkpoint: str | None = None,
     init_checkpoint: str | None = None,
     experiment_choice: str | None = None,
+    run_arm: str | None = None,
+    run_label: str | None = None,
 ) -> None:
     command = [
         str(workspace_path(".tools", "uv")), "run", "--locked", "python",
@@ -157,6 +174,8 @@ def _run(
             experiment_choice=experiment_choice,
             checkpoint=checkpoint,
             init_checkpoint=init_checkpoint,
+            run_arm=run_arm,
+            run_label=run_label,
         ),
     ]
     LOGGER.info("Running %s model=%s trainer=%s", script, model, trainer)
@@ -180,6 +199,7 @@ def _run_model(config: DictConfig, model_name: str, experiment_choice: str) -> N
     _run(
         "train_sft.py", config, model=model_name, trainer="sft",
         experiment_choice=experiment_choice,
+        run_arm="sft", run_label="training",
     )
     sft_run = workspace_path(
         isolated_training_run_dir(
@@ -193,11 +213,13 @@ def _run_model(config: DictConfig, model_name: str, experiment_choice: str) -> N
     _run(
         "evaluate.py", config, model=model_name, trainer="sft", checkpoint=sft_checkpoint,
         experiment_choice=experiment_choice,
+        run_arm="sft", run_label="evaluation",
     )
     if config.orchestration.run_grpo:
         _run(
             "train_rlvr.py", config, model=model_name, trainer="sft",
             init_checkpoint=sft_checkpoint, experiment_choice=experiment_choice,
+            run_arm="grpo", run_label="training",
         )
         grpo_checkpoint = workspace_path(
             isolated_training_run_dir(
@@ -211,6 +233,7 @@ def _run_model(config: DictConfig, model_name: str, experiment_choice: str) -> N
         _run(
             "evaluate.py", config, model=model_name, trainer="sft",
             checkpoint=str(grpo_checkpoint), experiment_choice=experiment_choice,
+            run_arm="grpo", run_label="evaluation",
         )
     if config.orchestration.run_continued_sft:
         control_run = workspace_path(
@@ -224,10 +247,12 @@ def _run_model(config: DictConfig, model_name: str, experiment_choice: str) -> N
         _run(
             "train_sft.py", config, model=model_name, trainer="continued_sft",
             init_checkpoint=sft_checkpoint, experiment_choice=experiment_choice,
+            run_arm="continued_sft", run_label="training",
         )
         _run(
             "evaluate.py", config, model=model_name, trainer="sft",
             checkpoint=str(control_run / "best.pt"), experiment_choice=experiment_choice,
+            run_arm="continued_sft", run_label="evaluation",
         )
 
 
