@@ -45,6 +45,18 @@ def _first(*values: Any, default: Any = None) -> Any:
     return default
 
 
+def comparison_identity(experiment_name: str, seed: int) -> dict[str, Any]:
+    """Return the stable W&B identity for an experiment-wide comparison report."""
+    name = str(experiment_name).strip()
+    if not name:
+        raise ValueError("experiment_name is required to build a comparison identity")
+    return {
+        "name": f"{name}-comparison-seed{int(seed)}-report",
+        "group": name,
+        "tags": [experiment_name, "all-models", "comparison"],
+    }
+
+
 def build_run_naming(
     config: Mapping[str, Any] | DictConfig,
     *,

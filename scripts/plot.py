@@ -11,6 +11,7 @@ from omegaconf import DictConfig
 import wandb
 from tinymath.config import workspace_path
 from tinymath.reporting import make_exp11_report, make_exp13_report, make_report
+from tinymath.tracking.naming import comparison_identity
 from tinymath.tracking.wandb import finish_wandb, initialize_wandb
 
 LOGGER = logging.getLogger(__name__)
@@ -34,10 +35,19 @@ def main(config: DictConfig) -> None:
         run_dir = workspace_path(
             "runs", str(experiment.name), "comparison", f"seed{int(config.seed)}"
         )
+    is_exp13 = int(experiment.get("number", 0) or 0) == 13
+    if is_exp13:
+        identity = comparison_identity(str(experiment.name), int(config.seed))
+        config.tracking.name = identity["name"]
+        config.tracking.group = identity["group"]
+        config.tracking.tags = identity["tags"]
+        run_dir = workspace_path(
+            "runs", str(experiment.name), "comparison-report", f"seed{int(config.seed)}"
+        )
     output_dir = workspace_path(str(config.reporting.output_dir))
     run = initialize_wandb(config, run_dir, job_type="comparison")
     try:
-        if int(experiment.get("number", 0) or 0) == 13:
+        if is_exp13:
             report, outputs = make_exp13_report(
                 runs_dir=workspace_path("runs"),
                 experiment=str(experiment.name),

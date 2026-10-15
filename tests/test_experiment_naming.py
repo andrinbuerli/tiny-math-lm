@@ -4,7 +4,19 @@ from pathlib import Path
 
 from hydra import compose, initialize_config_dir
 
-from tinymath.tracking.naming import build_run_naming
+from tinymath.tracking.naming import build_run_naming, comparison_identity
+
+
+def test_exp13_comparison_report_has_distinct_stable_identity():
+    assert comparison_identity("exp13_reasoning_v3_arithmetic_subtasks-fresh-3eda0cc0", 18) == {
+        "name": "exp13_reasoning_v3_arithmetic_subtasks-fresh-3eda0cc0-comparison-seed18-report",
+        "group": "exp13_reasoning_v3_arithmetic_subtasks-fresh-3eda0cc0",
+        "tags": [
+            "exp13_reasoning_v3_arithmetic_subtasks-fresh-3eda0cc0",
+            "all-models",
+            "comparison",
+        ],
+    }
 
 
 def _exp11_config() -> dict:
