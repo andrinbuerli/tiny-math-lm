@@ -199,6 +199,11 @@ def test_sft_loop_trains_and_saves_reloadable_checkpoint(workspace_tmpdir):
     resumed = train_sft(config=config, bundle_dir=bundle, run_dir=run_dir, run=run)
     resumed_checkpoint = torch.load(resumed["checkpoint"], map_location="cpu", weights_only=False)
     assert resumed["step"] == resumed_checkpoint["step"] == 3
+    resume_qualitative = run.logged[-2]
+    assert resume_qualitative["optimizer_step"] == 2
+    assert resume_qualitative["qualitative/resume_checkpoint"] is True
+    assert "qualitative/examples" in resume_qualitative
+    assert run.logged[-1]["optimizer_step"] == 3
     with Path(resumed["metrics_path"]).open(encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
         assert [int(row["optimizer_step"]) for row in rows] == [1, 2, 3]

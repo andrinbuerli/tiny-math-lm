@@ -304,6 +304,39 @@ def train_sft(
         define_metric("optimizer_step")
         for metric in ("train/*", "val/*", "test/*", "system/*", "qualitative/*"):
             define_metric(metric, step_metric="optimizer_step")
+    if start_step > 0:
+        qualitative_table, qualitative_count, greedy_accuracy = build_qualitative_table(
+            model=model,
+            tokenizer=tokenizer,
+            split_rows={
+                "train": train_rows,
+                "validation": validation_rows,
+                "test": read_jsonl(bundle_dir / "test.jsonl"),
+            },
+            training_arm=str(config.trainer.name),
+            seed=int(config.seed),
+            max_new_tokens=int(getattr(getattr(config, "eval", None), "max_new_tokens", 128)),
+            rollout=getattr(config, "rollout", None),
+            examples_per_module=int(
+                getattr(getattr(config, "qualitative", None), "examples_per_module", 2)
+            ),
+        )
+        resume_values = {
+            "optimizer_step": start_step,
+            "qualitative/examples": qualitative_table,
+            "qualitative/resume_checkpoint": True,
+        }
+        for split, value in greedy_accuracy.items():
+            metric_name = "val/greedy_accuracy" if split == "validation" else f"{split}/greedy_accuracy"
+            resume_values[metric_name] = value
+        summary = getattr(run, "summary", None)
+        if summary is not None:
+            summary["qualitative/example_count"] = qualitative_count
+            summary["qualitative/splits"] = ["train", "validation", "test"]
+            summary["training/latest_inference_checkpoint"] = str(
+                run_dir / "latest_inference.pt"
+            )
+        run.log(resume_values)
     warmup = int(config.trainer.warmup_steps)
     base_lr = float(config.trainer.learning_rate)
     started = time.monotonic()
