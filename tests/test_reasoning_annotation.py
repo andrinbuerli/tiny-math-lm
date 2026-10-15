@@ -257,28 +257,18 @@ def test_reasoning_v2_linear_trace_ends_with_solution_without_generic_verificati
         ("Calculate 2869/29 + -99.", "-2/29", "arithmetic__mixed", "call:add(2869/29,-99) -> -2/29"),
     ],
 )
-def test_reasoning_v3_emits_verified_visible_calls_and_separate_subtasks(
-    question: str, answer: str, module: str, call: str
-) -> None:
+def test_reasoning_v3_solves_atomic_tasks_without_delegating(question, answer, module, call):
     source = row(question, answer, module)
-    annotation = annotate_row(source, protocol="reasoning_v3")
-    assert annotation["trace_version"] == "reasoning_v3"
-    assert call in annotation["scratchpad"]
+    if module == "arithmetic__mixed":
+        # This source contains a real division subexpression, but never delegates its root addition.
+        annotation = annotate_row(source, protocol="reasoning_v3")
+        assert call not in annotation["scratchpad"]
+    else:
+        annotation = annotate_row(source, protocol="reasoning_v3")
+        assert "call:" not in annotation["scratchpad"]
+        assert annotation["tool_calls_allowed"] is False
+        assert generate_subtask_rows(source, annotation, source_split="sft_train", parent_row_index=0) == []
     verify_annotation(source, annotation)
-    subtasks = generate_subtask_rows(
-        source, annotation, source_split="sft_train", parent_row_index=7
-    )
-    assert len(subtasks) == annotation["scratchpad"].count("call:")
-    assert subtasks[-1]["answer"] == answer
-    assert subtasks[0]["trace_version"] == "reasoning_v2"
-    assert subtasks[0]["source_split"] == "sft_train"
-    assert subtasks[0]["parent_row_index"] == 7
-    assert subtasks[0]["call_index"] == 0
-    assert "call:" not in subtasks[0]["scratchpad"]
-    verify_annotation(
-        subtasks[0],
-        subtasks[0],
-    )
 
 
 def test_reasoning_v3_nested_calls_are_postorder_and_fraction_tasks_are_parenthesized():
@@ -292,23 +282,21 @@ def test_reasoning_v3_nested_calls_are_postorder_and_fraction_tasks_are_parenthe
         "call:subtract(47,59) -> -12",
         "call:multiply(-12,-1) -> 12",
         "call:divide(2,-4) -> -1/2",
-        "call:divide(12,-1/2) -> -24",
     ]
     subtasks = generate_subtask_rows(source, annotation, source_split="sft_train", parent_row_index=0)
-    assert subtasks[-1]["question"] == "Calculate 12 / (-1/2)."
-    assert subtasks[-1]["answer"] == "-24"
+    assert subtasks[-1]["question"] == "Calculate 2 / -4."
+    assert subtasks[-1]["answer"] == "-1/2"
     assert subtasks[-1]["module"] == "arithmetic__div"
     assert subtasks[-1]["subtask_operation_count"] == 1
     assert subtasks[-1]["subtask_schema_version"] == 2
     # Re-annotation consumes the structured operands, not the slashes in their text.
     trace = annotate_row(subtasks[-1], protocol="reasoning_v3")["scratchpad"]
-    assert [line for line in trace.splitlines() if line.startswith("call:")] == [
-        "call:divide(12,-1/2) -> -24"
-    ]
+    assert "call:" not in trace
+    assert "/(12,-1/2)" in annotation["scratchpad"]
 
 
 def test_fraction_subtraction_subtask_is_one_operator_and_matches_reported_example():
-    source = row("Calculate -1.06 - -4.10201.", "3.04201", "arithmetic__add_or_sub")
+    source = row("Calculate (-1.06 - -4.10201)*2.", "6.08402", "arithmetic__mixed")
     annotation = annotate_row(source, protocol="reasoning_v3")
     subtasks = generate_subtask_rows(source, annotation, source_split="sft_train", parent_row_index=0)
     assert len(subtasks) == 1
@@ -317,7 +305,8 @@ def test_fraction_subtraction_subtask_is_one_operator_and_matches_reported_examp
     assert task["module"] == "arithmetic__add_or_sub"
     assert "/(" not in task["scratchpad"]  # No spurious fraction-construction divisions.
     trace = annotate_row(task, protocol="reasoning_v3")["scratchpad"]
-    assert trace.splitlines()[1:] == ["call:subtract(-53/50,-410201/100000) -> 304201/100000"]
+    assert "call:" not in trace
+    assert task["tool_calls_allowed"] is False
     verify_annotation(task, task)
 
 
@@ -327,11 +316,12 @@ def test_fraction_subtraction_subtask_is_one_operator_and_matches_reported_examp
     ("(-1/2)*(-5/4)", "5/8"),
 ])
 def test_subtasks_treat_all_rational_operands_as_atomic(expression, answer):
-    source = row(f"Calculate {expression}.", answer, "arithmetic__mixed")
+    from fractions import Fraction
+    source = row(f"Calculate ({expression})+10.", str(Fraction(answer) + 10), "arithmetic__mixed")
     annotation = annotate_row(source, protocol="reasoning_v3")
     task = generate_subtask_rows(source, annotation, source_split="test", parent_row_index=0)[-1]
     trace = annotate_row(task, protocol="reasoning_v3")["scratchpad"]
-    assert trace.count("call:") == 1
+    assert trace.count("call:") == 0
     assert task["module"] != "arithmetic__mixed"
     verify_annotation(task, task)
     for field, value in (("question", "Calculate 1 + 2."), ("call_result", "0"),
@@ -353,6 +343,13 @@ def test_reasoning_v3_algebra_delegates_final_division_and_verifier_rejects_edit
     corrupted = dict(annotation, scratchpad=trace.replace("-> 9", "-> 8"))
     with pytest.raises(ValueError, match="reasoning_v3 calls"):
         verify_annotation(source, corrupted)
+
+
+def test_subtask_generator_rejects_a_forged_whole_task_call():
+    source = row("Calculate 25 + 32.", "57", "arithmetic__add_or_sub")
+    forged = {"trace_version": "reasoning_v3", "scratchpad": "step:x\ncall:add(25,32) -> 57"}
+    with pytest.raises(ValueError, match="not a proper subproblem"):
+        generate_subtask_rows(source, forged, source_split="sft_train", parent_row_index=0)
 
 
 def test_trace_verifier_rejects_corrupted_digit_and_substitution_steps() -> None:

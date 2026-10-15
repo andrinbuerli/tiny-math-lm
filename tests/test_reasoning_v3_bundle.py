@@ -19,8 +19,8 @@ def test_build_reasoning_v3_bundle_writes_parent_and_linked_subtask_splits(works
     output = workspace_tmpdir / "v3"
     source.mkdir()
     example = {
-        "question": "Calculate 25 + 32.", "answer": "57",
-        "category": "train-easy", "module": "arithmetic__add_or_sub",
+        "question": "Calculate (25 + 32)*2.", "answer": "114",
+        "category": "train-easy", "module": "arithmetic__mixed",
     }
     _write_jsonl(source / "sft_train.jsonl", [example])
     _write_jsonl(source / "test.jsonl", [example])
@@ -67,8 +67,8 @@ def test_eligible_training_subtask_uses_character_tokenizer_and_enters_sft(works
     output = workspace_tmpdir / "eligible-v3"
     source.mkdir()
     _write_jsonl(source / "sft_train.jsonl", [{
-        "question": "Calculate 25 + 32.", "answer": "57",
-        "category": "train-easy", "module": "arithmetic__add_or_sub",
+        "question": "Calculate (25 + 32)*2.", "answer": "114",
+        "category": "train-easy", "module": "arithmetic__mixed",
     }])
     (source / "manifest.json").write_text(json.dumps({
         "selected_modules": ["arithmetic__add_or_sub"],
@@ -87,8 +87,8 @@ def test_fraction_bundle_contains_one_operator_tasks_and_preserves_old_bundle(wo
     source = workspace_tmpdir / "source"
     source.mkdir()
     _write_jsonl(source / "sft_train.jsonl", [{
-        "question": "Calculate -1.06 - -4.10201.", "answer": "3.04201",
-        "module": "arithmetic__add_or_sub", "category": "train-easy",
+        "question": "Calculate (-1.06 - -4.10201)*2.", "answer": "6.08402",
+        "module": "arithmetic__mixed", "category": "train-easy",
     }])
     (source / "manifest.json").write_text(json.dumps({
         "splits": {"sft_train": {"path": "sft_train.jsonl", "examples": 1}},
@@ -105,7 +105,7 @@ def test_fraction_bundle_contains_one_operator_tasks_and_preserves_old_bundle(wo
     task = rows[1]
     assert task["question"] == "Calculate (-53/50) - (-410201/100000)."
     assert task["module"] == "arithmetic__add_or_sub"
-    assert annotate_row(task, protocol="reasoning_v3")["scratchpad"].count("call:") == 1
+    assert annotate_row(task, protocol="reasoning_v3")["scratchpad"].count("call:") == 0
     verify_annotation(task, task)
 
 

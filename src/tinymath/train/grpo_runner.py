@@ -40,6 +40,7 @@ from tinymath.train.grpo import (
 from tinymath.train.metrics import elapsed_seconds_through_step, truncate_csv_after_step
 
 CALL_FAILURES = (
+    "disallowed_call",
     "malformed_request", "scalar_limit", "noncanonical_operand", "division_by_zero",
     "incorrect_call_result", "call_limit", "unencodable_result",
 )
@@ -225,6 +226,7 @@ def train_grpo(
         "reward/format_component", "reward/success_component", "reward/full_success_rate",
         "reward/answer_accuracy", "reward/format_only_rate", "calls/per_completion",
         "calls/correctness", "calls/executor_failure_rate", "calls/no_call_success_rate",
+        "calls/policy_violation_rate",
         "generated_tokens", "examples_drawn", "nonpadding_input_tokens",
         "padded_compute_positions", "wall_seconds",
         "tokens_per_second", "estimated_flops", "peak_gpu_memory_bytes",
@@ -273,6 +275,7 @@ def train_grpo(
                         eos_id=tokenizer.eos_id,
                         pad_id=tokenizer.pad_id,
                         tokenizer=tokenizer, rollout=rollout_config,
+                        task_rows=[row],
                     )
                 completions = rollouts.completion_ids[0]
                 generated_ids = [
@@ -297,7 +300,9 @@ def train_grpo(
                         format_component += score.format_reward
                         success_component += score.success_reward
                         answer_correct += score.answer_correct
-                        format_only += score.format_valid and not score.full_success
+                        format_only += 0 < score.reward < 1
+                        if not score.call_policy_valid and not failed:
+                            failures["disallowed_call"] += 1
                         calls_total += score.call_count
                         correct_calls += score.correct_calls
                         no_call_count += score.format_valid and score.call_count == 0
@@ -411,6 +416,7 @@ def train_grpo(
                 "calls/per_completion": calls_total / batch_total,
                 "calls/correctness": correct_calls / calls_total if calls_total else 0.0,
                 "calls/executor_failure_rate": sum(failures.values()) / batch_total,
+                "calls/policy_violation_rate": failures["disallowed_call"] / batch_total,
                 "calls/no_call_success_rate": no_call_success / no_call_count if no_call_count else 0.0,
                 "policy_tokens": policy_tokens_seen,
                 "executor_tokens": executor_tokens_seen,

@@ -97,7 +97,7 @@ def _atomic_predictions(path: Path, records: list[dict[str, Any]]) -> None:
         "format_valid", "trace_structure_valid", "trace_reference_exact_match",
         "capped", "output_tokens", "digit_width", "operator_count",
         "reward", "format_reward", "success_reward", "full_success", "answer_correct",
-        "call_count", "correct_calls", "policy_tokens", "executor_tokens", "termination_reason",
+        "call_count", "correct_calls", "policy_tokens", "executor_tokens", "termination_reason", "call_policy_valid",
     ]
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
@@ -156,6 +156,7 @@ def _summarize(records: list[dict[str, Any]], prediction_path: str) -> dict[str,
         "calls_per_completion": sum(row.get("call_count", 0) for row in records) / count if count else None,
         "no_call_success_rate": sum(row.get("full_success", False) and row.get("call_count", 0) == 0 for row in records) / max(1, sum(row["format_valid"] and row.get("call_count", 0) == 0 for row in records)),
         "executor_failures": sum(row.get("termination_reason", "eos") not in {"eos", "budget_exceeded"} for row in records),
+        "call_policy_violation_rate": sum(not row.get("call_policy_valid", True) for row in records) / count if count else None,
         "policy_tokens": sum(row.get("policy_tokens", row["output_tokens"]) for row in records),
         "executor_tokens": sum(row.get("executor_tokens", 0) for row in records),
         "examples": count,
@@ -395,6 +396,7 @@ def evaluate_checkpoint(
                             temperature=0.0 if greedy else temperature,
                             eos_id=tokenizer.eos_id, pad_id=tokenizer.pad_id,
                             tokenizer=tokenizer, rollout=rollout_config,
+                            task_rows=[row for _, row, _ in batch],
                         )
                     else:
                         outputs = model.generate(
@@ -432,6 +434,7 @@ def evaluate_checkpoint(
                             "answer_correct": score.answer_correct,
                             "format_reward": score.format_reward, "success_reward": score.success_reward,
                             "call_count": score.call_count, "correct_calls": score.correct_calls,
+                            "call_policy_valid": score.call_policy_valid,
                             "policy_tokens": int(v3_rollouts.loss_mask[batch_index, 0].sum()),
                             "executor_tokens": int((v3_rollouts.completion_mask[batch_index, 0] & ~v3_rollouts.loss_mask[batch_index, 0]).sum()),
                             "termination_reason": reason,

@@ -18,7 +18,7 @@ from tinymath.model.gpt import GPTConfig, TinyMathGPT
 from tinymath.repro import seed_everything
 from tinymath.train import grpo_runner
 
-GOOD = "<scp>\nstep:evaluate arithmetic operations in expression order\ncall:add(1,2) -> 3\n</scp>\nA: 3"
+GOOD = "<scp>\nstep:evaluate arithmetic operations in expression order\ncall:add(1,2) -> 3\nstep:+(3,0)\n</scp>\nA: 3"
 WRONG = GOOD[:-1] + "4"
 
 
@@ -59,7 +59,7 @@ def v3_setup(workspace_tmpdir):
     bundle.mkdir()
     tokenizer = CharacterTokenizer.from_texts([string.printable], protocol="reasoning_v3")
     tokenizer.save(bundle / "char_tokenizer.json")
-    parent = {"question": "Calculate 1 + 2.", "answer": "3", "module": "arithmetic__add_or_sub",
+    parent = {"question": "Calculate (1 + 2) + 0.", "answer": "3", "module": "arithmetic__mixed",
               "is_sub_task": False}
     subtask = {**parent, "is_sub_task": True}
     for split in ("rlvr", "sft_validation", "test"):
@@ -151,7 +151,7 @@ def test_evaluation_and_qualitative_share_scoring_and_parent_population(v3_setup
         evaluation.evaluate_checkpoint(**{**kwargs, "rollout": RolloutConfig()})
     from tinymath.eval import qualitative
     monkeypatch.setattr(qualitative, "generate_rollouts", controlled_rollouts)
-    parent = {"question": "Calculate 1 + 2.", "answer": "3", "module": "arithmetic__add_or_sub"}
+    parent = {"question": "Calculate (1 + 2) + 0.", "answer": "3", "module": "arithmetic__mixed"}
     table, count, accuracy = build_qualitative_table(model=model, tokenizer=tokenizer,
         split_rows={"test": [parent, {**parent, "is_sub_task": True}]}, training_arm="sft", seed=9,
         max_new_tokens=200, rollout=config)
@@ -172,8 +172,8 @@ def test_v3_hydra_configuration():
 
 def test_evaluation_shaped_rewards_and_sampled_resume(v3_setup, workspace_tmpdir, monkeypatch):
     bundle, _, _, checkpoint, _ = v3_setup
-    parents = [{"question": f"Calculate {left} + {right}.", "answer": "3",
-                "module": "arithmetic__add_or_sub"} for left, right in ((1, 2), (2, 1), (0, 3))]
+    parents = [{"question": f"Calculate ({left} + {right}) + 0.", "answer": "3",
+                "module": "arithmetic__mixed"} for left, right in ((1, 2), (1, 2), (1, 2))]
     (bundle / "test.jsonl").write_text("".join(json.dumps(row) + "\n" for row in parents))
     kwargs = {"checkpoint_path": checkpoint, "bundle_dir": bundle, "split_names": ["test"],
               "max_new_tokens": 200, "batch_size": 3, "rollout": RolloutConfig(executor="exact")}

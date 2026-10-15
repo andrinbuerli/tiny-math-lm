@@ -25,6 +25,7 @@ def sample_group_rollouts(
     model: TinyMathGPT, prompt_ids: torch.Tensor, *, group_size: int,
     max_completion_tokens: int, temperature: float, eos_id: int, pad_id: int,
     tokenizer: CharacterTokenizer | None = None, rollout: RolloutConfig | None = None,
+    task_rows: list[dict] | None = None,
 ) -> Rollouts:
     """Sample independent groups with optional executor observations."""
     if group_size < 2 or temperature <= 0:
@@ -32,7 +33,7 @@ def sample_group_rollouts(
     return generate_rollouts(
         model, prompt_ids, group_size=group_size,
         max_completion_tokens=max_completion_tokens, temperature=temperature,
-        eos_id=eos_id, pad_id=pad_id, tokenizer=tokenizer, rollout=rollout,
+        eos_id=eos_id, pad_id=pad_id, tokenizer=tokenizer, rollout=rollout, task_rows=task_rows,
     )
 
 

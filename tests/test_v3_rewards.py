@@ -3,16 +3,17 @@ from __future__ import annotations
 import pytest
 
 from tinymath.data.char_tokenizer import CharacterTokenizer
+from tinymath.data.reasoning import annotate_row, permitted_call_requests
 from tinymath.rewards.calls import CallError, execute_call
 from tinymath.rewards.reasoning import score_v3
 
 
-def score(trace="step:+(1,2)\n=>3", answer="3", transform=lambda ids, t: ids, **kwargs):
+def score(trace="step:+(1,2)\n=>3", answer="3", transform=lambda ids, t: ids, question="Calculate 1 + 2.", **kwargs):
     tokenizer = CharacterTokenizer.from_texts(
         ["<scp>\n</scp>\nA: " + trace + answer], protocol="reasoning_v3"
     )
     ids = transform(tokenizer.encode_completion(answer, scratchpad=trace), tokenizer)
-    return score_v3(ids, tokenizer, {"question": "Calculate 1 + 2.", "answer": "3"}, **kwargs)
+    return score_v3(ids, tokenizer, {"question": question, "answer": "3"}, **kwargs)
 
 
 def test_format_credit_and_optional_calls():
@@ -20,9 +21,9 @@ def test_format_credit_and_optional_calls():
     assert score().call_count == 0
     assert score(answer="4").reward == 0.1
     assert score(trace="step:unsupported").reward == 0.1
-    assert score(trace="step:evaluate arithmetic operations in expression order\ncall:add(1,2) -> 3").reward == 1
+    assert score(trace="step:evaluate arithmetic operations in expression order\ncall:add(1,2) -> 3").reward == 0
     wrong_call = score(trace="step:evaluate arithmetic operations in expression order\ncall:add(1,2) -> 4")
-    assert wrong_call.reward == 0.1 and wrong_call.answer_correct
+    assert wrong_call.reward == 0 and wrong_call.answer_correct
     assert wrong_call.correct_calls == 0 and not wrong_call.trace_valid
 
 
@@ -65,3 +66,54 @@ def test_invalid_calls(call_text):
 def test_scalar_limit():
     with pytest.raises(CallError, match="scalar_limit"):
         execute_call("call:multiply(99,99) -> ", max_scalar_chars=2)
+
+
+@pytest.mark.parametrize(("question", "module", "answer"), [
+    ("Work out 25.208953 - 6094639.", "arithmetic__add_or_sub", "-6094613.791047"),
+    ("Calculate 25 + 32.", "arithmetic__add_or_sub", "57"),
+    ("Calculate 25 * 32.", "arithmetic__mul", "800"),
+    ("Calculate 25 / 32.", "arithmetic__div", "25/32"),
+    ("Calculate (-53/50) - (-410201/100000).", "arithmetic__mixed", "304201/100000"),
+])
+def test_atomic_source_tasks_never_delegate(question, module, answer):
+    row = {"question": question, "module": module, "answer": answer}
+    assert not permitted_call_requests(row)
+    annotation = annotate_row(row, protocol="reasoning_v3")
+    assert "call:" not in annotation["scratchpad"]
+    assert annotation["tool_calls_allowed"] is False
+
+
+def test_only_proper_subproblems_are_eligible_without_using_target_answer():
+    row = {"question": "Calculate (1+2)*4.", "module": "arithmetic__mixed"}
+    assert permitted_call_requests(row) == frozenset({"call:add(1,2) -> "})
+    assert permitted_call_requests({**row, "answer": "deliberately unavailable"}) == permitted_call_requests(row)
+    assert not permitted_call_requests({**row, "is_sub_task": True})
+    assert not permitted_call_requests({"question": "unsupported task"})
+    assert permitted_call_requests({"question": "Calculate (1+0)+0."}) == frozenset()
+    assert permitted_call_requests({"question": "Solve -21*o + 32 + 120 = -37 for o."}) == frozenset({"call:divide(-189,-21) -> "})
+
+
+def test_reward_blocks_root_and_unrelated_calls_even_with_correct_final_answer():
+    question = "Calculate (1+2)+0."
+    prefix = "step:evaluate arithmetic operations in expression order\n"
+    good = score(trace=prefix + "call:add(1,2) -> 3\nstep:+(3,0)", question=question)
+    assert good.reward == 1 and good.call_policy_valid
+    wrong = score(trace=prefix + "call:add(1,2) -> 4", question=question)
+    assert wrong.reward == .1 and wrong.call_policy_valid
+    for call in ("call:add(3,0) -> 3", "call:multiply(1,3) -> 3", "call:add(1,1) -> 2"):
+        rejected = score(trace=prefix + call, question=question)
+        assert rejected.reward == 0 and rejected.format_reward == 0
+        assert rejected.format_valid and rejected.answer_correct
+        assert not rejected.call_policy_valid and not rejected.trace_valid
+
+
+def test_screenshot_whole_subtraction_call_gets_zero_but_local_solution_gets_full_reward():
+    row = {"question": "Work out 25.208953 - 6094639.", "answer": "-6094613.791047",
+           "module": "arithmetic__add_or_sub"}
+    bad_trace = "step:evaluate arithmetic operations in expression order\ncall:subtract(25208953/1000000,6094639) -> -6094613791047/1000000"
+    local = annotate_row(row, protocol="reasoning_v3")
+    tokenizer = CharacterTokenizer.from_texts(["<scp>\n</scp>\nA: " + bad_trace + local["scratchpad"] + row["answer"]], protocol="reasoning_v3")
+    denied = score_v3(tokenizer.encode_completion(row["answer"], scratchpad=bad_trace), tokenizer, row)
+    assert denied.reward == 0 and not denied.call_policy_valid
+    assert denied.format_valid and denied.answer_correct
+    assert score_v3(tokenizer.encode_completion(row["answer"], scratchpad=local["scratchpad"]), tokenizer, row).reward == 1

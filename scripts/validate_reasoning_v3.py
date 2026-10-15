@@ -113,7 +113,12 @@ def controlled_sampler(rows):
             row = rows[tokenizer.decode(ids.tolist())]
             for lane in range(group_size):
                 answer = row["answer"] if lane % 3 == 0 else scalar_text(Fraction(row["answer"]) + 1)
-                texts.append(format_reasoning_display(row["scratchpad"], answer) if lane % 3 != 2 else "malformed")
+                if lane == 2:
+                    texts.append(format_reasoning_display(
+                        "step:attempt unrelated delegation\ncall:add(999,999) -> 1998", row["answer"]
+                    ))
+                else:
+                    texts.append(format_reasoning_display(row["scratchpad"], answer) if lane % 3 != 2 else "malformed")
         result = generate_rollouts(
             ScriptedPolicy(tokenizer, texts, model.config), prompt_ids, group_size=group_size,
             tokenizer=tokenizer, rollout=rollout, **kwargs,
@@ -145,6 +150,7 @@ def main(config: DictConfig) -> None:
             "bundle_sha256": sha256_file(bundle / "manifest.json"),
             "tokenizer_sha256": CharacterTokenizer.load(bundle / "char_tokenizer.json").sha256,
             "scripted_entropy": True,
+            "validation_includes_forbidden_calls": True,
         }, allow_val_change=True)
         original_save = grpo_runner.save_checkpoint
         marker = root / "interruption_record.json"

@@ -18,6 +18,7 @@ from tinymath.config import workspace_path
 from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.data.prompts import format_prompt
 from tinymath.data.reasoning import (
+    DELEGATION_POLICY,
     SUBTASK_SCHEMA_VERSION,
     annotate_row,
     distribution,
@@ -77,6 +78,8 @@ def main(config: DictConfig) -> None:
         if str(config.protocol) == "reasoning_v3":
             if int(config.get("subtask_schema_version", SUBTASK_SCHEMA_VERSION)) != SUBTASK_SCHEMA_VERSION:
                 raise ValueError("Unsupported v3 subtask schema version")
+            if config.get("delegation_policy", DELEGATION_POLICY) != DELEGATION_POLICY:
+                raise ValueError("Unsupported v3 delegation policy")
             result = build_reasoning_v3_bundle(
                 source, destination, max_tokens=int(config.max_tokens),
                 workers=int(config.get("workers", 8)),
@@ -88,6 +91,7 @@ def main(config: DictConfig) -> None:
                 "annotation_output_bundle": str(destination),
                 "subtask_schema_version": result["subtask_schema_version"],
                 "subtask_operand_semantics": result["subtask_operand_semantics"],
+                "delegation_policy": result["delegation_policy"],
                 "split_counts": {
                     name: value["examples"] for name, value in result["splits"].items()
                 },

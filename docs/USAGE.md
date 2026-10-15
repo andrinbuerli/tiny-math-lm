@@ -38,7 +38,7 @@ This creates a new Experiment 12 bundle and a W&B-tracked annotation run. It doe
 
 ## Experiment 13 reasoning_v3 arithmetic subtasks
 
-Experiment 13 adds visible `call:add(a,b) -> result`, `call:subtract(...)`, `call:multiply(...)` and `call:divide(...)` lines to parent scratchpads. Calls use exact integer or reduced-fraction operands and results. Each call also creates an ordinary math sample with a verified `reasoning_v2` scratchpad. Parent and subtask rows share each split's JSONL file; subtask rows carry `is_sub_task: true` and record their parent split, row index and call index. Training examples whose canonical arithmetic task also occurs in a held-out pool are marked ineligible.
+Experiment 13 permits visible arithmetic calls only for proper subproblems of larger tasks. Atomic arithmetic parents and standalone subtasks solve their operation locally without calls; compound arithmetic keeps its final operation local. Permitted calls use exact integer or reduced-fraction operands and results. Each call also creates an ordinary math sample with a verified `reasoning_v2` scratchpad. Parent and subtask rows share each split's JSONL file; subtask rows carry `is_sub_task: true` and record their parent split, row index and call index. Training examples whose canonical arithmetic task also occurs in a held-out pool are marked ineligible.
 
 Generate the separate bundle with:
 

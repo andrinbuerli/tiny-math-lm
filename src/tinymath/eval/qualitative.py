@@ -109,6 +109,7 @@ def build_qualitative_table(
                             model, prompt, max_completion_tokens=min(max_new_tokens, available),
                             temperature=0.0, eos_id=tokenizer.eos_id, pad_id=tokenizer.pad_id,
                             tokenizer=tokenizer, rollout=rollout_config,
+                            task_rows=[example],
                         )
                         generated = v3_rollouts.completion_ids[0, 0][v3_rollouts.completion_mask[0, 0]].tolist()
                     else:

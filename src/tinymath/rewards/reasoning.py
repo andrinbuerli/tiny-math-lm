@@ -7,11 +7,12 @@ from typing import Any
 
 from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.data.completions import parse_reasoning_completion
+from tinymath.data.reasoning import permitted_call_requests
 from tinymath.data.trace_explanations import transcribe_scratchpad
 from tinymath.rewards.calls import CallError, validate_call
 from tinymath.rewards.verify import verify_answer
 
-SCORER_VERSION = 1
+SCORER_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,7 @@ class V3Score:
     correct_calls: int = 0
     format_reward: float = 0.0
     success_reward: float = 0.0
+    call_policy_valid: bool = True
 
 
 def score_v3(
@@ -39,7 +41,7 @@ def score_v3(
     if tokenizer.protocol != "reasoning_v3":
         raise ValueError("V3 scoring requires a reasoning_v3 tokenizer")
     if capped or failure:
-        return V3Score()
+        return V3Score(call_policy_valid=failure != "disallowed_call")
     try:
         parsed = parse_reasoning_completion(token_ids, tokenizer)
     except ValueError:
@@ -47,6 +49,8 @@ def score_v3(
     lines = parsed.scratchpad.splitlines()
     calls = [line for line in lines if line.lstrip().startswith("call:")]
     correct_calls = 0
+    permitted = permitted_call_requests(row)
+    policy_valid = all(line.partition(" -> ")[0] + " -> " in permitted for line in calls)
     for line in calls:
         try:
             validate_call(line, max_scalar_chars=max_scalar_chars)
@@ -59,13 +63,15 @@ def score_v3(
         trace_valid = False
     trace_valid = trace_valid and correct_calls == len(calls) and len(calls) <= max_calls
     correct, valid = verify_answer(parsed.answer, row["answer"], question=row["question"])
+    trace_valid = trace_valid and policy_valid
     success = trace_valid and correct and valid
     success_reward = success_weight if success else 0.0
     return V3Score(
-        reward=round(format_weight + success_reward, 12), format_valid=True,
+        reward=round(format_weight + success_reward, 12) if policy_valid else 0.0, format_valid=True,
         trace_valid=trace_valid, answer_correct=correct and valid, full_success=success,
         scratchpad=parsed.scratchpad, answer=parsed.answer,
         reference_match=parsed.scratchpad == row.get("scratchpad"),
         call_count=len(calls), correct_calls=correct_calls,
-        format_reward=format_weight, success_reward=success_reward,
+        format_reward=format_weight if policy_valid else 0.0, success_reward=success_reward,
+        call_policy_valid=policy_valid,
     )

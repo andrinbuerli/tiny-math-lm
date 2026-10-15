@@ -19,6 +19,7 @@ from typing import Any
 from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.data.prompts import format_prompt
 from tinymath.data.reasoning import (
+    DELEGATION_POLICY,
     SUBTASK_SCHEMA_VERSION,
     annotate_row,
     distribution,
@@ -326,6 +327,7 @@ def _build_reasoning_v3_bundle(
         "trace_protocol": "reasoning_v3",
         "subtask_schema_version": SUBTASK_SCHEMA_VERSION,
         "subtask_operand_semantics": "atomic_rational",
+        "delegation_policy": DELEGATION_POLICY,
         "splits": split_manifest,
         "subtask_training_eligible_tasks": len(eligible_keys),
         "subtask_training_eligible": len(eligible_keys),
@@ -343,6 +345,7 @@ def _build_reasoning_v3_bundle(
         "protocol": "reasoning_v3", "max_tokens": max_tokens,
         "subtask_schema_version": SUBTASK_SCHEMA_VERSION,
         "subtask_operand_semantics": "atomic_rational",
+        "delegation_policy": DELEGATION_POLICY,
         "source_split_sha256": source_hashes, "splits": split_manifest,
         "tokenizer_sha256": tokenizer.sha256,
         "training_parent_rows": training_parent_count,

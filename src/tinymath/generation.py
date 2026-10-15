@@ -10,10 +10,12 @@ import torch
 from torch.nn import functional as F
 
 from tinymath.data.char_tokenizer import CharacterTokenizer
+from tinymath.data.prompts import format_prompt
+from tinymath.data.reasoning import DELEGATION_POLICY, permitted_call_requests
 from tinymath.rewards.calls import EXECUTOR_VERSION, CallError, execute_call, validate_call
 from tinymath.rewards.reasoning import SCORER_VERSION
 
-ROLLOUT_VERSION = 1
+ROLLOUT_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -27,11 +29,13 @@ class RolloutConfig:
     executor_version: int = EXECUTOR_VERSION
     rollout_version: int = ROLLOUT_VERSION
     token_accounting: str = "transcript_includes_executor_v1"
+    delegation_policy: str = DELEGATION_POLICY
 
     def __post_init__(self):
         if (self.scorer_version != SCORER_VERSION or self.executor_version != EXECUTOR_VERSION
                 or self.rollout_version != ROLLOUT_VERSION
-                or self.token_accounting != "transcript_includes_executor_v1"):
+                or self.token_accounting != "transcript_includes_executor_v1"
+                or self.delegation_policy != DELEGATION_POLICY):
             raise ValueError("Unsupported rollout/scorer/executor/accounting version")
         if self.executor not in {"none", "exact"}:
             raise ValueError("executor must be none or exact")
@@ -74,7 +78,8 @@ class Rollouts:
 
 
 class _CallState:
-    def __init__(self):
+    def __init__(self, allowed: frozenset[str]):
+        self.allowed = allowed
         self.line = ""
         self.inside = False
         self.started = False
@@ -91,15 +96,26 @@ class _CallState:
             elif self.line == "</scp>":
                 self.inside = False
             elif self.inside and self.line.lstrip().startswith("call:"):
-                validate_call(self.line, max_scalar_chars=config.max_scalar_chars)
+                request = self.line.partition(" -> ")[0] + " -> "
+                if request not in self.allowed:
+                    raise CallError("disallowed_call")
+                if config.executor == "exact":
+                    validate_call(self.line, max_scalar_chars=config.max_scalar_chars)
             self.line = ""
             self.dispatched = False
             return
         self.line += character
+        if self.inside and self.line.lstrip() == "call:" and not self.allowed:
+            raise CallError("disallowed_call")
         if (self.inside and self.line.startswith("call:") and not self.dispatched
                 and self.line.endswith(" -> ")):
             if len(self.events) >= config.max_calls:
                 raise CallError("call_limit")
+            if self.line not in self.allowed:
+                raise CallError("disallowed_call")
+            self.dispatched = True
+            if config.executor == "none":
+                return
             call = execute_call(self.line, max_scalar_chars=config.max_scalar_chars)
             try:
                 result_ids = tokenizer.encode(call.result)
@@ -108,7 +124,6 @@ class _CallState:
             if len(result_ids) > cap - position - 1:
                 raise CallError("budget_exceeded")
             self.pending.extend(result_ids)
-            self.dispatched = True
             self.events.append({
                 **asdict(call), "request_end": position + 1,
                 "result_start": position + 1, "result_end": position + 1 + len(result_ids),
@@ -120,6 +135,7 @@ def generate_rollouts(
     model: Any, prompt_ids: torch.Tensor, *, group_size: int = 1,
     max_completion_tokens: int, temperature: float, eos_id: int, pad_id: int,
     tokenizer: CharacterTokenizer | None = None, rollout: RolloutConfig | None = None,
+    task_rows: list[dict[str, Any]] | None = None,
 ) -> Rollouts:
     """Generate equal-length prompt batches, with separate observation/action masks.
 
@@ -142,7 +158,21 @@ def generate_rollouts(
         lanes, prompt_length
     )
     active = torch.ones(lanes, dtype=torch.bool, device=prompt_ids.device)
-    states = [_CallState() for _ in range(lanes)]
+    if task_rows is not None and len(task_rows) != batch:
+        raise ValueError("One task row is required per prompt")
+    policies = []
+    for index in range(batch):
+        allowed = frozenset()
+        if tokenizer is not None and tokenizer.protocol == "reasoning_v3":
+            text = tokenizer.decode(prompt_ids[index].tolist())
+            row = task_rows[index] if task_rows is not None else {
+                "question": text[3:-1] if text.startswith("Q: ") and text.endswith("\n") else "",
+            }
+            if task_rows is not None and text != format_prompt(row["question"], protocol="reasoning_v3"):
+                raise ValueError("Task metadata does not match the generation prompt")
+            allowed = permitted_call_requests(row)
+        policies.extend([allowed] * group_size)
+    states = [_CallState(allowed) for allowed in policies]
     reasons = ["budget_exceeded"] * lanes
     tokens, masks, policy_masks, old_logs, entropies = [], [], [], [], []
     cache = None
@@ -181,7 +211,7 @@ def generate_rollouts(
                 if token_id == eos_id:
                     active[lane] = False
                     reasons[lane] = "eos"
-                elif config.executor == "exact":
+                elif tokenizer is not None and tokenizer.protocol == "reasoning_v3":
                     try:
                         states[lane].observe(
                             tokenizer.decode([token_id]), tokenizer, config,

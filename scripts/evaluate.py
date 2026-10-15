@@ -153,6 +153,7 @@ def main(config: DictConfig) -> None:
                 "mean_reward", "full_success_rate", "format_only_rate", "mean_format_reward",
                 "mean_success_reward", "call_correctness", "calls_per_completion",
                 "no_call_success_rate", "executor_failures", "policy_tokens", "executor_tokens",
+                "call_policy_violation_rate",
             ):
                 value = result[metric]
                 if value is not None:

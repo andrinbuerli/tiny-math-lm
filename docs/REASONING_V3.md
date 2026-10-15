@@ -6,10 +6,24 @@ earn full reward without calling the executor. The scorer checks trace grammar,
 every call's exact arithmetic, and the final answer. It does not prove that all
 intermediate derivations solve the original question or require reference equality.
 
+Tool access follows `proper_subexpression_v1`, shared by reference annotation,
+generation, GRPO rewards, evaluation, and qualitative previews. Atomic arithmetic
+and standalone subtasks cannot call tools. Compound arithmetic can call only strict
+source subexpressions and must solve its final operation locally. Requests equivalent
+to the root operation or unrelated to the question are forbidden. Algebra may call
+the arithmetic division derived after collecting and moving equation terms.
+
+For `Calculate (25+32)*2.`, `call:add(25,32)` is permitted; `call:multiply(57,2)`
+is not. `Calculate 25+32.` must use a local worked derivation without any calls.
+Rational literals are atomic operands, including in a single-operation parent task.
+Alternative local derivations remain allowed; tool requests use the conservative
+source-subexpression allowlist. Eligibility is derived without reading the target answer.
+
 The reward is `0.1 * format_valid + 0.9 * full_success`. Formatting requires exactly
 one nonempty `<scp>` block, one terminal `A: <scalar>` line, and EOS. Full success
 also requires a valid trace and a correct answer. A well-formatted wrong answer or
 invalid derivation earns 0.1. Malformed, capped, or executor-failed rollouts earn 0.
+Forbidden delegation earns 0 even if formatting and the final answer are correct.
 This v3-specific partial reward intentionally replaces the original binary reward;
 answer-only, v1, and v2 keep their existing objectives.
 
@@ -20,6 +34,9 @@ are `add`, `subtract`, `multiply`, and `divide`. Operands/results use canonical
 integers or reduced fractions. No model workers, target answers, or generated code
 are used by the executor. Malformed completed requests, division by zero, excessive
 calls/scalars, and unencodable results terminate that lane with zero reward.
+Forbidden requests terminate before arithmetic execution or result insertion, including
+with `rollout.executor=none`. Explicit task metadata must match the prompt; standalone
+subtask status is preserved. Unknown questions fail closed for tool access.
 
 The transcript mask includes inserted results and EOS. The policy mask excludes
 inserted results and padding from the clipped loss, reference KL, entropy, clipping
@@ -62,10 +79,10 @@ The question still displays fractions, but their slashes are not parsed as extra
 division tasks. `subtask_operation_count` is always 1, and `module` follows
 `call_operation`, including for fractional operands. The annotator validates the
 question, operation, operands, result, and module together before producing the
-ordinary v2 worked trace. Original parent expressions retain their expression parser.
+ordinary v2 worked trace. Such subtasks cannot recursively delegate their operation.
 
 Regenerate with `uv run python scripts/annotate_reasoning.py --config-name reasoning_v3`.
-The atomic-v2 annotation has its own resumable W&B identity and replaces the standard
+The proper-subexpression annotation has its own resumable W&B identity and replaces the standard
 v3 bundle only after successful validation. A hidden sibling backup preserves the
 previous bundle; hidden backups and staging directories are excluded from the browser.
 The new annotation hash intentionally invalidates compatibility with checkpoints
@@ -80,10 +97,12 @@ uv run python scripts/validate_reasoning_v3.py
 ```
 
 This creates disjoint synthetic parent fixtures across all five modules under
-`runs/v3-integration-validation`. It uses a tiny randomly initialized GPT and scripted
+`runs/v3-proper-subexpression-validation`. It uses a tiny randomly initialized GPT and scripted
 training trajectories to exercise exact call execution, mixed 0/0.1/1 rewards,
 optimizer updates, and checkpoint/W&B resume. These off-policy controlled trajectories
-and their scripted entropy are plumbing checks, not learning measurements. The final
+include forbidden requests that must be denied before execution. Every update covers
+all five modules, including direct atomic arithmetic and permitted compound delegation.
+The scripted trajectories and entropy are plumbing checks, not learning measurements. The final
 greedy evaluation uses real model outputs. Unit tests also compare interrupted and
 uninterrupted optimizer results. Run `uv run pytest -q` for the regression suite.
 

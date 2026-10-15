@@ -35,11 +35,12 @@ class ScriptedModel(torch.nn.Module):
         return logits, position + 1
 
 
-def run_scripts(texts, *, config=None, cap=512, extra="", temperature=0):
-    tokenizer = CharacterTokenizer.from_texts([*texts, extra], protocol="reasoning_v3")
+def run_scripts(texts, *, config=None, cap=512, extra="", temperature=0, question="Calculate ((1+2)*2)+(12/(-1/2))."):
+    prompt_text = f"Q: {question}\n"
+    tokenizer = CharacterTokenizer.from_texts([*texts, extra, prompt_text], protocol="reasoning_v3")
     model = ScriptedModel(tokenizer, texts)
     result = generate_rollouts(
-        model, torch.tensor([[tokenizer.bos_id]]), group_size=len(texts),
+        model, torch.tensor([tokenizer.encode(prompt_text, add_bos=True)]), group_size=len(texts),
         max_completion_tokens=cap, temperature=temperature,
         eos_id=tokenizer.eos_id, pad_id=tokenizer.pad_id, tokenizer=tokenizer,
         rollout=config or RolloutConfig(executor="exact"),
@@ -74,10 +75,10 @@ def test_independent_lanes_dependent_calls_and_observation_masks():
 
 
 @pytest.mark.parametrize(("line", "reason", "config"), [
-    ("call:divide(1,0) -> ", "division_by_zero", RolloutConfig(executor="exact")),
-    ("call:power(1,2) -> ", "malformed_request", RolloutConfig(executor="exact")),
+    ("call:divide(1,0) -> ", "disallowed_call", RolloutConfig(executor="exact")),
+    ("call:power(1,2) -> ", "disallowed_call", RolloutConfig(executor="exact")),
     ("call:add(1,2)\n", "malformed_request", RolloutConfig(executor="exact")),
-    ("call:multiply(99,99) -> ", "scalar_limit", RolloutConfig(executor="exact", max_scalar_chars=2)),
+    ("call:multiply(99,99) -> ", "disallowed_call", RolloutConfig(executor="exact", max_scalar_chars=2)),
 ])
 def test_executor_failures(line, reason, config):
     result, _, _ = run_scripts(["<scp>\nstep:x\n" + line], config=config)
@@ -150,7 +151,8 @@ def test_fractional_groups_and_action_only_loss():
 
 def test_real_model_cached_logs_and_conditioning_across_inserted_result(monkeypatch):
     text = "<scp>\nstep:x\ncall:add(1,2) -> 3\n</scp>\nA: 3"
-    tokenizer = CharacterTokenizer.from_texts([text + "4"], protocol="reasoning_v3")
+    prompt_text = "Q: Calculate (1+2)*2.\n"
+    tokenizer = CharacterTokenizer.from_texts([text + "4", prompt_text], protocol="reasoning_v3")
     model = TinyMathGPT(GPTConfig(vocab_size=tokenizer.vocab_size, context_length=128,
                                 n_layers=1, n_heads=1, d_model=16, d_ff=32))
     model.eval()
@@ -160,7 +162,7 @@ def test_real_model_cached_logs_and_conditioning_across_inserted_result(monkeypa
     def scripted_sample(probabilities, num_samples):
         return torch.tensor([[next(actions)]], device=probabilities.device)
     monkeypatch.setattr(torch, "multinomial", scripted_sample)
-    prompt = torch.tensor([[tokenizer.bos_id]])
+    prompt = torch.tensor([tokenizer.encode(prompt_text, add_bos=True)])
     result = generate_rollouts(model, prompt, max_completion_tokens=100, temperature=0.8,
                                eos_id=tokenizer.eos_id, pad_id=tokenizer.pad_id, tokenizer=tokenizer,
                                rollout=RolloutConfig(executor="exact"))
@@ -171,3 +173,46 @@ def test_real_model_cached_logs_and_conditioning_across_inserted_result(monkeypa
     changed[0, 0, result_start] = tokenizer.token_to_id["4"]
     changed_logs = completion_log_probs(model, prompt, changed, temperature=0.8)
     assert not torch.allclose(logs[0, 0, result_start + 1], changed_logs[0, 0, result_start + 1], atol=1e-8)
+
+
+@pytest.mark.parametrize("executor", ["exact", "none"])
+def test_atomic_and_whole_task_calls_are_rejected_before_execution(monkeypatch, executor):
+    from tinymath import generation
+    def forbidden(*args, **kwargs):
+        raise AssertionError("A forbidden request reached the arithmetic executor")
+    monkeypatch.setattr(generation, "execute_call", forbidden)
+    for question, call in (
+        ("Calculate 1+2.", "call:add(1,2) -> 3"),
+        ("Calculate (1+2)+0.", "call:add(3,0) -> 3"),
+        ("Calculate (1+2)+0.", "call:multiply(1,3) -> 3"),
+    ):
+        result, _, _ = run_scripts(["<scp>\nstep:x\n" + call + "\n</scp>\nA: 3"],
+            question=question, config=RolloutConfig(executor=executor))
+        assert result.termination_reasons == ("disallowed_call",)
+        assert result.call_events == ((),)
+        assert (result.completion_mask & ~result.loss_mask).sum() == 0
+
+
+def test_mixed_atomic_and_compound_prompt_lanes_have_independent_permissions():
+    questions = ["Calculate 1 + 2.", "Calculate 1+2+0."]
+    assert len(questions[0]) == len(questions[1])
+    text = "<scp>\nstep:x\ncall:add(1,2) -> 3\n</scp>\nA: 3"
+    prompts = [f"Q: {question}\n" for question in questions]
+    tokenizer = CharacterTokenizer.from_texts([*prompts, text], protocol="reasoning_v3")
+    model = ScriptedModel(tokenizer, [text, text])
+    ids = torch.tensor([tokenizer.encode(prompt, add_bos=True) for prompt in prompts])
+    result = generate_rollouts(model, ids, max_completion_tokens=100, temperature=0,
+        eos_id=tokenizer.eos_id, pad_id=tokenizer.pad_id, tokenizer=tokenizer,
+        rollout=RolloutConfig(executor="exact"), task_rows=[{"question": q} for q in questions])
+    assert result.termination_reasons == ("disallowed_call", "eos")
+    assert [len(events) for events in result.call_events] == [0, 1]
+    with pytest.raises(ValueError, match="does not match"):
+        generate_rollouts(model, ids, max_completion_tokens=100, temperature=0,
+            eos_id=tokenizer.eos_id, pad_id=tokenizer.pad_id, tokenizer=tokenizer,
+            task_rows=[{"question": questions[1]}, {"question": questions[0]}])
+
+
+def test_eligible_call_still_enforces_scalar_resource_limit():
+    result, _, _ = run_scripts(["<scp>\nstep:x\ncall:multiply(99,99) -> "],
+        question="Calculate (99*99)+1.", config=RolloutConfig(executor="exact", max_scalar_chars=2))
+    assert result.termination_reasons == ("scalar_limit",)

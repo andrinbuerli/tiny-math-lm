@@ -30,6 +30,7 @@ NUMBER = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)"
 _NUMBER_RE = re.compile(NUMBER)
 _VAR = re.compile(r"[a-z]")
 SUBTASK_SCHEMA_VERSION = 2
+DELEGATION_POLICY = "proper_subexpression_v1"
 _CALL_SYMBOLS = {"add": "+", "subtract": "-", "multiply": "*", "divide": "/"}
 _CALL_MODULES = {
     "add": "arithmetic__add_or_sub", "subtract": "arithmetic__add_or_sub",
@@ -155,6 +156,73 @@ def _atomic_subtask_call(row: dict) -> ArithmeticCall | None:
             or row.get("subtask_operation_count") != 1):
         raise ValueError("Atomic subtask question, module, result, or operation count is inconsistent")
     return ArithmeticCall(operation, left, right, result, symbol)
+
+
+def _call_request(call: ArithmeticCall) -> str:
+    return call.render().partition(" -> ")[0] + " -> "
+
+
+def _proper_arithmetic_calls(calls: list[ArithmeticCall]) -> list[ArithmeticCall]:
+    """The root operation is the parent's responsibility, including equivalent aliases."""
+    if not calls:
+        return []
+    root = _call_request(calls[-1])
+    return [call for call in calls[:-1] if _call_request(call) != root]
+
+
+def _atomic_expression_call(expression: str) -> ArithmeticCall | None:
+    """Recognize one operator over two scalar literals, including rational literals."""
+    scalar = rf"(?:[+-]?\d+/[+-]?\d+|{NUMBER})"
+    atom = rf"(?:{scalar}|\(\s*{scalar}\s*\))"
+    match = re.fullmatch(rf"\s*({atom})\s*([+*/-])\s*({atom})\s*", expression)
+    if match is None:
+        return None
+    left_text, symbol, right_text = match.groups()
+    left, right = (_fraction(text.strip().strip("() ")) for text in (left_text, right_text))
+    if symbol == "/" and not right:
+        raise ValueError("Division by zero")
+    result = {"+": left + right, "-": left - right, "*": left * right,
+              "/": left / right if right else None}[symbol]
+    operation = {value: key for key, value in _CALL_SYMBOLS.items()}[symbol]
+    return ArithmeticCall(operation, left, right, result, symbol)
+
+
+def permitted_call_requests(row: dict) -> frozenset[str]:
+    """Derive eligible strict subproblems from the question alone, never its answer.
+
+    Standalone worker tasks are atomic. Arithmetic may delegate source subtrees,
+    but never the root. Algebra may delegate the arithmetic division after moving
+    terms, since solving an equation is a larger symbolic task.
+    """
+    if row.get("is_sub_task") or row.get("subtask_schema_version") is not None:
+        return frozenset()
+    question = row.get("question", "")
+    modules = [row["module"]] if row.get("module") in MODULES else (
+        ["algebra__linear_1d"] if question.lower().startswith("solve ") else
+        ["arithmetic__mixed", "arithmetic__add_or_sub", "arithmetic__mul", "arithmetic__div"]
+    )
+    for module in modules:
+        try:
+            expression, variable = _source_expression(question, module)
+            builder = _Builder()
+            if module == "algebra__linear_1d":
+                lhs, rhs = expression.split("=", 1)
+                left = _LinearParser(lhs, variable, builder).parse_linear()
+                right = _LinearParser(rhs, variable, builder).parse_linear()
+                coefficient = left.coefficient - right.coefficient
+                constant = right.constant - left.constant
+                if not coefficient:
+                    return frozenset()
+                return frozenset({_call_request(ArithmeticCall(
+                    "divide", constant, coefficient, constant / coefficient, "/"
+                ))})
+            if _atomic_expression_call(expression) is not None:
+                return frozenset()
+            _ExpressionParser(expression, builder).parse()
+            return frozenset(_call_request(call) for call in _proper_arithmetic_calls(builder.calls))
+        except (ValueError, ZeroDivisionError):
+            continue
+    return frozenset()  # Unsupported questions fail closed for tool access.
 
 
 def _add_lines(a: int, b: int, result: int) -> list[str]:
@@ -711,7 +779,9 @@ def annotate_row(
             expression, _ = _source_expression(row["question"], module)
             # Word templates normalize to operators; signed numbers remain exact.
             expression = re.sub(r"(?<=\d)\s+(?=[+-]?\d)", " ", expression)
-            trace = _ExpressionParser(expression, builder).parse()
+            literal_call = _atomic_expression_call(expression) if protocol == "reasoning_v3" else None
+            trace = (builder.arithmetic(literal_call.symbol, literal_call.left, literal_call.right)
+                     if literal_call else _ExpressionParser(expression, builder).parse())
         arithmetic_calls = list(builder.calls)
         value = trace.value
         if value != expected:
@@ -768,10 +838,25 @@ def annotate_row(
             collapsed[chosen.category] = collapsed.get(chosen.category, 0) + 1
             retained_length = length_fn(row, scratch)
     elif protocol == "reasoning_v3":
-        if retained_length > max_tokens:
-            raise ValueError(
-                f"reasoning_v3 call trace exceeds {max_tokens} tokens: {retained_length}"
-            )
+        # Only local derivation details may be collapsed; delegated requests stay
+        # visible and the final operation is always solved without a tool call.
+        while retained_length > max_tokens:
+            candidates = []
+            for op in operations:
+                if op.collapsed_now or op.essential:
+                    continue
+                op.collapsed_now = True
+                candidate = _reasoning_v3_trace(row, operations, arithmetic_calls, value)
+                saving = retained_length - length_fn(row, candidate)
+                op.collapsed_now = False
+                if saving > 0:
+                    candidates.append((saving, -op.order, op, candidate))
+            if not candidates:
+                raise ValueError(f"reasoning_v3 derivation exceeds {max_tokens} tokens: {retained_length}")
+            _, _, chosen, scratch = max(candidates, key=lambda item: (item[0], item[1]))
+            chosen.collapsed_now = True
+            collapsed[chosen.category] = collapsed.get(chosen.category, 0) + 1
+            retained_length = length_fn(row, scratch)
     if _fraction(answer) != value:
         raise AssertionError("Final scalar changed during annotation")
     annotated = dict(row)
@@ -787,6 +872,9 @@ def annotate_row(
     })
     if protocol in {"reasoning_v2", "reasoning_v3"}:
         annotated["trace_version"] = protocol
+    if protocol == "reasoning_v3":
+        annotated["delegation_policy"] = DELEGATION_POLICY
+        annotated["tool_calls_allowed"] = bool(permitted_call_requests(row))
     if protocol == "reasoning_v3" or (protocol == "reasoning_v2" and max_tokens != 512):
         annotated["annotation_max_tokens"] = max_tokens
     return annotated
@@ -810,6 +898,7 @@ def generate_subtask_rows(
     """Turn visible v3 calls into standalone, oracle-verified v2 math samples."""
     if annotation.get("trace_version") != "reasoning_v3":
         raise ValueError("Subtask generation requires a reasoning_v3 parent")
+    allowed = permitted_call_requests(source_row)
     results: list[dict[str, object]] = []
     for call_index, line in enumerate(
         line for line in str(annotation.get("scratchpad", "")).splitlines()
@@ -819,6 +908,8 @@ def generate_subtask_rows(
         if match is None:
             raise ValueError(f"Malformed reasoning_v3 call line: {line!r}")
         operation, left_text, right_text, result_text = match.groups()
+        if line.partition(" -> ")[0] + " -> " not in allowed:
+            raise ValueError("Parent call is not a proper subproblem of its source task")
         left, right, result = map(_fraction, (left_text, right_text, result_text))
         symbol = {"add": "+", "subtract": "-", "multiply": "*", "divide": "/"}[operation]
         actual = {"+": left + right, "-": left - right, "*": left * right,
@@ -837,6 +928,7 @@ def generate_subtask_rows(
             "category": "reasoning_v3_subtask",
             "subtask_schema_version": SUBTASK_SCHEMA_VERSION,
             "subtask_operation_count": 1,
+            "tool_calls_allowed": False,
             "call_operation": operation,
             "call_operands": list(operands),
             "call_result": _scalar(result),
@@ -1059,9 +1151,20 @@ def _reasoning_v3_trace(
     if row.get("module") != "algebra__linear_1d":
         if not calls:
             raise ValueError("reasoning_v3 needs at least one arithmetic call")
+        if len(calls) == 1:
+            return _forward_trace(render_operations(operations), operations, value)
+        # Keep the final operation local. Its details are represented in
+        # operations by annotate_row, so context-budget reduction remains valid.
+        root = calls[-1]
+        root_builder = _Builder()
+        root_builder.arithmetic(root.symbol, root.left, root.right)
+        for original, local in zip(operations[-len(root_builder.operations):], root_builder.operations, strict=True):
+            local.collapsed_now = original.collapsed_now
+        local_trace = _forward_trace(render_operations(root_builder.operations), root_builder.operations, value)
         return "\n".join(
             ["step:evaluate arithmetic operations in expression order"]
-            + [call.render() for call in calls]
+            + [call.render() for call in _proper_arithmetic_calls(calls)]
+            + [local_trace]
         )
 
     # The existing linear reference contains exact collect/move/substitution
