@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 from pathlib import Path
 
@@ -60,6 +61,10 @@ def test_exp13_report_lists_all_rows_and_marks_missing_evaluations_not_run(works
 
     assert report["row_count"] == 27
     assert {row["status"] for row in report["rows"]} == {"not-run"}
+    assert {row["source_arm"] for row in report["rows"] if row["arm"] == "sft"} == {
+        "random_initialization"
+    }
+    assert {row["source_arm"] for row in report["rows"] if row["arm"] != "sft"} == {"sft"}
     assert {item["status"] for item in report["compute_matching"].values()} == {"pending"}
     assert len(outputs) == 5
     assert all(path.exists() for path in outputs)
@@ -137,6 +142,7 @@ def test_exp13_delta_requires_complete_evaluation_and_identical_question_identit
     assert row["status"] == "complete"
     assert row["same_question_identity"] is True
     assert row["delta_percentage_points"] == 25.0
+    assert row["source_arm"] == "random_initialization"
 
     _write_predictions(eval_dir / "test_predictions.csv", rows[:1])
     report, _ = make_exp13_report(
@@ -149,3 +155,57 @@ def test_exp13_delta_requires_complete_evaluation_and_identical_question_identit
     assert row["status"] == "complete"
     assert row["same_question_identity"] is False
     assert row["delta_percentage_points"] is None
+
+
+def test_exp13_report_links_grpo_to_its_sft_checkpoint_and_run(workspace_tmpdir):
+    baseline = _baseline_snapshot(workspace_tmpdir / "baseline.json")
+    runs = workspace_tmpdir / "runs"
+    experiment = "exp13_reasoning_v3_arithmetic_subtasks"
+    sft_dir = runs / experiment / "1m" / "sft" / "seed18"
+    sft_dir.mkdir(parents=True)
+    source_sft = sft_dir / "best.pt"
+    source_sft.write_bytes(b"selected-sft-checkpoint")
+    (sft_dir / "wandb_run.json").write_text(json.dumps({
+        "id": "sft-run-id",
+        "mode": "online",
+        "sync_status": "synced",
+        "run_status": "finished",
+        "url": "https://wandb.ai/entity/project/runs/sft-run-id",
+        "entity": "entity",
+        "project": "project",
+        "identity": {"name": "sft-run", "group": "exp13-1m-sft"},
+    }), encoding="utf-8")
+    grpo_dir = runs / experiment / "1m" / "grpo" / "seed18"
+    grpo_dir.mkdir(parents=True)
+    grpo_checkpoint = grpo_dir / "latest.pt"
+    grpo_checkpoint.write_bytes(b"grpo-checkpoint")
+    eval_dir = runs / experiment / "1m" / "evaluation" / "grpo" / "latest" / "seed18"
+    eval_dir.mkdir(parents=True)
+    (eval_dir / "results.json").write_text(json.dumps({
+        "checkpoint": str(grpo_checkpoint.resolve()),
+        "checkpoint_step": 100,
+        "source_sft_checkpoint": str(source_sft.resolve()),
+        "splits": {},
+    }), encoding="utf-8")
+    bundle = workspace_tmpdir / "bundle"
+    bundle.mkdir()
+    (bundle / "manifest.json").write_text(json.dumps({
+        "annotation": {}, "tokenizer": {}, "splits": {},
+    }), encoding="utf-8")
+
+    report, _ = make_exp13_report(
+        runs_dir=runs,
+        output_dir=workspace_tmpdir / "reports",
+        baseline_snapshot=baseline,
+        annotation_bundle_dir=bundle,
+        experiment=experiment,
+    )
+    row = next(row for row in report["rows"] if (
+        row["model"], row["arm"], row["split"]
+    ) == ("1m", "grpo", "test"))
+    assert row["source_arm"] == "sft"
+    assert row["source_sft_checkpoint"] == str(source_sft.resolve())
+    assert row["source_sft_checkpoint_sha256"] == hashlib.sha256(
+        source_sft.read_bytes()
+    ).hexdigest()
+    assert row["source_sft_wandb"]["run_id"] == "sft-run-id"

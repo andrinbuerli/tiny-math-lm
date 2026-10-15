@@ -780,6 +780,14 @@ def _json_file(path: Path) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _wandb_provenance(run_dir: Path) -> dict[str, Any]:
     """Expose local W&B identity and sync state without implying an online link."""
     state = _json_file(run_dir / "wandb_run.json") or {}
@@ -1921,9 +1929,23 @@ def make_exp13_report(
             result = _json_file(result_path) if result_path else None
             eval_state = _json_file(eval_root / "wandb_run.json") or {}
             progress = _json_file(eval_root / "progress.json") or {}
-            checkpoint_hash = hashlib.sha256(checkpoint.read_bytes()).hexdigest() if checkpoint.is_file() else None
+            checkpoint_hash = _sha256_file(checkpoint) if checkpoint.is_file() else None
             training_metrics = _metric_at_checkpoint(
                 training_dir / "metrics.csv", arm, (result or {}).get("checkpoint_step")
+            )
+            source_sft_checkpoint = (result or {}).get("source_sft_checkpoint")
+            source_sft_path = (
+                Path(source_sft_checkpoint)
+                if source_sft_checkpoint else None
+            )
+            source_sft_checkpoint_hash = (
+                _sha256_file(source_sft_path)
+                if source_sft_path is not None and source_sft_path.is_file()
+                else None
+            )
+            source_sft_wandb = (
+                _wandb_provenance(source_sft_path.parent)
+                if source_sft_path is not None else {}
             )
             for split in SPLITS:
                 baseline = baseline_records.get((model, arm, split))
@@ -1963,6 +1985,10 @@ def make_exp13_report(
                     "model": model,
                     "model_parameters": (result or {}).get("model_parameters"),
                     "arm": arm,
+                    "source_arm": "random_initialization" if arm == "sft" else "sft",
+                    "source_sft_checkpoint": str(source_sft_path) if source_sft_path else None,
+                    "source_sft_checkpoint_sha256": source_sft_checkpoint_hash,
+                    "source_sft_wandb": source_sft_wandb,
                     "split": split,
                     "baseline_accuracy": baseline_accuracy,
                     "baseline_scored": expected or None,
