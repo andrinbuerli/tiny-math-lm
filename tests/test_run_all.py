@@ -60,6 +60,29 @@ def test_orchestrator_propagates_reasoning_v3_rollout_to_child_runs():
     assert "rollout.token_accounting=\"transcript_includes_executor_v1\"" in values
 
 
+def test_orchestrator_preserves_literal_backslash_in_saved_experiment_title():
+    config_dir = str(Path(__file__).resolve().parents[1] / "configs")
+    title = "Experiment 13 \\u2014 Reasoning-v3 arithmetic subtasks"
+    with initialize_config_dir(version_base="1.3", config_dir=config_dir):
+        config = compose(
+            config_name="reasoning_v3",
+            overrides=[
+                "experiment=13_reasoning_v3_arithmetic_subtasks",
+                f"experiment.title='{title}'",
+            ],
+        )
+        child_overrides = run_all._overrides(
+            config,
+            model="100m",
+            trainer="sft",
+            experiment_choice="13_reasoning_v3_arithmetic_subtasks",
+        )
+        child_config = compose(config_name="reasoning_v3", overrides=child_overrides)
+
+    assert config.experiment.title == title
+    assert child_config.experiment.title == title
+
+
 def test_orchestrator_names_each_fresh_arm_run_and_wandb_group():
     with initialize_config_dir(version_base="1.3", config_dir=str(Path(__file__).resolve().parents[1] / "configs")):
         config = compose(

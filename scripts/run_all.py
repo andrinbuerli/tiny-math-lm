@@ -116,7 +116,13 @@ def _overrides(
     ]
     for key, value in values["experiment"].items():
         if key != "name":
-            result.append(f"experiment.{key}={json.dumps(value)}")
+            # A literal backslash-u in a saved title must survive Hydra's
+            # parsing unchanged when this resolved config is forwarded again.
+            if key == "title" and isinstance(value, str) and "\\" in value and "'" not in value:
+                serialized = f"'{value}'"
+            else:
+                serialized = json.dumps(value)
+            result.append(f"experiment.{key}={serialized}")
     for group in (
         "data", "rlvr", "rollout", "eval", "qualitative", "runtime",
         "reporting", "tracking", "paths",
