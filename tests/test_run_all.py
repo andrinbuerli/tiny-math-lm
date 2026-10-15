@@ -62,6 +62,30 @@ def test_orchestrator_propagates_reasoning_v3_rollout_to_child_runs():
     assert "rollout.token_accounting=\"transcript_includes_executor_v1\"" in values
 
 
+def test_orchestrator_forwards_validation_cadence_without_overriding_arm_budget():
+    with initialize_config_dir(version_base="1.3", config_dir=str(Path(__file__).resolve().parents[1] / "configs")):
+        config = compose(
+            config_name="reasoning_v3",
+            overrides=[
+                "experiment=13_reasoning_v3_arithmetic_subtasks",
+                "trainer.eval_every=1000",
+            ],
+        )
+        values = run_all._overrides(
+            config,
+            model="10m",
+            trainer="continued_sft",
+            experiment_choice="13_reasoning_v3_arithmetic_subtasks",
+        )
+        child_config = compose(config_name="reasoning_v3", overrides=values)
+
+    assert "trainer.eval_every=1000" in values
+    assert child_config.trainer.eval_every == 1000
+    assert child_config.trainer.batch_size == 32
+    assert child_config.trainer.gradient_accumulation == 4
+    assert child_config.trainer.learning_rate == 1e-4
+
+
 def test_orchestrator_uses_current_exact_v3_rollout_after_resumed_sft():
     with initialize_config_dir(version_base="1.3", config_dir=str(Path(__file__).resolve().parents[1] / "configs")):
         config = compose(

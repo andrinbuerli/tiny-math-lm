@@ -119,6 +119,11 @@ def _overrides(
         f"experiment.name={_hydra_value(values['experiment']['name'])}",
         f"seed={values['seed']}",
     ]
+    # Keep the validation cadence explicit in every child while leaving the
+    # selected trainer group's batch size, accumulation, and learning rate
+    # intact (continued-SFT deliberately differs from the root SFT config).
+    if "eval_every" in values.get("trainer", {}):
+        result.append(f"trainer.eval_every={values['trainer']['eval_every']}")
     for key, value in values["experiment"].items():
         if key != "name":
             # A literal backslash-u in a saved title must survive Hydra's
