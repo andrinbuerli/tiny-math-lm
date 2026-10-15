@@ -151,12 +151,16 @@ def test_evaluation_and_qualitative_share_scoring_and_parent_population(v3_setup
         evaluation.evaluate_checkpoint(**{**kwargs, "rollout": RolloutConfig()})
     from tinymath.eval import qualitative
     monkeypatch.setattr(qualitative, "generate_rollouts", controlled_rollouts)
-    parent = {"question": "Calculate (1 + 2) + 0.", "answer": "3", "module": "arithmetic__mixed"}
+    reference_trace = "step:+(1,2)\n=>3\n+(3,0)"
+    parent = {"question": "Calculate (1 + 2) + 0.", "answer": "3", "module": "arithmetic__mixed",
+              "scratchpad": reference_trace}
     table, count, accuracy = build_qualitative_table(model=model, tokenizer=tokenizer,
         split_rows={"test": [parent, {**parent, "is_sub_task": True}]}, training_arm="sft", seed=9,
         max_new_tokens=200, rollout=config)
     assert count == 1 and accuracy["test"] == 1
     record = dict(zip(table.columns, table.data[0], strict=True))
+    assert record["reference_scratchpad"] == reference_trace
+    assert record["predicted_scratchpad"] != reference_trace
     assert record["reward"] == 1 and record["full_success"] and record["assisted"]
     with (workspace_tmpdir / "eval" / "test_predictions.csv").open() as handle:
         assert next(csv.DictReader(handle))["reward"] == "1.0"

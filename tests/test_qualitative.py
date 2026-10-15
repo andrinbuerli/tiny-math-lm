@@ -96,10 +96,11 @@ def test_qualitative_table_covers_each_split_and_balances_modules(monkeypatch):
     table = run.logs[0][0]["qualitative/examples"]
     assert set(table.columns) == {
         "training_arm", "seed", "split", "module", "question", "target",
-        "prediction", "completion", "predicted_scratchpad", "transcribed_scratchpad", "trace_structure_valid",
+        "prediction", "completion", "predicted_scratchpad", "reference_scratchpad", "transcribed_scratchpad", "trace_structure_valid",
         "correct", "format_valid", "output_tokens", "capped",
     }
     assert {row[2] for row in table.data} == {"train", "validation", "test"}
+    assert all(row[table.columns.index("reference_scratchpad")] == "" for row in table.data)
     assert {row[3] for row in table.data if row[2] == "train"} == {
         "arithmetic__add_or_sub", "arithmetic__mixed"
     }
@@ -155,7 +156,8 @@ def test_reasoning_qualitative_uses_unprefixed_prompt_and_full_context_cap(monke
     assert all(prompt == "Q: 1 + 1\n" for prompt, _cap in observed)
     assert all(cap == 64 - len(tokenizer.encode("Q: 1 + 1\n", add_bos=True)) for _, cap in observed)
     assert table.data[0][8] == trace
-    assert "Add 1 and 1" in table.data[0][9]
+    assert all(row[table.columns.index("reference_scratchpad")] == "REFERENCE MUST NOT ENTER PROMPT" for row in table.data)
+    assert "Add 1 and 1" in table.data[0][table.columns.index("transcribed_scratchpad")]
 
 
 def test_reasoning_qualitative_retains_predicted_scratchpad_when_answer_is_malformed(monkeypatch):
