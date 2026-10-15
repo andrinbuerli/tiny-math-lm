@@ -178,6 +178,10 @@ def _atomic_expression_call(expression: str) -> ArithmeticCall | None:
     if match is None:
         return None
     left_text, symbol, right_text = match.groups()
+    # a/b/c/d is left associative, not (a/b)/(c/d). A fractional
+    # divisor must be explicitly parenthesized before it can be one scalar.
+    if symbol == "/" and "/" in right_text and not right_text.lstrip().startswith("("):
+        return None
     left, right = (_fraction(text.strip().strip("() ")) for text in (left_text, right_text))
     if symbol == "/" and not right:
         raise ValueError("Division by zero")
@@ -758,6 +762,10 @@ def annotate_row(
     """Verify and annotate a source row without mutating it."""
     if protocol not in {"reasoning_v1", "reasoning_v2", "reasoning_v3"}:
         raise ValueError(f"Unsupported trace protocol: {protocol}")
+    if protocol == "reasoning_v3" and length_fn is default_sequence_length:
+        # V3 spells both delimiters as ordinary characters (11 tokens),
+        # whereas the legacy default counts two reserved delimiter IDs.
+        length_fn = lambda source, trace: default_sequence_length(source, trace) + 9
     if not MODULES.__contains__(row.get("module", "")):
         raise ValueError(f"Unsupported module: {row.get('module')!r}")
     answer = row["answer"].strip()

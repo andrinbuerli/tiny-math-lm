@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from tinymath.data.char_tokenizer import CharacterTokenizer
-from tinymath.data.reasoning import annotate_row, permitted_call_requests
+from tinymath.data.reasoning import annotate_row, permitted_call_requests, verify_annotation
 from tinymath.rewards.calls import CallError, execute_call
 from tinymath.rewards.reasoning import score_v3
 
@@ -117,3 +117,32 @@ def test_screenshot_whole_subtraction_call_gets_zero_but_local_solution_gets_ful
     assert denied.reward == 0 and not denied.call_policy_valid
     assert denied.format_valid and denied.answer_correct
     assert score_v3(tokenizer.encode_completion(row["answer"], scratchpad=local["scratchpad"]), tokenizer, row).reward == 1
+
+
+def test_fractional_scalar_recognition_preserves_left_associative_division():
+    row = {"question": "Calculate 1/2/3/4.", "answer": "1/24", "module": "arithmetic__mixed"}
+    annotation = annotate_row(row, protocol="reasoning_v3")
+    assert permitted_call_requests(row) == frozenset({"call:divide(1,2) -> ", "call:divide(1/2,3) -> "})
+    assert "call:divide(1/6,4)" not in annotation["scratchpad"]
+    assert "step:/(1/6,4)" in annotation["scratchpad"]
+    assert not permitted_call_requests({"question": "Calculate (1/2)/(3/4)."})
+
+
+def test_v3_local_multiplication_uses_character_delimiter_budget():
+    import string
+
+    from tinymath.data.prompts import format_prompt
+
+    row = {"question": "Product of -2 and 22252915.", "answer": "-44505830", "module": "arithmetic__mul"}
+    tokenizer = CharacterTokenizer.from_texts([string.printable], protocol="reasoning_v3")
+
+    def length(source, trace):
+        return len(tokenizer.encode(format_prompt(source["question"], protocol="reasoning_v3"), add_bos=True)) + len(
+            tokenizer.encode_completion(source["answer"], scratchpad=trace)
+        )
+
+    annotation = annotate_row(row, protocol="reasoning_v3", length_fn=length)
+    assert length(row, annotation["scratchpad"]) <= 512
+    assert annotate_row(row, protocol="reasoning_v3")["scratchpad"] == annotation["scratchpad"]
+    verify_annotation(row, annotation)
+    verify_annotation(row, annotation, length_fn=length)

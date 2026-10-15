@@ -91,7 +91,7 @@ def _annotate_row(payload: tuple[str, int, dict[str, str]]) -> tuple[dict[str, o
         annotation = annotate_row(
             row, max_tokens=_WORKER_MAX_TOKENS, length_fn=_sequence_length, protocol="reasoning_v3"
         )
-        verify_annotation(row, annotation)
+        verify_annotation(row, annotation, length_fn=_sequence_length)
         subtasks = _subtasks(
             row, annotation, split, index, _WORKER_MAX_TOKENS, _sequence_length
         )
