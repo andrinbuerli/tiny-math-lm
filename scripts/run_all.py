@@ -22,6 +22,7 @@ from tinymath.train.budgets import isolated_training_run_dir
 
 LOGGER = logging.getLogger(__name__)
 _GPU_LAUNCH_LOCK = threading.Lock()
+EXP13_CANONICAL_BUNDLE = "data/processed/exp13_reasoning_v3_arithmetic_subtasks-seed18"
 
 
 def _hydra_value(value: object) -> str:
@@ -218,9 +219,30 @@ def _downstream_config(config: DictConfig) -> DictConfig:
     return config
 
 
+def _evaluation_config(config: DictConfig) -> DictConfig:
+    """Evaluate Experiment 13 on the verified canonical reasoning-v3 bundle."""
+    if int(config.experiment.get("number", 0) or 0) != 13:
+        return config
+    bundle_dir = workspace_path(EXP13_CANONICAL_BUNDLE)
+    manifest_path = bundle_dir / "manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"Canonical Experiment 13 bundle not found: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    protocol = manifest.get("annotation", {}).get("protocol")
+    if protocol != "reasoning_v3":
+        raise ValueError(
+            f"Experiment 13 evaluation requires a reasoning_v3 bundle, got {protocol!r}"
+        )
+    evaluation_config = OmegaConf.create(OmegaConf.to_container(config, resolve=True))
+    evaluation_config.data_bundle = EXP13_CANONICAL_BUNDLE
+    evaluation_config.reporting.annotation_bundle_dir = str(bundle_dir)
+    return evaluation_config
+
+
 def _run_model(config: DictConfig, model_name: str, experiment_choice: str) -> None:
     """Run a model's SFT, GRPO and continued-SFT arms and their evaluations."""
     downstream_config = _downstream_config(config)
+    evaluation_config = _evaluation_config(downstream_config)
     _run(
         "train_sft.py", config, model=model_name, trainer="sft",
         experiment_choice=experiment_choice,
@@ -236,7 +258,7 @@ def _run_model(config: DictConfig, model_name: str, experiment_choice: str) -> N
     )
     sft_checkpoint = str(sft_run / "best.pt")
     _run(
-        "evaluate.py", downstream_config, model=model_name, trainer="sft", checkpoint=sft_checkpoint,
+        "evaluate.py", evaluation_config, model=model_name, trainer="sft", checkpoint=sft_checkpoint,
         experiment_choice=experiment_choice,
         run_arm="sft", run_label="evaluation",
     )
@@ -256,7 +278,7 @@ def _run_model(config: DictConfig, model_name: str, experiment_choice: str) -> N
             "latest.pt",
         )
         _run(
-            "evaluate.py", downstream_config, model=model_name, trainer="sft",
+            "evaluate.py", evaluation_config, model=model_name, trainer="sft",
             checkpoint=str(grpo_checkpoint), experiment_choice=experiment_choice,
             run_arm="grpo", run_label="evaluation",
         )
@@ -275,7 +297,7 @@ def _run_model(config: DictConfig, model_name: str, experiment_choice: str) -> N
             run_arm="continued_sft", run_label="training",
         )
         _run(
-            "evaluate.py", downstream_config, model=model_name, trainer="sft",
+            "evaluate.py", evaluation_config, model=model_name, trainer="sft",
             checkpoint=str(control_run / "best.pt"), experiment_choice=experiment_choice,
             run_arm="continued_sft", run_label="evaluation",
         )

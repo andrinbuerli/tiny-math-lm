@@ -80,6 +80,28 @@ def test_orchestrator_uses_current_exact_v3_rollout_after_resumed_sft():
     assert downstream.rollout.delegation_policy == "compound_task_v1"
 
 
+def test_exp13_evaluation_uses_canonical_reasoning_v3_bundle(workspace_tmpdir, monkeypatch):
+    bundle = workspace_tmpdir / "official-bundle"
+    bundle.mkdir()
+    (bundle / "manifest.json").write_text(
+        '{"annotation":{"protocol":"reasoning_v3"}}', encoding="utf-8"
+    )
+    monkeypatch.setattr(run_all, "workspace_path", lambda *_: bundle)
+    with initialize_config_dir(version_base="1.3", config_dir=str(Path(__file__).resolve().parents[1] / "configs")):
+        config = compose(
+            config_name="config",
+            overrides=[
+                "experiment=13_reasoning_v3_arithmetic_subtasks",
+                "data_bundle=data/processed/filtered-bundle",
+            ],
+        )
+
+    evaluation = run_all._evaluation_config(run_all._downstream_config(config))
+    assert config.data_bundle == "data/processed/filtered-bundle"
+    assert evaluation.data_bundle == run_all.EXP13_CANONICAL_BUNDLE
+    assert evaluation.reporting.annotation_bundle_dir == str(bundle)
+
+
 def test_orchestrator_preserves_literal_backslash_in_saved_experiment_title():
     config_dir = str(Path(__file__).resolve().parents[1] / "configs")
     title = "Experiment 13 \\u2014 Reasoning-v3 arithmetic subtasks"
