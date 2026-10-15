@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import threading
 import time
@@ -267,7 +268,7 @@ def _run_model(config: DictConfig, model_name: str, experiment_choice: str) -> N
 
 
 def _run_comparison(config: DictConfig) -> None:
-    if config.orchestration.get("run_comparison", True):
+    if os.environ.get("TINYMATH_SKIP_COMPARISON") != "1":
         _run("plot.py", config, model=str(config.model.name), trainer="sft")
 
 

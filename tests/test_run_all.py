@@ -134,18 +134,16 @@ def test_orchestrator_can_defer_comparison_until_all_model_pipelines_finish(monk
     with initialize_config_dir(version_base="1.3", config_dir=config_dir):
         config = compose(
             config_name="reasoning_v3",
-            overrides=[
-                "experiment=13_reasoning_v3_arithmetic_subtasks",
-                "orchestration.run_comparison=false",
-            ],
+            overrides=["experiment=13_reasoning_v3_arithmetic_subtasks"],
         )
 
     calls = []
     monkeypatch.setattr(run_all, "_run", lambda *args, **kwargs: calls.append(args))
+    monkeypatch.setenv("TINYMATH_SKIP_COMPARISON", "1")
     run_all._run_comparison(config)
     assert calls == []
 
-    config.orchestration.run_comparison = True
+    monkeypatch.delenv("TINYMATH_SKIP_COMPARISON")
     run_all._run_comparison(config)
     assert len(calls) == 1
     assert calls[0][0] == "plot.py"
