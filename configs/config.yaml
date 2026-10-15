@@ -21,6 +21,7 @@ orchestration:
   parallel_models: false
   run_grpo: true
   run_continued_sft: true
+  run_comparison: true
 paths:
   root: ${oc.env:WORKSPACE_ROOT,/workspace}
   data: ${paths.root}/data

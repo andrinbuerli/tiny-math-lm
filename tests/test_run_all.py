@@ -127,3 +127,25 @@ def test_gpu_admission_waits_for_telemetry_before_launch(monkeypatch):
     monkeypatch.setattr(run_all, "_gpu_load", read_gpu)
     monkeypatch.setattr(run_all.time, "sleep", lambda _seconds: None)
     run_all._wait_for_gpu_capacity(config, "100m")
+
+
+def test_orchestrator_can_defer_comparison_until_all_model_pipelines_finish(monkeypatch):
+    config_dir = str(Path(__file__).resolve().parents[1] / "configs")
+    with initialize_config_dir(version_base="1.3", config_dir=config_dir):
+        config = compose(
+            config_name="reasoning_v3",
+            overrides=[
+                "experiment=13_reasoning_v3_arithmetic_subtasks",
+                "orchestration.run_comparison=false",
+            ],
+        )
+
+    calls = []
+    monkeypatch.setattr(run_all, "_run", lambda *args, **kwargs: calls.append(args))
+    run_all._run_comparison(config)
+    assert calls == []
+
+    config.orchestration.run_comparison = True
+    run_all._run_comparison(config)
+    assert len(calls) == 1
+    assert calls[0][0] == "plot.py"

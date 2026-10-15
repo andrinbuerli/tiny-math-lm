@@ -266,6 +266,11 @@ def _run_model(config: DictConfig, model_name: str, experiment_choice: str) -> N
         )
 
 
+def _run_comparison(config: DictConfig) -> None:
+    if config.orchestration.get("run_comparison", True):
+        _run("plot.py", config, model=str(config.model.name), trainer="sft")
+
+
 @hydra.main(version_base="1.3", config_path="../configs", config_name="config")
 def main(config: DictConfig) -> None:
     if not config.experiment.run_optimization:
@@ -295,7 +300,7 @@ def main(config: DictConfig) -> None:
     else:
         for model_name in model_names:
             _run_model(config, model_name, experiment_choice)
-    _run("plot.py", config, model=str(config.model.name), trainer="sft")
+    _run_comparison(config)
 
 
 if __name__ == "__main__":
