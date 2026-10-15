@@ -111,6 +111,7 @@ def _overrides(
     result = [
         f"model={model}", f"trainer={trainer}",
         f"experiment={experiment_choice}",
+        f"experiment.name={_hydra_value(values['experiment']['name'])}",
         f"seed={values['seed']}",
     ]
     for key, value in values["experiment"].items():

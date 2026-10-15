@@ -78,6 +78,7 @@ def test_orchestrator_names_each_fresh_arm_run_and_wandb_group():
     assert 'tracking.name="exp13-fresh-test-10m-grpo-training-seed18"' in values
     assert 'tracking.group="exp13-fresh-test-10m-grpo"' in values
     assert 'tracking.tags=["exp13-fresh-test", "10m", "grpo"]' in values
+    assert 'experiment.name="exp13-fresh-test"' in values
 
 
 def test_gpu_admission_waits_for_telemetry_before_launch(monkeypatch):
