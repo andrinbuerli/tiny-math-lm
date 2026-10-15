@@ -60,6 +60,26 @@ def test_orchestrator_propagates_reasoning_v3_rollout_to_child_runs():
     assert "rollout.token_accounting=\"transcript_includes_executor_v1\"" in values
 
 
+def test_orchestrator_uses_current_exact_v3_rollout_after_resumed_sft():
+    with initialize_config_dir(version_base="1.3", config_dir=str(Path(__file__).resolve().parents[1] / "configs")):
+        config = compose(
+            config_name="config",
+            overrides=[
+                "experiment=13_reasoning_v3_arithmetic_subtasks",
+                "rollout.rollout_version=2",
+                "rollout.scorer_version=2",
+                "rollout.delegation_policy=proper_subexpression_v1",
+            ],
+        )
+
+    downstream = run_all._downstream_config(config)
+    assert config.rollout.rollout_version == 2
+    assert downstream.rollout.executor == "exact"
+    assert downstream.rollout.rollout_version == 3
+    assert downstream.rollout.scorer_version == 3
+    assert downstream.rollout.delegation_policy == "compound_task_v1"
+
+
 def test_orchestrator_preserves_literal_backslash_in_saved_experiment_title():
     config_dir = str(Path(__file__).resolve().parents[1] / "configs")
     title = "Experiment 13 \\u2014 Reasoning-v3 arithmetic subtasks"

@@ -17,6 +17,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from tinymath.config import workspace_path
 from tinymath.data.load import SELECTED_MODULES
+from tinymath.generation import RolloutConfig
 from tinymath.train.budgets import isolated_training_run_dir
 
 LOGGER = logging.getLogger(__name__)
@@ -205,8 +206,21 @@ def _run(
         raise subprocess.CalledProcessError(return_code, command)
 
 
+def _downstream_config(config: DictConfig) -> DictConfig:
+    """Upgrade legacy resumed reasoning-v3 configs for new downstream runs."""
+    if str(config.experiment.get("protocol", "")) == "reasoning_v3":
+        # Resumed SFT configs can carry a legacy rollout schema that was used
+        # only for qualitative logging. New reasoning-v3 arms and evaluations
+        # must use the current exact v3 rollout/scorer identity.
+        downstream_config = OmegaConf.create(OmegaConf.to_container(config, resolve=True))
+        downstream_config.rollout = RolloutConfig(executor="exact").identity()
+        return downstream_config
+    return config
+
+
 def _run_model(config: DictConfig, model_name: str, experiment_choice: str) -> None:
     """Run a model's SFT, GRPO and continued-SFT arms and their evaluations."""
+    downstream_config = _downstream_config(config)
     _run(
         "train_sft.py", config, model=model_name, trainer="sft",
         experiment_choice=experiment_choice,
@@ -222,13 +236,13 @@ def _run_model(config: DictConfig, model_name: str, experiment_choice: str) -> N
     )
     sft_checkpoint = str(sft_run / "best.pt")
     _run(
-        "evaluate.py", config, model=model_name, trainer="sft", checkpoint=sft_checkpoint,
+        "evaluate.py", downstream_config, model=model_name, trainer="sft", checkpoint=sft_checkpoint,
         experiment_choice=experiment_choice,
         run_arm="sft", run_label="evaluation",
     )
     if config.orchestration.run_grpo:
         _run(
-            "train_rlvr.py", config, model=model_name, trainer="sft",
+            "train_rlvr.py", downstream_config, model=model_name, trainer="sft",
             init_checkpoint=sft_checkpoint, experiment_choice=experiment_choice,
             run_arm="grpo", run_label="training",
         )
@@ -242,7 +256,7 @@ def _run_model(config: DictConfig, model_name: str, experiment_choice: str) -> N
             "latest.pt",
         )
         _run(
-            "evaluate.py", config, model=model_name, trainer="sft",
+            "evaluate.py", downstream_config, model=model_name, trainer="sft",
             checkpoint=str(grpo_checkpoint), experiment_choice=experiment_choice,
             run_arm="grpo", run_label="evaluation",
         )
@@ -256,12 +270,12 @@ def _run_model(config: DictConfig, model_name: str, experiment_choice: str) -> N
             )
         )
         _run(
-            "train_sft.py", config, model=model_name, trainer="continued_sft",
+            "train_sft.py", downstream_config, model=model_name, trainer="continued_sft",
             init_checkpoint=sft_checkpoint, experiment_choice=experiment_choice,
             run_arm="continued_sft", run_label="training",
         )
         _run(
-            "evaluate.py", config, model=model_name, trainer="sft",
+            "evaluate.py", downstream_config, model=model_name, trainer="sft",
             checkpoint=str(control_run / "best.pt"), experiment_choice=experiment_choice,
             run_arm="continued_sft", run_label="evaluation",
         )
