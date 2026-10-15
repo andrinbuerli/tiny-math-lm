@@ -117,7 +117,10 @@ def _overrides(
     for key, value in values["experiment"].items():
         if key != "name":
             result.append(f"experiment.{key}={json.dumps(value)}")
-    for group in ("data", "rlvr", "rollout", "eval", "qualitative", "runtime", "tracking", "paths"):
+    for group in (
+        "data", "rlvr", "rollout", "eval", "qualitative", "runtime",
+        "reporting", "tracking", "paths",
+    ):
         for key, value in values[group].items():
             if key == "name":
                 continue

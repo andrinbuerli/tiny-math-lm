@@ -24,6 +24,8 @@ def test_orchestrator_emits_hydra_valid_mapping_overrides_and_pilot_budgets():
                 "experiment.max_steps=10",
                 "experiment.updates=10",
                 "tracking.mode=offline",
+                "reporting.output_dir=/workspace/reports/custom",
+                "reporting.annotation_bundle_dir=/workspace/data/custom",
             ],
         )
     values = run_all._overrides(
@@ -38,6 +40,8 @@ def test_orchestrator_emits_hydra_valid_mapping_overrides_and_pilot_budgets():
     assert "experiment.max_steps=10" in values
     assert "runtime.parallel_model_vram_gb={1m:1,10m:3,100m:8}" in values
     assert "tracking.mode=\"offline\"" in values
+    assert 'reporting.output_dir="/workspace/reports/custom"' in values
+    assert 'reporting.annotation_bundle_dir="/workspace/data/custom"' in values
 
 
 def test_orchestrator_propagates_reasoning_v3_rollout_to_child_runs():
