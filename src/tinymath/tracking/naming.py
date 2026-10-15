@@ -51,7 +51,7 @@ def comparison_identity(experiment_name: str, seed: int) -> dict[str, Any]:
     if not name:
         raise ValueError("experiment_name is required to build a comparison identity")
     return {
-        "name": f"{name}-comparison-seed{int(seed)}-report",
+        "name": f"{name}-comparison-seed{int(seed)}-report-resumed",
         "group": name,
         "tags": [experiment_name, "all-models", "comparison"],
     }

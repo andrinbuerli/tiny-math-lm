@@ -42,7 +42,7 @@ def main(config: DictConfig) -> None:
         config.tracking.group = identity["group"]
         config.tracking.tags = identity["tags"]
         run_dir = workspace_path(
-            "runs", str(experiment.name), "comparison-report", f"seed{int(config.seed)}"
+            "runs", str(experiment.name), "comparison-report-resumed", f"seed{int(config.seed)}"
         )
     output_dir = workspace_path(str(config.reporting.output_dir))
     run = initialize_wandb(config, run_dir, job_type="comparison")

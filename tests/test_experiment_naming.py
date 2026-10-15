@@ -9,7 +9,7 @@ from tinymath.tracking.naming import build_run_naming, comparison_identity
 
 def test_exp13_comparison_report_has_distinct_stable_identity():
     assert comparison_identity("exp13_reasoning_v3_arithmetic_subtasks-fresh-3eda0cc0", 18) == {
-        "name": "exp13_reasoning_v3_arithmetic_subtasks-fresh-3eda0cc0-comparison-seed18-report",
+        "name": "exp13_reasoning_v3_arithmetic_subtasks-fresh-3eda0cc0-comparison-seed18-report-resumed",
         "group": "exp13_reasoning_v3_arithmetic_subtasks-fresh-3eda0cc0",
         "tags": [
             "exp13_reasoning_v3_arithmetic_subtasks-fresh-3eda0cc0",
