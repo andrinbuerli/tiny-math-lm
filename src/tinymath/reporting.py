@@ -1904,6 +1904,7 @@ def make_exp13_report(
     baseline_wandb = _baseline_wandb_provenance(snapshot)
     baseline_digest = hashlib.sha256(baseline_snapshot.read_bytes()).hexdigest()
     manifest = _json_file(annotation_bundle_dir / "manifest.json") or {}
+    reported_bundle_digest = _sha256_file(annotation_bundle_dir / "manifest.json")
     rows: list[dict[str, Any]] = []
 
     for model in MODELS:
@@ -1930,6 +1931,19 @@ def make_exp13_report(
             eval_state = _json_file(eval_root / "wandb_run.json") or {}
             progress = _json_file(eval_root / "progress.json") or {}
             checkpoint_hash = _sha256_file(checkpoint) if checkpoint.is_file() else None
+            training_config = _json_file(training_dir / "resolved_config.json") or {}
+            training_bundle = training_config.get("data_bundle")
+            training_bundle_path = Path(str(training_bundle)) if training_bundle else None
+            if training_bundle_path is not None and not training_bundle_path.is_absolute():
+                training_bundle_path = Path.cwd() / training_bundle_path
+            training_bundle_manifest = (
+                training_bundle_path / "manifest.json" if training_bundle_path else None
+            )
+            training_bundle_digest = (
+                _sha256_file(training_bundle_manifest)
+                if training_bundle_manifest is not None and training_bundle_manifest.is_file()
+                else None
+            )
             training_metrics = _metric_at_checkpoint(
                 training_dir / "metrics.csv", arm, (result or {}).get("checkpoint_step")
             )
@@ -2005,6 +2019,19 @@ def make_exp13_report(
                     "checkpoint": str(checkpoint) if checkpoint.is_file() else None,
                     "checkpoint_sha256": checkpoint_hash,
                     "checkpoint_step": (result or {}).get("checkpoint_step"),
+                    "training_data_bundle": (
+                        str(training_bundle_path) if training_bundle_path else None
+                    ),
+                    "training_bundle_manifest_sha256": training_bundle_digest,
+                    "training_bundle_matches_reported_bundle": (
+                        training_bundle_digest == reported_bundle_digest
+                        if training_bundle_digest else None
+                    ),
+                    "evaluation_bundle_manifest_sha256": (result or {}).get("bundle_sha256"),
+                    "evaluation_bundle_matches_reported_bundle": (
+                        (result or {}).get("bundle_sha256") == reported_bundle_digest
+                        if (result or {}).get("bundle_sha256") else None
+                    ),
                     "training_step": training_metrics.get("update" if arm == "grpo" else "optimizer_step"),
                     "training_tokens_seen": training_metrics.get("tokens_seen"),
                     "training_estimated_flops": training_metrics.get("estimated_flops"),
@@ -2078,7 +2105,7 @@ def make_exp13_report(
         },
         "reasoning_v3_provenance": {
             "bundle_path": str(annotation_bundle_dir),
-            "manifest_sha256": hashlib.sha256((annotation_bundle_dir / "manifest.json").read_bytes()).hexdigest(),
+            "manifest_sha256": reported_bundle_digest,
             "source_manifest_sha256": manifest.get("source_manifest_sha256"),
             "split_manifest_sha256": manifest.get("split_manifest_sha256"),
             "annotation_sha256": manifest.get("annotation", {}).get("annotation_sha256"),
@@ -2092,6 +2119,14 @@ def make_exp13_report(
             "The comparison covers one seed; no between-seed uncertainty estimate is available.",
         ],
     }
+    if any(
+        row["training_bundle_matches_reported_bundle"] is False
+        or row["evaluation_bundle_matches_reported_bundle"] is False
+        for row in rows
+    ):
+        report["limitations"].append(
+            "At least one training or evaluation run used a bundle different from the reported reasoning-v3 bundle; per-row manifest hashes identify the exact inputs."
+        )
     if launch_blocker:
         report["launch_blocker"] = launch_blocker
         report["limitations"].append(f"Fresh training and evaluation were not started: {launch_blocker}")

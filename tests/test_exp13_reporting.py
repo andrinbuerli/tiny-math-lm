@@ -102,6 +102,43 @@ def test_exp13_report_records_a_launch_blocker(workspace_tmpdir):
     assert blocker in markdown
 
 
+def test_exp13_report_flags_training_bundle_manifest_mismatch(workspace_tmpdir):
+    baseline = _baseline_snapshot(workspace_tmpdir / "baseline.json")
+    runs = workspace_tmpdir / "runs"
+    train_dir = runs / "exp13_reasoning_v3_arithmetic_subtasks" / "1m" / "sft" / "seed18"
+    train_dir.mkdir(parents=True)
+    bundle = workspace_tmpdir / "bundle"
+    bundle.mkdir()
+    (bundle / "manifest.json").write_text(json.dumps({
+        "annotation": {"protocol": "reasoning_v3"}, "tokenizer": {}, "splits": {},
+    }), encoding="utf-8")
+    training_bundle = workspace_tmpdir / "filtered-bundle"
+    training_bundle.mkdir()
+    (training_bundle / "manifest.json").write_text(json.dumps({
+        "derived_filter": {"excluded_rows": 7},
+    }), encoding="utf-8")
+    (train_dir / "resolved_config.json").write_text(json.dumps({
+        "data_bundle": str(training_bundle),
+    }), encoding="utf-8")
+
+    report, _ = make_exp13_report(
+        runs_dir=runs,
+        output_dir=workspace_tmpdir / "reports",
+        baseline_snapshot=baseline,
+        annotation_bundle_dir=bundle,
+    )
+
+    row = next(row for row in report["rows"] if (
+        row["model"], row["arm"], row["split"]
+    ) == ("1m", "sft", "test"))
+    assert row["training_data_bundle"] == str(training_bundle)
+    assert row["training_bundle_manifest_sha256"] == hashlib.sha256(
+        (training_bundle / "manifest.json").read_bytes()
+    ).hexdigest()
+    assert row["training_bundle_matches_reported_bundle"] is False
+    assert any("bundle different" in item for item in report["limitations"])
+
+
 def test_exp13_delta_requires_complete_evaluation_and_identical_question_identity(workspace_tmpdir):
     baseline = _baseline_snapshot(workspace_tmpdir / "baseline.json")
     runs = workspace_tmpdir / "runs"
