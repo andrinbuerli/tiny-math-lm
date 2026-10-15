@@ -31,6 +31,7 @@ _NUMBER_RE = re.compile(NUMBER)
 _VAR = re.compile(r"[a-z]")
 SUBTASK_SCHEMA_VERSION = 2
 DELEGATION_POLICY = "proper_subexpression_v1"
+CALL_POLICY = "compound_task_v1"
 _CALL_SYMBOLS = {"add": "+", "subtract": "-", "multiply": "*", "divide": "/"}
 _CALL_MODULES = {
     "add": "arithmetic__add_or_sub", "subtract": "arithmetic__add_or_sub",
@@ -191,15 +192,15 @@ def _atomic_expression_call(expression: str) -> ArithmeticCall | None:
     return ArithmeticCall(operation, left, right, result, symbol)
 
 
-def permitted_call_requests(row: dict) -> frozenset[str]:
-    """Derive eligible strict subproblems from the question alone, never its answer.
+def _source_call_policy(row: dict) -> tuple[bool, frozenset[str]]:
+    """Classify tool access and derive reference subproblems without the answer.
 
-    Standalone worker tasks are atomic. Arithmetic may delegate source subtrees,
-    but never the root. Algebra may delegate the arithmetic division after moving
-    terms, since solving an equation is a larger symbolic task.
+    Standalone worker tasks are atomic. Compound tasks have runtime tool access.
+    Reference arithmetic calls exclude the root; algebra references divide after
+    moving terms. These reference requests do not restrict runtime operands.
     """
     if row.get("is_sub_task") or row.get("subtask_schema_version") is not None:
-        return frozenset()
+        return False, frozenset()
     question = row.get("question", "")
     modules = [row["module"]] if row.get("module") in MODULES else (
         ["algebra__linear_1d"] if question.lower().startswith("solve ") else
@@ -216,17 +217,29 @@ def permitted_call_requests(row: dict) -> frozenset[str]:
                 coefficient = left.coefficient - right.coefficient
                 constant = right.constant - left.constant
                 if not coefficient:
-                    return frozenset()
-                return frozenset({_call_request(ArithmeticCall(
+                    return False, frozenset()
+                return True, frozenset({_call_request(ArithmeticCall(
                     "divide", constant, coefficient, constant / coefficient, "/"
                 ))})
             if _atomic_expression_call(expression) is not None:
-                return frozenset()
+                return False, frozenset()
             _ExpressionParser(expression, builder).parse()
-            return frozenset(_call_request(call) for call in _proper_arithmetic_calls(builder.calls))
+            return len(builder.calls) > 1, frozenset(
+                _call_request(call) for call in _proper_arithmetic_calls(builder.calls)
+            )
         except (ValueError, ZeroDivisionError):
             continue
-    return frozenset()  # Unsupported questions fail closed for tool access.
+    return False, frozenset()  # Unsupported questions fail closed for tool access.
+
+
+def task_allows_calls(row: dict) -> bool:
+    """Compound tasks allow any supported arithmetic request; atomic tasks do not."""
+    return _source_call_policy(row)[0]
+
+
+def permitted_call_requests(row: dict) -> frozenset[str]:
+    """Reference-annotation subproblems, not a runtime request allowlist."""
+    return _source_call_policy(row)[1]
 
 
 def _add_lines(a: int, b: int, result: int) -> list[str]:
@@ -882,7 +895,7 @@ def annotate_row(
         annotated["trace_version"] = protocol
     if protocol == "reasoning_v3":
         annotated["delegation_policy"] = DELEGATION_POLICY
-        annotated["tool_calls_allowed"] = bool(permitted_call_requests(row))
+        annotated["tool_calls_allowed"] = task_allows_calls(row)
     if protocol == "reasoning_v3" or (protocol == "reasoning_v2" and max_tokens != 512):
         annotated["annotation_max_tokens"] = max_tokens
     return annotated

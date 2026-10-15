@@ -3,7 +3,12 @@ from __future__ import annotations
 import pytest
 
 from tinymath.data.char_tokenizer import CharacterTokenizer
-from tinymath.data.reasoning import annotate_row, permitted_call_requests, verify_annotation
+from tinymath.data.reasoning import (
+    annotate_row,
+    permitted_call_requests,
+    task_allows_calls,
+    verify_annotation,
+)
 from tinymath.rewards.calls import CallError, execute_call
 from tinymath.rewards.reasoning import score_v3
 
@@ -78,6 +83,7 @@ def test_scalar_limit():
 def test_atomic_source_tasks_never_delegate(question, module, answer):
     row = {"question": question, "module": module, "answer": answer}
     assert not permitted_call_requests(row)
+    assert not task_allows_calls(row)
     annotation = annotate_row(row, protocol="reasoning_v3")
     assert "call:" not in annotation["scratchpad"]
     assert annotation["tool_calls_allowed"] is False
@@ -90,10 +96,14 @@ def test_only_proper_subproblems_are_eligible_without_using_target_answer():
     assert not permitted_call_requests({**row, "is_sub_task": True})
     assert not permitted_call_requests({"question": "unsupported task"})
     assert permitted_call_requests({"question": "Calculate (1+0)+0."}) == frozenset()
+    assert task_allows_calls({"question": "Calculate (1+0)+0."})
+    assert task_allows_calls({**row, "answer": "unavailable"})
+    assert not task_allows_calls({**row, "is_sub_task": True})
+    assert not task_allows_calls({"question": "unsupported task"})
     assert permitted_call_requests({"question": "Solve -21*o + 32 + 120 = -37 for o."}) == frozenset({"call:divide(-189,-21) -> "})
 
 
-def test_reward_blocks_root_and_unrelated_calls_even_with_correct_final_answer():
+def test_reward_accepts_any_correct_call_for_compound_tasks():
     question = "Calculate (1+2)+0."
     prefix = "step:evaluate arithmetic operations in expression order\n"
     good = score(trace=prefix + "call:add(1,2) -> 3\nstep:+(3,0)", question=question)
@@ -101,10 +111,19 @@ def test_reward_blocks_root_and_unrelated_calls_even_with_correct_final_answer()
     wrong = score(trace=prefix + "call:add(1,2) -> 4", question=question)
     assert wrong.reward == .1 and wrong.call_policy_valid
     for call in ("call:add(3,0) -> 3", "call:multiply(1,3) -> 3", "call:add(1,1) -> 2"):
-        rejected = score(trace=prefix + call, question=question)
-        assert rejected.reward == 0 and rejected.format_reward == 0
-        assert rejected.format_valid and rejected.answer_correct
-        assert not rejected.call_policy_valid and not rejected.trace_valid
+        accepted = score(trace=prefix + call, question=question)
+        assert accepted.reward == 1 and accepted.format_reward == .1
+        assert accepted.format_valid and accepted.answer_correct
+        assert accepted.call_policy_valid and accepted.trace_valid
+
+
+def test_wrong_algebra_derivation_can_call_but_wrong_answer_gets_only_format_credit():
+    row = {"question": "Solve 568*f + 662*f - 1137*f + 8928 = 0 for f.", "answer": "-96"}
+    trace = "step:collect:1336f+(8928)=0f+(0)\nmove:1336f=-8928\ncall:divide(-8928,1336) -> -1116/167\nf=-1116/167"
+    tokenizer = CharacterTokenizer.from_texts(["<scp>\n</scp>\nA: " + trace], protocol="reasoning_v3")
+    result = score_v3(tokenizer.encode_completion("-1116/167", scratchpad=trace), tokenizer, row)
+    assert result.call_policy_valid and result.correct_calls == 1
+    assert not result.answer_correct and result.reward == .1
 
 
 def test_screenshot_whole_subtraction_call_gets_zero_but_local_solution_gets_full_reward():

@@ -3,7 +3,7 @@ defaults:
   - _self_
 
 experiment:
-  name: v3_proper_subexpression_validation
+  name: v3_compound_call_validation
   max_steps: 2
   data_budget: 5
 data_bundle: null
@@ -30,11 +30,11 @@ eval:
   splits: [test]
   batch_size: 5
 tracking:
-  name: v3-proper-subexpression-validation-seed${seed}
-  group: v3-proper-subexpression-validation
+  name: v3-compound-call-validation-seed${seed}
+  group: v3-compound-call-validation
   log_every: 1
 validation:
-  root: ${paths.runs}/v3-proper-subexpression-validation
+  root: ${paths.runs}/v3-compound-call-validation
   interrupt_once: true
   controlled_trajectories: true
 runtime:

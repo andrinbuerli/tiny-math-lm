@@ -115,7 +115,7 @@ def controlled_sampler(rows):
                 answer = row["answer"] if lane % 3 == 0 else scalar_text(Fraction(row["answer"]) + 1)
                 if lane == 2:
                     texts.append(format_reasoning_display(
-                        "step:attempt unrelated delegation\ncall:add(999,999) -> 1998", row["answer"]
+                        "step:auxiliary arithmetic\ncall:add(999,999) -> 1998", row["answer"]
                     ))
                 else:
                     texts.append(format_reasoning_display(row["scratchpad"], answer) if lane % 3 != 2 else "malformed")

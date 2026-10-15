@@ -172,6 +172,12 @@ def test_v3_hydra_configuration():
         config = compose(config_name="reasoning_v3", overrides=["rollout.executor=none"])
     assert config.model.context_length == config.rlvr.max_completion_tokens == config.eval.max_new_tokens == 512
     assert RolloutConfig.from_config(config.rollout).executor == "none"
+    assert config.rollout.delegation_policy == "compound_task_v1"
+    assert config.rollout.scorer_version == config.rollout.rollout_version == 3
+    with pytest.raises(ValueError, match="version"):
+        RolloutConfig(delegation_policy="proper_subexpression_v1")
+    with pytest.raises(ValueError, match="version"):
+        RolloutConfig(scorer_version=2, rollout_version=2)
 
 
 def test_evaluation_shaped_rewards_and_sampled_resume(v3_setup, workspace_tmpdir, monkeypatch):

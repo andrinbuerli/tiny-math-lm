@@ -3,8 +3,8 @@ max_calls: 32
 max_scalar_chars: 128
 format_weight: 0.1
 success_weight: 0.9
-scorer_version: 2
+scorer_version: 3
 executor_version: 1
-rollout_version: 2
+rollout_version: 3
 token_accounting: transcript_includes_executor_v1
-delegation_policy: proper_subexpression_v1
+delegation_policy: compound_task_v1

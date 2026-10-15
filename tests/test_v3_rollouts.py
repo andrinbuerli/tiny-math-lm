@@ -75,10 +75,10 @@ def test_independent_lanes_dependent_calls_and_observation_masks():
 
 
 @pytest.mark.parametrize(("line", "reason", "config"), [
-    ("call:divide(1,0) -> ", "disallowed_call", RolloutConfig(executor="exact")),
-    ("call:power(1,2) -> ", "disallowed_call", RolloutConfig(executor="exact")),
+    ("call:divide(1,0) -> ", "division_by_zero", RolloutConfig(executor="exact")),
+    ("call:power(1,2) -> ", "malformed_request", RolloutConfig(executor="exact")),
     ("call:add(1,2)\n", "malformed_request", RolloutConfig(executor="exact")),
-    ("call:multiply(99,99) -> ", "disallowed_call", RolloutConfig(executor="exact", max_scalar_chars=2)),
+    ("call:multiply(99,99) -> ", "scalar_limit", RolloutConfig(executor="exact", max_scalar_chars=2)),
 ])
 def test_executor_failures(line, reason, config):
     result, _, _ = run_scripts(["<scp>\nstep:x\n" + line], config=config)
@@ -176,21 +176,50 @@ def test_real_model_cached_logs_and_conditioning_across_inserted_result(monkeypa
 
 
 @pytest.mark.parametrize("executor", ["exact", "none"])
-def test_atomic_and_whole_task_calls_are_rejected_before_execution(monkeypatch, executor):
+def test_atomic_calls_are_rejected_before_execution(monkeypatch, executor):
     from tinymath import generation
     def forbidden(*args, **kwargs):
         raise AssertionError("A forbidden request reached the arithmetic executor")
     monkeypatch.setattr(generation, "execute_call", forbidden)
     for question, call in (
         ("Calculate 1+2.", "call:add(1,2) -> 3"),
-        ("Calculate (1+2)+0.", "call:add(3,0) -> 3"),
-        ("Calculate (1+2)+0.", "call:multiply(1,3) -> 3"),
+        ("Calculate (-53/50)-(-410201/100000).", "call:subtract(-53/50,-410201/100000) -> 304201/100000"),
     ):
         result, _, _ = run_scripts(["<scp>\nstep:x\n" + call + "\n</scp>\nA: 3"],
             question=question, config=RolloutConfig(executor=executor))
         assert result.termination_reasons == ("disallowed_call",)
         assert result.call_events == ((),)
         assert (result.completion_mask & ~result.loss_mask).sum() == 0
+
+
+@pytest.mark.parametrize("executor", ["exact", "none"])
+@pytest.mark.parametrize("call", ["call:add(3,0) -> 3", "call:multiply(1,3) -> 3"])
+def test_compound_tasks_accept_root_and_alternative_calls(executor, call):
+    text = "<scp>\nstep:x\n" + call + "\n</scp>\nA: 3"
+    result, tokenizer, _ = run_scripts([text], question="Calculate (1+2)+0.",
+                                      config=RolloutConfig(executor=executor))
+    assert result.termination_reasons == ("eos",)
+    assert tokenizer.decode(result.completion_ids[0, 0].tolist()) == text
+    assert len(result.call_events[0]) == int(executor == "exact")
+
+
+def test_incorrect_algebra_coefficient_still_gets_exact_result():
+    text = "<scp>\nstep:collect:1336f+(8928)=0f+(0)\nmove:1336f=-8928\ncall:divide(-8928,1336) -> -1116/167\n</scp>\nA: -1116/167"
+    result, tokenizer, model = run_scripts([text],
+        question="Solve 568*f + 662*f - 1137*f + 8928 = 0 for f.")
+    assert result.termination_reasons == ("eos",)
+    assert tokenizer.decode(result.completion_ids[0, 0].tolist()) == text
+    event, = result.call_events[0]
+    assert event["result"] == "-1116/167"
+    assert (result.completion_mask & ~result.loss_mask).sum() == len("-1116/167")
+    for position in range(event["result_start"], event["result_end"]):
+        assert model.seen[position + 1][0, 0] == result.completion_ids[0, 0, position]
+
+
+def test_disabled_executor_still_enforces_call_count():
+    text = "<scp>\nstep:x\ncall:add(1,2) -> 3\ncall:add(99,2) -> 101"
+    result, _, _ = run_scripts([text], config=RolloutConfig(executor="none", max_calls=1))
+    assert result.termination_reasons == ("call_limit",)
 
 
 def test_mixed_atomic_and_compound_prompt_lanes_have_independent_permissions():

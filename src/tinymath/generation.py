@@ -11,11 +11,11 @@ from torch.nn import functional as F
 
 from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.data.prompts import format_prompt
-from tinymath.data.reasoning import DELEGATION_POLICY, permitted_call_requests
+from tinymath.data.reasoning import CALL_POLICY, task_allows_calls
 from tinymath.rewards.calls import EXECUTOR_VERSION, CallError, execute_call, validate_call
 from tinymath.rewards.reasoning import SCORER_VERSION
 
-ROLLOUT_VERSION = 2
+ROLLOUT_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -29,13 +29,13 @@ class RolloutConfig:
     executor_version: int = EXECUTOR_VERSION
     rollout_version: int = ROLLOUT_VERSION
     token_accounting: str = "transcript_includes_executor_v1"
-    delegation_policy: str = DELEGATION_POLICY
+    delegation_policy: str = CALL_POLICY
 
     def __post_init__(self):
         if (self.scorer_version != SCORER_VERSION or self.executor_version != EXECUTOR_VERSION
                 or self.rollout_version != ROLLOUT_VERSION
                 or self.token_accounting != "transcript_includes_executor_v1"
-                or self.delegation_policy != DELEGATION_POLICY):
+                or self.delegation_policy != CALL_POLICY):
             raise ValueError("Unsupported rollout/scorer/executor/accounting version")
         if self.executor not in {"none", "exact"}:
             raise ValueError("executor must be none or exact")
@@ -78,7 +78,7 @@ class Rollouts:
 
 
 class _CallState:
-    def __init__(self, allowed: frozenset[str]):
+    def __init__(self, allowed: bool):
         self.allowed = allowed
         self.line = ""
         self.inside = False
@@ -86,6 +86,7 @@ class _CallState:
         self.dispatched = False
         self.pending: deque[int] = deque()
         self.events: list[dict[str, Any]] = []
+        self.call_count = 0
 
     def observe(self, character: str, tokenizer: CharacterTokenizer, config: RolloutConfig,
                 *, position: int, cap: int) -> None:
@@ -96,8 +97,7 @@ class _CallState:
             elif self.line == "</scp>":
                 self.inside = False
             elif self.inside and self.line.lstrip().startswith("call:"):
-                request = self.line.partition(" -> ")[0] + " -> "
-                if request not in self.allowed:
+                if not self.allowed:
                     raise CallError("disallowed_call")
                 if config.executor == "exact":
                     validate_call(self.line, max_scalar_chars=config.max_scalar_chars)
@@ -109,11 +109,12 @@ class _CallState:
             raise CallError("disallowed_call")
         if (self.inside and self.line.startswith("call:") and not self.dispatched
                 and self.line.endswith(" -> ")):
-            if len(self.events) >= config.max_calls:
+            if self.call_count >= config.max_calls:
                 raise CallError("call_limit")
-            if self.line not in self.allowed:
+            if not self.allowed:
                 raise CallError("disallowed_call")
             self.dispatched = True
+            self.call_count += 1
             if config.executor == "none":
                 return
             call = execute_call(self.line, max_scalar_chars=config.max_scalar_chars)
@@ -162,7 +163,7 @@ def generate_rollouts(
         raise ValueError("One task row is required per prompt")
     policies = []
     for index in range(batch):
-        allowed = frozenset()
+        allowed = False
         if tokenizer is not None and tokenizer.protocol == "reasoning_v3":
             text = tokenizer.decode(prompt_ids[index].tolist())
             row = task_rows[index] if task_rows is not None else {
@@ -170,7 +171,7 @@ def generate_rollouts(
             }
             if task_rows is not None and text != format_prompt(row["question"], protocol="reasoning_v3"):
                 raise ValueError("Task metadata does not match the generation prompt")
-            allowed = permitted_call_requests(row)
+            allowed = task_allows_calls(row)
         policies.extend([allowed] * group_size)
     states = [_CallState(allowed) for allowed in policies]
     reasons = ["budget_exceeded"] * lanes

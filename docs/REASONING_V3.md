@@ -6,18 +6,24 @@ earn full reward without calling the executor. The scorer checks trace grammar,
 every call's exact arithmetic, and the final answer. It does not prove that all
 intermediate derivations solve the original question or require reference equality.
 
-Tool access follows `proper_subexpression_v1`, shared by reference annotation,
-generation, GRPO rewards, evaluation, and qualitative previews. Atomic arithmetic
-and standalone subtasks cannot call tools. Compound arithmetic can call only strict
-source subexpressions and must solve its final operation locally. Requests equivalent
-to the root operation or unrelated to the question are forbidden. Algebra may call
-the arithmetic division derived after collecting and moving equation terms.
+Runtime tool access follows `compound_task_v1`, shared by generation, GRPO rewards,
+evaluation, and qualitative previews. Atomic arithmetic and standalone subtasks cannot
+call tools. Compound arithmetic and supported algebra tasks may issue any well-formed
+request using a supported operation and canonical scalar operands. Requests need not
+match a reference subexpression or a correct intermediate derivation.
 
-For `Calculate (25+32)*2.`, `call:add(25,32)` is permitted; `call:multiply(57,2)`
-is not. `Calculate 25+32.` must use a local worked derivation without any calls.
-Rational literals are atomic operands, including in a single-operation parent task.
-Alternative local derivations remain allowed; tool requests use the conservative
-source-subexpression allowlist. Eligibility is derived without reading the target answer.
+For `Calculate (25+32)*2.`, both `call:add(25,32)` and `call:multiply(57,2)` are
+permitted, as are other supported arithmetic requests. `Calculate 25+32.` must use a
+local worked derivation without calls. Rational literals are atomic operands.
+Task eligibility is derived without reading the target answer. For example, an
+incorrectly collected algebra coefficient may still be sent to `divide`; the executor
+returns the exact result for those supplied operands, and final-answer scoring remains
+responsible for rejecting a wrong answer. It does not correct the model's derivation.
+
+Reference annotation retains `proper_subexpression_v1`: its demonstrations delegate
+proper source subexpressions and solve the final arithmetic operation locally. This
+is a reference-generation convention, not a runtime allowlist. Existing reference
+datasets do not require regeneration for this runtime change.
 
 The reward is `0.1 * format_valid + 0.9 * full_success`. Formatting requires exactly
 one nonempty `<scp>` block, one terminal `A: <scalar>` line, and EOS. Full success
@@ -34,7 +40,7 @@ are `add`, `subtract`, `multiply`, and `divide`. Operands/results use canonical
 integers or reduced fractions. No model workers, target answers, or generated code
 are used by the executor. Malformed completed requests, division by zero, excessive
 calls/scalars, and unencodable results terminate that lane with zero reward.
-Forbidden requests terminate before arithmetic execution or result insertion, including
+Calls on ineligible tasks terminate before arithmetic execution or result insertion, including
 with `rollout.executor=none`. Explicit task metadata must match the prompt; standalone
 subtask status is preserved. Unknown questions fail closed for tool access.
 
@@ -97,10 +103,10 @@ uv run python scripts/validate_reasoning_v3.py
 ```
 
 This creates disjoint synthetic parent fixtures across all five modules under
-`runs/v3-proper-subexpression-validation`. It uses a tiny randomly initialized GPT and scripted
+`runs/v3-compound-call-validation`. It uses a tiny randomly initialized GPT and scripted
 training trajectories to exercise exact call execution, mixed 0/0.1/1 rewards,
 optimizer updates, and checkpoint/W&B resume. These off-policy controlled trajectories
-include forbidden requests that must be denied before execution. Every update covers
+include auxiliary requests that execute on compound tasks and are denied on atomic tasks. Every update covers
 all five modules, including direct atomic arithmetic and permitted compound delegation.
 The scripted trajectories and entropy are plumbing checks, not learning measurements. The final
 greedy evaluation uses real model outputs. Unit tests also compare interrupted and

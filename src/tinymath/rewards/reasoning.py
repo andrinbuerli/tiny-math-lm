@@ -7,12 +7,12 @@ from typing import Any
 
 from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.data.completions import parse_reasoning_completion
-from tinymath.data.reasoning import permitted_call_requests
+from tinymath.data.reasoning import task_allows_calls
 from tinymath.data.trace_explanations import transcribe_scratchpad
 from tinymath.rewards.calls import CallError, validate_call
 from tinymath.rewards.verify import verify_answer
 
-SCORER_VERSION = 2
+SCORER_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -49,8 +49,7 @@ def score_v3(
     lines = parsed.scratchpad.splitlines()
     calls = [line for line in lines if line.lstrip().startswith("call:")]
     correct_calls = 0
-    permitted = permitted_call_requests(row)
-    policy_valid = all(line.partition(" -> ")[0] + " -> " in permitted for line in calls)
+    policy_valid = not calls or task_allows_calls(row)
     for line in calls:
         try:
             validate_call(line, max_scalar_chars=max_scalar_chars)
