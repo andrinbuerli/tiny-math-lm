@@ -45,6 +45,10 @@ def main(config: DictConfig) -> None:
                 seed=int(config.seed),
                 baseline_snapshot=workspace_path(str(config.reporting.baseline_snapshot)),
                 annotation_bundle_dir=workspace_path(str(config.reporting.annotation_bundle_dir)),
+                launch_blocker=(
+                    str(experiment.launch_blocker)
+                    if experiment.get("launch_blocker") else None
+                ),
             )
             run.log({
                 "comparison/rows": report["row_count"],

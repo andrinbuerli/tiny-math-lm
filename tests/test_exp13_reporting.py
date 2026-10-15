@@ -69,6 +69,34 @@ def test_exp13_report_lists_all_rows_and_marks_missing_evaluations_not_run(works
     assert "not-run" in markdown
 
 
+def test_exp13_report_records_a_launch_blocker(workspace_tmpdir):
+    baseline = _baseline_snapshot(workspace_tmpdir / "baseline.json")
+    bundle = workspace_tmpdir / "bundle"
+    bundle.mkdir()
+    (bundle / "manifest.json").write_text(json.dumps({
+        "annotation": {"protocol": "reasoning_v3"},
+        "tokenizer": {},
+        "splits": {},
+    }), encoding="utf-8")
+    blocker = "7 invalid multiplication subtask traces failed verification"
+    output = workspace_tmpdir / "reports"
+    report, _ = make_exp13_report(
+        runs_dir=workspace_tmpdir / "runs",
+        output_dir=output,
+        baseline_snapshot=baseline,
+        annotation_bundle_dir=bundle,
+        launch_blocker=blocker,
+    )
+
+    assert report["launch_blocker"] == blocker
+    assert all(row["status"] == "not-run" for row in report["rows"])
+    assert all(row["delta_percentage_points"] is None for row in report["rows"])
+    assert f"Fresh training and evaluation were not started: {blocker}" in report["limitations"][-1]
+    markdown = (output / "intermediate_results.md").read_text(encoding="utf-8")
+    assert "## Launch status" in markdown
+    assert blocker in markdown
+
+
 def test_exp13_delta_requires_complete_evaluation_and_identical_question_identity(workspace_tmpdir):
     baseline = _baseline_snapshot(workspace_tmpdir / "baseline.json")
     runs = workspace_tmpdir / "runs"

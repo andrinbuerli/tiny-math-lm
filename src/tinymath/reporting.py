@@ -1881,6 +1881,7 @@ def make_exp13_report(
     experiment: str = "exp13_reasoning_v3_arithmetic_subtasks",
     baseline_snapshot: Path,
     annotation_bundle_dir: Path,
+    launch_blocker: str | None = None,
 ) -> tuple[dict[str, Any], list[Path]]:
     """Build the Experiment 13 reasoning-v3 versus frozen-baseline table."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -2065,6 +2066,9 @@ def make_exp13_report(
             "The comparison covers one seed; no between-seed uncertainty estimate is available.",
         ],
     }
+    if launch_blocker:
+        report["launch_blocker"] = launch_blocker
+        report["limitations"].append(f"Fresh training and evaluation were not started: {launch_blocker}")
     json_path = output_dir / "comparison.json"
     json_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     csv_path = output_dir / "comparison.csv"
@@ -2093,6 +2097,12 @@ def make_exp13_report(
             f"| {row['model']} | {row['arm']} | {row['split']} | {baseline_cell} | "
             f"{reasoning_cell} | {delta} | {row['status']} |"
         )
+    if launch_blocker:
+        lines.extend([
+            "", "## Launch status", "",
+            f"Fresh training and evaluation were not started: {launch_blocker}",
+            "All reasoning-side cells remain `not-run`; no accuracy deltas are reported.",
+        ])
     lines.extend([
         "", "## Provenance", "",
         f"- Baseline snapshot: `{baseline_snapshot}` (SHA256 `{baseline_digest}`; frozen `{snapshot.get('frozen_at_utc')}`).",
