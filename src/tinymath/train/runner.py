@@ -11,6 +11,7 @@ from typing import Any
 
 import torch
 
+from tinymath.generation import RolloutConfig
 from tinymath.checkpoint import (
     capture_rng_state,
     compatibility_metadata,
@@ -90,6 +91,20 @@ def _bundle_compatibility(
         bundle_sha256=sha256_file(manifest_path),
         context_length=context_length,
     )
+
+
+def _qualitative_rollout_config(config: Any) -> tuple[Any, bool]:
+    """Use current logging defaults when a resumed run has an obsolete rollout schema."""
+    rollout = getattr(config, "rollout", None)
+    if rollout is None:
+        return None, False
+    try:
+        RolloutConfig.from_config(rollout)
+    except ValueError as error:
+        if str(error) != "Unsupported rollout/scorer/executor/accounting version":
+            raise
+        return None, True
+    return rollout, False
 
 
 @torch.no_grad()
@@ -299,6 +314,7 @@ def train_sft(
     save_every = max(1, int(config.trainer.save_every))
     qualitative_every = max(1, int(getattr(getattr(config, "qualitative", None), "every_steps", 20_000)))
     qualitative_count = 0
+    qualitative_rollout, legacy_rollout_fallback = _qualitative_rollout_config(config)
     define_metric = getattr(run, "define_metric", None)
     if callable(define_metric):
         define_metric("optimizer_step")
@@ -316,7 +332,7 @@ def train_sft(
             training_arm=str(config.trainer.name),
             seed=int(config.seed),
             max_new_tokens=int(getattr(getattr(config, "eval", None), "max_new_tokens", 128)),
-            rollout=getattr(config, "rollout", None),
+            rollout=qualitative_rollout,
             examples_per_module=int(
                 getattr(getattr(config, "qualitative", None), "examples_per_module", 2)
             ),
@@ -326,6 +342,8 @@ def train_sft(
             "qualitative/examples": qualitative_table,
             "qualitative/resume_checkpoint": True,
         }
+        if legacy_rollout_fallback:
+            resume_values["qualitative/legacy_rollout_fallback"] = True
         for split, value in greedy_accuracy.items():
             metric_name = "val/greedy_accuracy" if split == "validation" else f"{split}/greedy_accuracy"
             resume_values[metric_name] = value
@@ -496,7 +514,7 @@ def train_sft(
                     max_new_tokens=int(
                         getattr(getattr(config, "eval", None), "max_new_tokens", 128)
                     ),
-                    rollout=getattr(config, "rollout", None),
+                    rollout=qualitative_rollout,
                     examples_per_module=int(
                         getattr(getattr(config, "qualitative", None), "examples_per_module", 2)
                     ),
@@ -509,6 +527,8 @@ def train_sft(
                         run_dir / "latest_inference.pt"
                     )
                 values["qualitative/examples"] = qualitative_table
+                if legacy_rollout_fallback:
+                    values["qualitative/legacy_rollout_fallback"] = True
                 for split, value in greedy_accuracy.items():
                     metric_name = "val/greedy_accuracy" if split == "validation" else f"{split}/greedy_accuracy"
                     values[metric_name] = value

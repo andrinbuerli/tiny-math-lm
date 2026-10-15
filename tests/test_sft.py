@@ -196,12 +196,25 @@ def test_sft_loop_trains_and_saves_reloadable_checkpoint(workspace_tmpdir):
             {"optimizer_step": 4, "train/loss": "stale"}
         )
     config.trainer.max_steps = 3
+    config.rollout = {
+        "executor": "exact",
+        "max_calls": 32,
+        "max_scalar_chars": 128,
+        "format_weight": 0.1,
+        "success_weight": 0.9,
+        "scorer_version": 2,
+        "executor_version": 1,
+        "rollout_version": 2,
+        "token_accounting": "transcript_includes_executor_v1",
+        "delegation_policy": "proper_subexpression_v1",
+    }
     resumed = train_sft(config=config, bundle_dir=bundle, run_dir=run_dir, run=run)
     resumed_checkpoint = torch.load(resumed["checkpoint"], map_location="cpu", weights_only=False)
     assert resumed["step"] == resumed_checkpoint["step"] == 3
     resume_qualitative = run.logged[-2]
     assert resume_qualitative["optimizer_step"] == 2
     assert resume_qualitative["qualitative/resume_checkpoint"] is True
+    assert resume_qualitative["qualitative/legacy_rollout_fallback"] is True
     assert "qualitative/examples" in resume_qualitative
     assert run.logged[-1]["optimizer_step"] == 3
     with Path(resumed["metrics_path"]).open(encoding="utf-8") as handle:
