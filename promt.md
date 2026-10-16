@@ -24,7 +24,18 @@ Start by rechecking the live process state, newest metrics, resolved configs, lo
 
 ## Preliminary evidence to verify
 
-The current 1m and 10m runs were around 3.2k and 3.5k updates when this prompt was written. Their recent W&B history implied roughly 0.11–0.12 updates/second. The current `metrics.csv` rows showed cumulative `wall_seconds` around 34k seconds, which may include resumed elapsed time; use timestamps and differences between multiple recent logged steps to compute sustained throughput rather than relying only on a cumulative field.
+Snapshot from 2026-10-16 around 07:07 UTC (recheck before analysis):
+
+| Run | Progress | Recent W&B interval | Rate from interval | CSV cumulative `wall_seconds` |
+|---|---:|---:|---:|---:|
+| Current 1m reasoning-v3 | local 3,230; W&B summary 3,220 | 200 updates / 1,853.8 s | 0.1079 updates/s; 9.27 s/update | 34,752.8 s |
+| Current 10m reasoning-v3 | local 3,543; W&B summary 3,540 | 200 updates / 1,715.0 s | 0.1166 updates/s; 8.57 s/update | 33,694.0 s |
+| Baseline 1m | 100,000 | full-run CSV wall time | about 0.1005 s/update | 10,050.3 s |
+| Baseline 10m | 100,000 | full-run CSV wall time | about 0.3644 s/update | 36,436.1 s |
+| Baseline 100m | 100,000 | full-run CSV wall time | about 0.5605 s/update | 56,047.4 s |
+| Partial Experiment 11 1m reasoning-v1 | 978 | partial-run CSV wall time | about 7.55 s/update | 7,385.3 s |
+
+These numbers show a large apparent gap against the completed 256-context/128-completion baseline: approximately 92x for 1m and 24x for 10m using the current recent interval rates. The partial 512-context/512-completion reasoning-v1 run is much closer to current speed, at roughly 7.55 s/update. Treat this as an important lead, not a causal conclusion: current and baseline protocols, context/completion caps, bundles, concurrency, software revisions, and measurement windows differ. The current `metrics.csv` cumulative `wall_seconds` may also include restored elapsed time; prefer differences between multiple timestamped recent steps when comparing sustained throughput.
 
 The current resolved configs indicate reasoning-v3, context length 512, maximum completion length 512, eight prompts per update, and group size eight. The completed historical baseline configs used context length 256 and maximum completion length 128, also with eight prompts and group size eight. The partial Experiment 11 run used context 512 and maximum completion length 512 but reasoning-v1. The baseline runs use a different bundle/manifest from the current fresh run. These differences make raw seconds-per-update comparisons non-equivalent; measure them, but do not attribute causality from config differences alone.
 
