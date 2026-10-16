@@ -234,6 +234,19 @@ def test_exp13_delta_requires_complete_evaluation_and_identical_question_identit
     assert row["delta_percentage_points"] == 25.0
     assert row["source_arm"] == "random_initialization"
 
+    _write_predictions(eval_dir / "test_predictions.csv", list(reversed(rows)))
+    report, _ = make_exp13_report(
+        runs_dir=runs,
+        output_dir=workspace_tmpdir / "reports-reordered",
+        baseline_snapshot=baseline,
+        annotation_bundle_dir=bundle,
+    )
+    row = next(row for row in report["rows"] if (
+        row["model"], row["arm"], row["split"]
+    ) == ("1m", "sft", "test"))
+    assert row["same_question_identity"] is True
+    assert row["delta_percentage_points"] == 25.0
+
     _write_predictions(eval_dir / "test_predictions.csv", rows[:1])
     report, _ = make_exp13_report(
         runs_dir=runs,

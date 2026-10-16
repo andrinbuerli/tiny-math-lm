@@ -824,6 +824,24 @@ def _question_identity(path: Path) -> tuple[str | None, int]:
     return (digest.hexdigest(), count) if count else (None, 0)
 
 
+def _question_identity_set(path: Path) -> tuple[str | None, int]:
+    """Hash the module/question/target identity population independent of row order."""
+    if not path.is_file():
+        return None, 0
+    identities = []
+    with path.open(encoding="utf-8", newline="") as handle:
+        for row in csv.DictReader(handle):
+            identity = [row.get("module", ""), row.get("question", ""), row.get("target", "")]
+            identities.append(json.dumps(identity, ensure_ascii=False, separators=(",", ":")))
+    if not identities:
+        return None, 0
+    digest = hashlib.sha256()
+    for identity in sorted(identities):
+        digest.update(identity.encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest(), len(identities)
+
+
 def _exp11_result_path(
     runs_dir: Path, experiment: str, model: str, arm: str, seed: int,
     selector: str | None = None, expected_checkpoint: Path | None = None,
@@ -1964,10 +1982,10 @@ def make_exp13_report(
             for split in SPLITS:
                 baseline = baseline_records.get((model, arm, split))
                 expected = int((baseline or {}).get("examples") or 0)
-                base_identity, base_identity_count = _question_identity(
+                base_identity, base_identity_count = _question_identity_set(
                     baseline_dir / f"{split}_predictions.csv"
                 )
-                reasoning_identity, reasoning_identity_count = _question_identity(
+                reasoning_identity, reasoning_identity_count = _question_identity_set(
                     eval_root / f"{split}_predictions.csv"
                 )
                 identity_matches = bool(
@@ -2115,7 +2133,7 @@ def make_exp13_report(
         },
         "limitations": [
             "Comparisons use parent rows only, matching the frozen baseline question populations; standalone annotated subtasks are excluded by the reasoning-v3 evaluator.",
-            "Accuracy deltas require complete evaluations and identical ordered module/question/target identities.",
+            "Accuracy deltas require complete evaluations and identical module/question/target identity populations.",
             "The comparison covers one seed; no between-seed uncertainty estimate is available.",
         ],
     }
@@ -2162,7 +2180,7 @@ def make_exp13_report(
     lines = [
         "# Experiment 13 reasoning-v3 comparison", "", f"Seed: `{seed}`", "",
         f"Rows: {len(rows)} / 27 (3 model sizes × 3 arms × 3 splits).",
-        "Deltas are shown only for complete evaluations with identical ordered question identities.", "",
+        "Deltas are shown only for complete evaluations with identical question ID populations; row order is ignored.", "",
         "| Model | Arm | Split | Baseline accuracy (scored) | +Reasoning accuracy (scored) | Δ percentage points | Status |",
         "|---|---|---|---:|---:|---:|---|",
     ]
