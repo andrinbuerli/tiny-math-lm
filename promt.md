@@ -1,62 +1,44 @@
-# Investigation prompt: GRPO slowdown versus baseline
+# Experiment 13 continuation handoff
 
-Investigate why the active Experiment 13 reasoning-v3 GRPO runs appear slower than the completed baseline GRPO experiments. Work read-only: do not edit training code or configs, stop/restart jobs, launch experiments, change the active W&B run identities, bypass GPU admission checks, or modify Docker/host configuration. Do not contact Git remotes. Do not print or expose credentials.
+Continue the Experiment 13 reasoning-v3 comparison in `/workspace`. The user's latest instruction is to run **all continued-SFT arms first, then all GRPO arms**. Continue toward the full 27-row comparison in the attached handoff at `/home/codex/.codex/attachments/10393045-e443-4b49-bc83-a9f8dbc56b1b/pasted-text-1.txt`; reread it before acting. Do not treat the old GRPO-slowdown investigation prompt as the active task.
 
-## Runs to compare
+## Current state
 
-Current active runs use the fresh Experiment 13 bundle and run namespace:
+- Namespace: `exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k`.
+- Bundle: `data/processed/exp13_reasoning_v3_arithmetic_subtasks-seed18`.
+- Expected `manifest.json` SHA256: `5d493a0f4c961b84b873036ea1bc93ebb6d01b6f022d7ed81997b094da3a018f`.
+- The selected SFT `best.pt` checkpoints for 1m, 10m, and 100m are present at 100,000 steps under `runs/<namespace>/<model>/sft/seed18/best.pt`.
+- No continued-SFT arm had started at the last verified check.
+- The 1m and 10m GRPO workers and the coordinator were interrupted; no matching processes remained. Resume these two runs from their existing durable checkpoints and W&B identities. Do not overwrite or delete any artifacts.
 
-- Root: `runs/exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k/`
-- 1m GRPO: `1m/grpo/seed18/`, W&B ID `28beded9b3caced0`
-- 10m GRPO: `10m/grpo/seed18/`, W&B ID `daf32570fe9d756e`
-- The corresponding 100m GRPO has not started.
+| Model | Durable GRPO checkpoint | Last metrics row at interruption | Existing W&B run ID |
+|---|---:|---:|---|
+| 1m | 3,000 | 3,396 | `28beded9b3caced0` |
+| 10m | 3,500 | 3,737 | `daf32570fe9d756e` |
+| 100m | No GRPO checkpoint/run | — | Not started |
 
-Completed historical baseline runs:
+The GRPO runner resumes from `latest.pt` and truncates `metrics.csv` after the resumed checkpoint step. Preserve `tracking.resume=true` so 1m and 10m continue under their existing W&B run IDs. The 100m GRPO should receive a new W&B identity in this namespace.
 
-- Root: `runs/restarted_100k_greedy_restart_2/`
-- 1m GRPO W&B ID `c8605394b695ef91`
-- 10m GRPO W&B ID `3a402a249818cae1`
-- 100m GRPO W&B ID `de440b7a315d5b12`
+## Blocking condition and launch gate
 
-Also inspect the partial reasoning-v1 comparator at `runs/exp11_reasoning_500k_100k/1m/grpo/seed18/` (W&B ID `c4a008c309a5e59c`). It reached only about 978 updates, so treat it as a limited comparator rather than a completed benchmark.
+At the latest check, `nvidia-smi` exited 255 with `Failed to initialize NVML: Unknown Error`; PyTorch reported CUDA unavailable and zero devices. The user has now independently reproduced the same `nvidia-smi` error. No training process is currently running.
 
-Start by rechecking the live process state, newest metrics, resolved configs, local W&B metadata, and remote W&B run state/history. Current local files and remote run history are authoritative; the snapshot below is only a lead to verify.
+Do not launch training until `nvidia-smi` and PyTorch CUDA initialization both succeed and the configured GPU utilization/free-VRAM admission limits can be verified. Do not bypass the gate, run the 100k-update jobs on CPU, change Docker/host configuration, or leave a blind coordinator polling indefinitely. Record the exact evidence and stop at this blocker if GPU access is still unavailable.
 
-## Preliminary evidence to verify
+## Required execution order after GPU recovery
 
-Snapshot from 2026-10-16 around 07:07 UTC (recheck before analysis):
+1. Recheck the worktree, process list, bundle manifest/hash, CUDA, and W&B authentication. Preserve existing user edits, including the current changes in `src/tinymath/generation.py` and `src/tinymath/train/grpo_runner.py`; inspect them before changing any source.
+2. Run continued-SFT for **1m, 10m, and 100m**, each initialized from that model's selected `sft/seed18/best.pt`. Use the `continued_sft` Hydra trainer and the existing namespace, seed 18, canonical bundle, online W&B, and its per-model continued-SFT identity. Select the continued-SFT checkpoint by validation loss and evaluate it on the three required splits.
+3. Only after all three continued-SFT arms finish, resume GRPO for **1m and 10m** from their existing `grpo/seed18/latest.pt`, maintaining W&B IDs `28beded9b3caced0` and `daf32570fe9d756e`. Start the 100m GRPO arm from its corresponding new SFT `best.pt` with a new W&B run. Evaluate each GRPO latest checkpoint on the same test, number-length-OOD, and expression-length-OOD IDs.
+4. Keep W&B online and load credentials from `/workspace/.env` through the repository helper. Never print, copy, track, upload, or put secrets in configs. Ensure every launched run logs provenance and a qualitative sample before proceeding (or immediately if the configured cadence has not yet produced one).
+5. Regenerate the 27-row Experiment 13 report at `reports/exp13_reasoning_v3_arithmetic_subtasks/seed18/` only from verified, matching IDs. Keep incomplete deltas blank and statuses evidence-based. Preserve all historical runs/checkpoints and do not contact Git remotes.
 
-| Run | Progress | Recent W&B interval | Rate from interval | CSV cumulative `wall_seconds` |
-|---|---:|---:|---:|---:|
-| Current 1m reasoning-v3 | local 3,230; W&B summary 3,220 | 200 updates / 1,853.8 s | 0.1079 updates/s; 9.27 s/update | 34,752.8 s |
-| Current 10m reasoning-v3 | local 3,543; W&B summary 3,540 | 200 updates / 1,715.0 s | 0.1166 updates/s; 8.57 s/update | 33,694.0 s |
-| Baseline 1m | 100,000 | full-run CSV wall time | about 0.1005 s/update | 10,050.3 s |
-| Baseline 10m | 100,000 | full-run CSV wall time | about 0.3644 s/update | 36,436.1 s |
-| Baseline 100m | 100,000 | full-run CSV wall time | about 0.5605 s/update | 56,047.4 s |
-| Partial Experiment 11 1m reasoning-v1 | 978 | partial-run CSV wall time | about 7.55 s/update | 7,385.3 s |
+The existing `scripts/run_all.py` executes GRPO before continued-SFT by default. Do not run it with both arms enabled if that would violate the requested order. Either use two controlled orchestration phases (continued-SFT enabled and GRPO disabled, then GRPO enabled and continued-SFT disabled) or invoke the Hydra child entry points in a controlled sequence. Inspect the exact resolved overrides and run identities first; avoid accidentally rerunning or replacing completed SFT/W&B artifacts.
 
-These numbers show a large apparent gap against the completed 256-context/128-completion baseline: approximately 92x for 1m and 24x for 10m using the current recent interval rates. The partial 512-context/512-completion reasoning-v1 run is much closer to current speed, at roughly 7.55 s/update. Treat this as an important lead, not a causal conclusion: current and baseline protocols, context/completion caps, bundles, concurrency, software revisions, and measurement windows differ. The current `metrics.csv` cumulative `wall_seconds` may also include restored elapsed time; prefer differences between multiple timestamped recent steps when comparing sustained throughput.
+## Repository requirements
 
-The current resolved configs indicate reasoning-v3, context length 512, maximum completion length 512, eight prompts per update, and group size eight. The completed historical baseline configs used context length 256 and maximum completion length 128, also with eight prompts and group size eight. The partial Experiment 11 run used context 512 and maximum completion length 512 but reasoning-v1. The baseline runs use a different bundle/manifest from the current fresh run. These differences make raw seconds-per-update comparisons non-equivalent; measure them, but do not attribute causality from config differences alone.
+Follow `/workspace/AGENTS.md` and `IMPLEMENTATION_PLAN.md`. Use `./.tools/uv run --locked` and Hydra for experiment/evaluation entry points. Commit only intended source/config/test/docs paths after inspecting diffs and running relevant checks plus `git diff --check`. Preserve unrelated staged/unstaged user changes. Never commit data, checkpoints, weights, run outputs, `.env`, `wandb/`, or secrets. Never push, fetch, pull, configure a remote, or contact a Git remote.
 
-## Investigation
+## Final status to report
 
-1. Establish reliable throughput for each active run and each historical comparator. Report update/s and seconds/update from recent timestamped intervals, plus tokens/s and generated/policy/executor tokens per update where available. Include multiple windows to show variance and any pauses. Distinguish wall-clock throughput from cumulative training-time counters, logging cadence, checkpoint/evaluation/qualitative overhead, and idle time.
-2. Compare matched model sizes first (1m-to-1m, 10m-to-10m, and 100m-to-100m). Identify all material config and provenance differences: model shape, context length, completion cap and actual completion lengths, prompts/group size, temperature, rollout/scorer/executor versions, trace protocol, data bundle, effective batch, precision, generation/cache path, checkpoint/save cadence, eval cadence, qualitative sampling, logging cadence, software/Git revision, and hardware/concurrency.
-3. Inspect local source and local Git history for changes between the baseline and current runs, focusing on GRPO rollout/generation, scoring/verifier/executor, backward pass, metric collection, W&B logging, checkpointing, qualitative examples, and evaluation. Do not assume logging is the cause; quantify its overhead from code paths and timestamps if possible.
-4. Break down where time is spent per update if existing logs or instrumentation support it: sampling/generation, exact executor/verifier/scoring, old/current log probabilities, loss/backward/optimizer, W&B/CSV logging, checkpoint saves, and periodic evaluation/qualitative generation. If the current artifacts cannot distinguish these, say exactly which timing evidence is missing and propose the smallest safe read-only or short diagnostic needed later. Do not add instrumentation or run a benchmark in this task.
-5. Check whether the active 1m and 10m runs overlap on one GPU and whether that causes contention. Inspect current telemetry and process evidence. NVML has recently failed to initialize; do not infer utilization/free VRAM from CPU usage or device-node visibility, and do not bypass the configured admission guard.
-6. Separate expected work growth from regression. Estimate whether the larger context/completion limits, longer generated reasoning traces, exact v3 call execution, and concurrent jobs explain some measured cost. Verify actual token lengths and executor-call counts rather than using configured maxima as if every completion reached them.
-
-## Required output
-
-Return a concise report with:
-
-- A table of run, model, protocol, bundle, update range, measured interval, updates/s, seconds/update, tokens/s, and confidence/limitations.
-- Which comparisons are apples-to-apples and which are confounded.
-- The strongest evidence-backed explanation(s), ranked by confidence, with paths/metric names or W&B links.
-- Whether recent logging-related code changes plausibly account for a material share of the slowdown, and the evidence for that judgment.
-- Any unexplained regression after accounting for context/completion length, token counts, rollout/scoring work, and GPU concurrency.
-- A minimal recommended follow-up experiment or instrumentation plan, including predicted measurable outcomes. Keep it as a recommendation; do not execute it.
-
-Do not change the running experiment or report just to make this investigation easier. Preserve all current and historical checkpoints, metrics, W&B identities, and user work.
+Report actual process state, per-arm status and checkpoint steps, W&B run IDs and sync status, evaluation/report completion, exact test/check commands, limitations, local `git log --oneline`, and `git status --short`. Do not claim a launch, result, completion, or W&B sync without evidence.
