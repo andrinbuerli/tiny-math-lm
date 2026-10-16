@@ -2119,6 +2119,22 @@ def make_exp13_report(
             "The comparison covers one seed; no between-seed uncertainty estimate is available.",
         ],
     }
+    bundle_validation_path = output_dir / "bundle_validation.json"
+    bundle_validation = _json_file(bundle_validation_path)
+    if bundle_validation is not None:
+        if bundle_validation.get("manifest_sha256") == reported_bundle_digest:
+            report["bundle_validation"] = bundle_validation
+            invalid_rows = bundle_validation.get("invalid_trace_rows", [])
+            if invalid_rows:
+                report["limitations"].append(
+                    f"The full source-bundle trace audit found {len(invalid_rows)} invalid rows; "
+                    "see bundle_validation.json for exact split and row identities."
+                )
+        else:
+            report["limitations"].append(
+                "A source-bundle trace audit exists but its manifest hash does not match the "
+                "reported bundle, so it was excluded."
+            )
     if any(
         row["training_bundle_matches_reported_bundle"] is False
         or row["evaluation_bundle_matches_reported_bundle"] is False
@@ -2169,6 +2185,25 @@ def make_exp13_report(
         f"- Baseline snapshot: `{baseline_snapshot}` (SHA256 `{baseline_digest}`; frozen `{snapshot.get('frozen_at_utc')}`).",
         f"- Reasoning-v3 bundle: `{annotation_bundle_dir}` (protocol `{manifest.get('annotation', {}).get('protocol')}`, manifest SHA256 `{report['reasoning_v3_provenance']['manifest_sha256']}`).",
         "- Evaluation population: parent rows only; the bundle’s added standalone subtask rows are excluded so the question IDs match the frozen baseline.",
+    ])
+    if "bundle_validation" in report:
+        validation = report["bundle_validation"]
+        lines.extend([
+            "", "## Source bundle trace audit", "",
+            f"- Verifier: `{validation.get('verifier', 'unspecified')}` against manifest SHA256 `{validation['manifest_sha256']}`.",
+            f"- Rows checked: {validation.get('checked_rows', '—')}; invalid traces: {len(validation.get('invalid_trace_rows', []))}.",
+        ])
+        for split, counts in validation.get("split_counts", {}).items():
+            lines.append(
+                f"- `{split}`: {counts.get('rows', '—')} rows, {counts.get('parents', '—')} parents, "
+                f"{counts.get('subtasks', '—')} subtasks; SHA256 `{counts.get('sha256', '—')}`."
+            )
+        for invalid in validation.get("invalid_trace_rows", []):
+            lines.append(
+                f"- Invalid trace: `{invalid.get('split')}` line {invalid.get('line')}, "
+                f"`{invalid.get('module')}` — {invalid.get('question')!r} → `{invalid.get('answer')}`."
+            )
+    lines.extend([
         "", "## Evaluation diagnostics", "",
         "Module accuracy, format and trace validity, mean output tokens, cap counts, checkpoint hashes, question identity hashes, and W&B run metadata are recorded per row in `comparison.json` and `comparison.csv`.",
         "", "## Approximate compute matching", "",

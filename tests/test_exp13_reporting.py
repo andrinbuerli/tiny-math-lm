@@ -102,6 +102,59 @@ def test_exp13_report_records_a_launch_blocker(workspace_tmpdir):
     assert blocker in markdown
 
 
+def test_exp13_report_includes_manifest_matched_source_trace_audit(workspace_tmpdir):
+    baseline = _baseline_snapshot(workspace_tmpdir / "baseline.json")
+    bundle = workspace_tmpdir / "bundle"
+    bundle.mkdir()
+    manifest_path = bundle / "manifest.json"
+    manifest_path.write_text(json.dumps({
+        "annotation": {"protocol": "reasoning_v3"},
+        "tokenizer": {},
+        "splits": {},
+    }), encoding="utf-8")
+    manifest_digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    output = workspace_tmpdir / "reports"
+    output.mkdir()
+    audit = {
+        "manifest_sha256": manifest_digest,
+        "verifier": "tinymath.data.reasoning.verify_annotation",
+        "checked_rows": 12,
+        "split_counts": {"test": {"rows": 12, "parents": 8, "subtasks": 4, "sha256": "split-hash"}},
+        "invalid_trace_rows": [{
+            "split": "test", "line": 7, "module": "arithmetic__mul",
+            "question": "Calculate 2 * 3.", "answer": "6",
+        }],
+    }
+    (output / "bundle_validation.json").write_text(json.dumps(audit), encoding="utf-8")
+
+    report, _ = make_exp13_report(
+        runs_dir=workspace_tmpdir / "runs",
+        output_dir=output,
+        baseline_snapshot=baseline,
+        annotation_bundle_dir=bundle,
+    )
+
+    assert report["bundle_validation"] == audit
+    assert any("full source-bundle trace audit found 1 invalid rows" in item for item in report["limitations"])
+    markdown = (output / "intermediate_results.md").read_text(encoding="utf-8")
+    assert "## Source bundle trace audit" in markdown
+    assert "`test` line 7" in markdown
+    assert "Calculate 2 * 3." in markdown
+
+    audit["manifest_sha256"] = "stale-manifest"
+    stale_output = workspace_tmpdir / "reports-stale"
+    stale_output.mkdir()
+    (stale_output / "bundle_validation.json").write_text(json.dumps(audit), encoding="utf-8")
+    stale_report, _ = make_exp13_report(
+        runs_dir=workspace_tmpdir / "runs",
+        output_dir=stale_output,
+        baseline_snapshot=baseline,
+        annotation_bundle_dir=bundle,
+    )
+    assert "bundle_validation" not in stale_report
+    assert any("manifest hash does not match" in item for item in stale_report["limitations"])
+
+
 def test_exp13_report_flags_training_bundle_manifest_mismatch(workspace_tmpdir):
     baseline = _baseline_snapshot(workspace_tmpdir / "baseline.json")
     runs = workspace_tmpdir / "runs"
