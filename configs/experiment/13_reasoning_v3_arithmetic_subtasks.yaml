@@ -36,7 +36,7 @@ reporting:
   run_namespaces:
     1m:
       sft: exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k
-      grpo: exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k-grpo1m
+      grpo: exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k-grpo1m-rawsft-r1
       continued_sft: exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k
     10m:
       sft: exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k
