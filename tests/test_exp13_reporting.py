@@ -5,6 +5,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import torch
+
 from tinymath.reporting import make_exp13_report
 
 
@@ -326,3 +328,67 @@ def test_exp13_report_links_grpo_to_its_sft_checkpoint_and_run(workspace_tmpdir)
         source_sft.read_bytes()
     ).hexdigest()
     assert row["source_sft_wandb"]["run_id"] == "sft-run-id"
+
+
+def test_exp13_compute_matching_uses_arm_namespaces_and_reports_checkpoint_update(workspace_tmpdir):
+    baseline = _baseline_snapshot(workspace_tmpdir / "baseline.json")
+    runs = workspace_tmpdir / "runs"
+    sft_dir = runs / "fresh-sft" / "1m" / "sft" / "seed18"
+    continued_dir = runs / "fresh-control" / "1m" / "continued_sft" / "seed18"
+    grpo_dir = runs / "fresh-grpo" / "1m" / "grpo" / "seed18"
+    sft_dir.mkdir(parents=True)
+    continued_dir.mkdir(parents=True)
+    grpo_dir.mkdir(parents=True)
+
+    def write_metrics(path: Path, fieldnames: list[str], row: dict[str, int]) -> None:
+        with path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerow(row)
+
+    write_metrics(
+        sft_dir / "metrics.csv",
+        ["optimizer_step", "estimated_flops", "additional_estimated_flops"],
+        {"optimizer_step": 100_000, "estimated_flops": 1_000, "additional_estimated_flops": 0},
+    )
+    write_metrics(
+        continued_dir / "metrics.csv",
+        ["optimizer_step", "estimated_flops", "additional_estimated_flops"],
+        {"optimizer_step": 80, "estimated_flops": 900, "additional_estimated_flops": 700},
+    )
+    write_metrics(
+        grpo_dir / "metrics.csv",
+        ["update", "estimated_flops"],
+        {"update": 60, "estimated_flops": 2_000},
+    )
+    torch.save({"update": 50}, grpo_dir / "latest.pt")
+
+    bundle = workspace_tmpdir / "bundle"
+    bundle.mkdir()
+    (bundle / "manifest.json").write_text(json.dumps({"annotation": {}, "tokenizer": {}, "splits": {}}))
+    report, _ = make_exp13_report(
+        runs_dir=runs,
+        output_dir=workspace_tmpdir / "reports",
+        baseline_snapshot=baseline,
+        annotation_bundle_dir=bundle,
+        experiment="report-only-namespace",
+        run_namespaces={
+            "1m": {
+                "sft": "fresh-sft",
+                "continued_sft": "fresh-control",
+                "grpo": "fresh-grpo",
+            }
+        },
+    )
+
+    matching = report["compute_matching"]["1m"]
+    assert matching["grpo_step"] == 60
+    assert matching["grpo_estimated_flops"] == 2_000
+    assert matching["continued_sft_step"] == 80
+    assert matching["continued_sft_additional_estimated_flops"] == 700
+    assert matching["continued_sft_to_grpo_flop_ratio"] == 0.35
+    assert matching["status"] == "pending"
+    row = next(row for row in report["rows"] if (
+        row["model"], row["arm"], row["split"]
+    ) == ("1m", "grpo", "test"))
+    assert row["checkpoint_step"] == 50

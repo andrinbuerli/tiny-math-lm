@@ -15,6 +15,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from tinymath.checkpoint import load_checkpoint
+
 MODELS = ("1m", "10m", "100m")
 ARMS = ("sft", "grpo", "continued_sft")
 SPLITS = ("test", "number_length_ood", "expression_length_ood")
@@ -951,6 +953,21 @@ def _metric_at_checkpoint(metrics_path: Path, arm: str, checkpoint_step: Any) ->
         matching = next((row for row in metrics if row.get(step_key) == str(checkpoint_step)), None)
         return matching or {}
     return metrics[-1] if metrics else {}
+
+
+def _checkpoint_step(checkpoint_path: Path, arm: str) -> int | None:
+    """Read a checkpoint's training step without allocating model tensors."""
+    if not checkpoint_path.is_file():
+        return None
+    try:
+        payload = load_checkpoint(checkpoint_path, map_location="meta")
+    except Exception:
+        return None
+    value = payload.get("update" if arm == "grpo" else "step")
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _exp11_accuracy(value: Any) -> str:
@@ -1952,6 +1969,9 @@ def make_exp13_report(
             eval_state = _json_file(eval_root / "wandb_run.json") or {}
             progress = _json_file(eval_root / "progress.json") or {}
             checkpoint_hash = _sha256_file(checkpoint) if checkpoint.is_file() else None
+            checkpoint_step = (result or {}).get("checkpoint_step")
+            if checkpoint_step is None:
+                checkpoint_step = _checkpoint_step(checkpoint, arm)
             training_config = _json_file(training_dir / "resolved_config.json") or {}
             training_bundle = training_config.get("data_bundle")
             training_bundle_path = Path(str(training_bundle)) if training_bundle else None
@@ -2040,7 +2060,7 @@ def make_exp13_report(
                     "checkpoint_selector": "latest" if arm == "grpo" else "best",
                     "checkpoint": str(checkpoint) if checkpoint.is_file() else None,
                     "checkpoint_sha256": checkpoint_hash,
-                    "checkpoint_step": (result or {}).get("checkpoint_step"),
+                    "checkpoint_step": checkpoint_step,
                     "training_data_bundle": (
                         str(training_bundle_path) if training_bundle_path else None
                     ),
@@ -2074,11 +2094,12 @@ def make_exp13_report(
     compute_matching: dict[str, dict[str, Any]] = {}
     for model in MODELS:
         grpo_experiment = run_namespaces.get(model, {}).get("grpo", experiment)
+        continued_experiment = run_namespaces.get(model, {}).get("continued_sft", experiment)
         grpo_metrics = _metric_at_checkpoint(
             runs_dir / grpo_experiment / model / "grpo" / f"seed{seed}" / "metrics.csv", "grpo", None
         )
         control_metrics = _metric_at_checkpoint(
-            runs_dir / experiment / model / "continued_sft" / f"seed{seed}" / "metrics.csv",
+            runs_dir / continued_experiment / model / "continued_sft" / f"seed{seed}" / "metrics.csv",
             "continued_sft", None,
         )
 
@@ -2092,12 +2113,7 @@ def make_exp13_report(
         grpo_flops = number(grpo_metrics, "estimated_flops")
         continued_additional_flops = number(control_metrics, "additional_estimated_flops")
         if continued_additional_flops is None:
-            control_total = number(control_metrics, "estimated_flops")
-            sft_total = number(_metric_at_checkpoint(
-                runs_dir / experiment / model / "sft" / f"seed{seed}" / "metrics.csv", "sft", None
-            ), "estimated_flops")
-            if control_total is not None and sft_total is not None:
-                continued_additional_flops = max(0.0, control_total - sft_total) or None
+            continued_additional_flops = number(control_metrics, "estimated_flops")
         grpo_step = grpo_metrics.get("update")
         control_step = control_metrics.get("optimizer_step")
         ratio = (
@@ -2231,7 +2247,7 @@ def make_exp13_report(
         "", "## Evaluation diagnostics", "",
         "Module accuracy, format and trace validity, mean output tokens, cap counts, checkpoint hashes, question identity hashes, and W&B run metadata are recorded per row in `comparison.json` and `comparison.csv`.",
         "", "## Approximate compute matching", "",
-        "Continued-SFT uses effective batch 128. The ratio uses measured cumulative FLOPs after subtracting the initial SFT cost; it is marked measured only when GRPO and continued-SFT both reach 100,000 updates.",
+        "Continued-SFT uses effective batch 128. The ratio uses its measured additional FLOPs (or the run-only FLOP estimate for older metrics without that counter); it is marked measured only when GRPO and continued-SFT both reach 100,000 updates.",
         "", "| Model | GRPO update | GRPO estimated FLOPs | Continued-SFT update | Continued-SFT additional FLOPs | Continued-SFT / GRPO | Status |",
         "|---|---:|---:|---:|---:|---:|---|",
         *[
