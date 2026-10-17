@@ -57,6 +57,12 @@ def test_exp13_report_lists_all_rows_and_marks_missing_evaluations_not_run(works
         output_dir=output,
         baseline_snapshot=baseline,
         annotation_bundle_dir=bundle,
+        run_namespaces={
+            "1m": {
+                "sft": "fresh-sft-namespace",
+                "continued_sft": "fresh-sft-namespace",
+            }
+        },
     )
 
     assert report["row_count"] == 27
@@ -65,6 +71,10 @@ def test_exp13_report_lists_all_rows_and_marks_missing_evaluations_not_run(works
         "random_initialization"
     }
     assert {row["source_arm"] for row in report["rows"] if row["arm"] != "sft"} == {"sft"}
+    assert {
+        row["training_experiment"] for row in report["rows"]
+        if row["model"] == "1m" and row["arm"] in {"sft", "continued_sft"}
+    } == {"fresh-sft-namespace"}
     assert {item["status"] for item in report["compute_matching"].values()} == {"pending"}
     assert len(outputs) == 5
     assert all(path.exists() for path in outputs)

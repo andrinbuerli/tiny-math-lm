@@ -35,6 +35,14 @@ reporting:
   annotation_bundle_dir: ${paths.root}/data/processed/exp13_reasoning_v3_arithmetic_subtasks-seed18-excluding-7-invalid-traces
   run_namespaces:
     1m:
+      sft: exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k
       grpo: exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k-grpo1m
+      continued_sft: exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k
     10m:
+      sft: exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k
       grpo: exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k-grpo10m
+      continued_sft: exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k
+    100m:
+      sft: exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k
+      grpo: exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k-grpo100m
+      continued_sft: exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k
