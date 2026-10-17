@@ -6,7 +6,7 @@ import logging
 import sys
 
 import hydra
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 import wandb
 from tinymath.config import workspace_path
@@ -55,6 +55,9 @@ def main(config: DictConfig) -> None:
                 seed=int(config.seed),
                 baseline_snapshot=workspace_path(str(config.reporting.baseline_snapshot)),
                 annotation_bundle_dir=workspace_path(str(config.reporting.annotation_bundle_dir)),
+                run_namespaces=OmegaConf.to_container(
+                    config.reporting.get("run_namespaces", {}), resolve=True
+                ),
                 launch_blocker=(
                     str(experiment.launch_blocker)
                     if experiment.get("launch_blocker") else None

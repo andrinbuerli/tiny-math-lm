@@ -1908,6 +1908,7 @@ def make_exp13_report(
     baseline_snapshot: Path,
     annotation_bundle_dir: Path,
     launch_blocker: str | None = None,
+    run_namespaces: dict[str, dict[str, str]] | None = None,
 ) -> tuple[dict[str, Any], list[Path]]:
     """Build the Experiment 13 reasoning-v3 versus frozen-baseline table."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1923,23 +1924,25 @@ def make_exp13_report(
     baseline_digest = hashlib.sha256(baseline_snapshot.read_bytes()).hexdigest()
     manifest = _json_file(annotation_bundle_dir / "manifest.json") or {}
     reported_bundle_digest = _sha256_file(annotation_bundle_dir / "manifest.json")
+    run_namespaces = run_namespaces or {}
     rows: list[dict[str, Any]] = []
 
     for model in MODELS:
         for arm in ARMS:
+            training_experiment = run_namespaces.get(model, {}).get(arm, experiment)
             selector = _exp11_selector(snapshot, model, arm, baseline_name)
             baseline_dir = (
                 runs_dir / baseline_name / model / "evaluation" / arm
                 / str(selector or "") / f"seed{seed}"
             )
-            training_dir = runs_dir / experiment / model / arm / f"seed{seed}"
+            training_dir = runs_dir / training_experiment / model / arm / f"seed{seed}"
             checkpoint_name = "latest.pt" if arm == "grpo" else "best.pt"
             checkpoint = training_dir / checkpoint_name
-            eval_root = runs_dir / experiment / model / "evaluation" / arm / (
+            eval_root = runs_dir / training_experiment / model / "evaluation" / arm / (
                 "latest" if arm == "grpo" else "best"
             ) / f"seed{seed}"
             result_path = _exp11_result_path(
-                runs_dir, experiment, model, arm, seed,
+                runs_dir, training_experiment, model, arm, seed,
                 "latest" if arm == "grpo" else "best",
                 expected_checkpoint=checkpoint,
             )
@@ -2017,6 +2020,7 @@ def make_exp13_report(
                     "model": model,
                     "model_parameters": (result or {}).get("model_parameters"),
                     "arm": arm,
+                    "training_experiment": training_experiment,
                     "source_arm": "random_initialization" if arm == "sft" else "sft",
                     "source_sft_checkpoint": str(source_sft_path) if source_sft_path else None,
                     "source_sft_checkpoint_sha256": source_sft_checkpoint_hash,
@@ -2069,8 +2073,9 @@ def make_exp13_report(
 
     compute_matching: dict[str, dict[str, Any]] = {}
     for model in MODELS:
+        grpo_experiment = run_namespaces.get(model, {}).get("grpo", experiment)
         grpo_metrics = _metric_at_checkpoint(
-            runs_dir / experiment / model / "grpo" / f"seed{seed}" / "metrics.csv", "grpo", None
+            runs_dir / grpo_experiment / model / "grpo" / f"seed{seed}" / "metrics.csv", "grpo", None
         )
         control_metrics = _metric_at_checkpoint(
             runs_dir / experiment / model / "continued_sft" / f"seed{seed}" / "metrics.csv",
@@ -2111,6 +2116,7 @@ def make_exp13_report(
 
     report = {
         "experiment": experiment,
+        "run_namespaces": run_namespaces,
         "seed": seed,
         "row_count": len(rows),
         "rows": rows,

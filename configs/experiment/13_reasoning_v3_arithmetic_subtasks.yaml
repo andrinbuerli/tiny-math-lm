@@ -33,3 +33,8 @@ eval:
 reporting:
   output_dir: ${paths.root}/reports/exp13_reasoning_v3_arithmetic_subtasks/seed18
   annotation_bundle_dir: ${paths.root}/data/processed/exp13_reasoning_v3_arithmetic_subtasks-seed18-excluding-7-invalid-traces
+  run_namespaces:
+    1m:
+      grpo: exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k-grpo1m
+    10m:
+      grpo: exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k-grpo10m

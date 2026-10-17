@@ -264,6 +264,7 @@ def test_exp13_report_links_grpo_to_its_sft_checkpoint_and_run(workspace_tmpdir)
     baseline = _baseline_snapshot(workspace_tmpdir / "baseline.json")
     runs = workspace_tmpdir / "runs"
     experiment = "exp13_reasoning_v3_arithmetic_subtasks"
+    grpo_experiment = f"{experiment}-grpo1m-fresh"
     sft_dir = runs / experiment / "1m" / "sft" / "seed18"
     sft_dir.mkdir(parents=True)
     source_sft = sft_dir / "best.pt"
@@ -278,11 +279,11 @@ def test_exp13_report_links_grpo_to_its_sft_checkpoint_and_run(workspace_tmpdir)
         "project": "project",
         "identity": {"name": "sft-run", "group": "exp13-1m-sft"},
     }), encoding="utf-8")
-    grpo_dir = runs / experiment / "1m" / "grpo" / "seed18"
+    grpo_dir = runs / grpo_experiment / "1m" / "grpo" / "seed18"
     grpo_dir.mkdir(parents=True)
     grpo_checkpoint = grpo_dir / "latest.pt"
     grpo_checkpoint.write_bytes(b"grpo-checkpoint")
-    eval_dir = runs / experiment / "1m" / "evaluation" / "grpo" / "latest" / "seed18"
+    eval_dir = runs / grpo_experiment / "1m" / "evaluation" / "grpo" / "latest" / "seed18"
     eval_dir.mkdir(parents=True)
     (eval_dir / "results.json").write_text(json.dumps({
         "checkpoint": str(grpo_checkpoint.resolve()),
@@ -302,11 +303,14 @@ def test_exp13_report_links_grpo_to_its_sft_checkpoint_and_run(workspace_tmpdir)
         baseline_snapshot=baseline,
         annotation_bundle_dir=bundle,
         experiment=experiment,
+        run_namespaces={"1m": {"grpo": grpo_experiment}},
     )
     row = next(row for row in report["rows"] if (
         row["model"], row["arm"], row["split"]
     ) == ("1m", "grpo", "test"))
     assert row["source_arm"] == "sft"
+    assert row["training_experiment"] == grpo_experiment
+    assert row["checkpoint"] == str(grpo_checkpoint)
     assert row["source_sft_checkpoint"] == str(source_sft.resolve())
     assert row["source_sft_checkpoint_sha256"] == hashlib.sha256(
         source_sft.read_bytes()
