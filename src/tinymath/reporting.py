@@ -1925,6 +1925,7 @@ def make_exp13_report(
     baseline_snapshot: Path,
     annotation_bundle_dir: Path,
     launch_blocker: str | None = None,
+    launch_blockers: dict[str, dict[str, str]] | None = None,
     run_namespaces: dict[str, dict[str, str]] | None = None,
 ) -> tuple[dict[str, Any], list[Path]]:
     """Build the Experiment 13 reasoning-v3 versus frozen-baseline table."""
@@ -1941,6 +1942,7 @@ def make_exp13_report(
     baseline_digest = hashlib.sha256(baseline_snapshot.read_bytes()).hexdigest()
     manifest = _json_file(annotation_bundle_dir / "manifest.json") or {}
     reported_bundle_digest = _sha256_file(annotation_bundle_dir / "manifest.json")
+    launch_blockers = launch_blockers or {}
     run_namespaces = run_namespaces or {}
     rows: list[dict[str, Any]] = []
 
@@ -2060,6 +2062,7 @@ def make_exp13_report(
                     "reasoning_scored": scored or None,
                     "delta_percentage_points": delta_pp,
                     "status": status,
+                    "launch_blocker": launch_blockers.get(model, {}).get(arm),
                     "same_question_identity": identity_matches,
                     "baseline_question_identity_sha256": base_identity,
                     "reasoning_question_identity_sha256": reasoning_identity,
@@ -2194,6 +2197,13 @@ def make_exp13_report(
     if launch_blocker:
         report["launch_blocker"] = launch_blocker
         report["limitations"].append(f"Fresh training and evaluation were not started: {launch_blocker}")
+    if launch_blockers:
+        report["launch_blockers"] = launch_blockers
+        for model, arms in launch_blockers.items():
+            for arm, reason in arms.items():
+                report["limitations"].append(
+                    f"{model} {arm} was not launched because its admission gate failed: {reason}"
+                )
     json_path = output_dir / "comparison.json"
     json_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     csv_path = output_dir / "comparison.csv"
@@ -2228,6 +2238,11 @@ def make_exp13_report(
             f"Fresh training and evaluation were not started: {launch_blocker}",
             "All reasoning-side cells remain `not-run`; no accuracy deltas are reported.",
         ])
+    if launch_blockers:
+        lines.extend(["", "## Per-arm launch gates", ""])
+        for model, arms in launch_blockers.items():
+            for arm, reason in arms.items():
+                lines.append(f"- `{model}/{arm}` was not launched: {reason}")
     lines.extend([
         "", "## Provenance", "",
         f"- Baseline snapshot: `{baseline_snapshot}` (SHA256 `{baseline_digest}`; frozen `{snapshot.get('frozen_at_utc')}`).",

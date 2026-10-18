@@ -62,6 +62,9 @@ def main(config: DictConfig) -> None:
                     str(experiment.launch_blocker)
                     if experiment.get("launch_blocker") else None
                 ),
+                launch_blockers=OmegaConf.to_container(
+                    config.reporting.get("launch_blockers", {}), resolve=True
+                ),
             )
             run.log({
                 "comparison/rows": report["row_count"],

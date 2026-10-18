@@ -114,6 +114,42 @@ def test_exp13_report_records_a_launch_blocker(workspace_tmpdir):
     assert blocker in markdown
 
 
+def test_exp13_report_records_a_per_arm_launch_gate(workspace_tmpdir):
+    baseline = _baseline_snapshot(workspace_tmpdir / "baseline.json")
+    bundle = workspace_tmpdir / "bundle"
+    bundle.mkdir()
+    (bundle / "manifest.json").write_text(json.dumps({
+        "annotation": {"protocol": "reasoning_v3"},
+        "tokenizer": {},
+        "splits": {},
+    }), encoding="utf-8")
+    blocker = (
+        "nvidia-smi reported 99% GPU utilization (21,118 MiB free of 24,564 MiB); "
+        "the launch limit is 75%"
+    )
+    output = workspace_tmpdir / "reports"
+    report, _ = make_exp13_report(
+        runs_dir=workspace_tmpdir / "runs",
+        output_dir=output,
+        baseline_snapshot=baseline,
+        annotation_bundle_dir=bundle,
+        launch_blockers={"100m": {"grpo": blocker}},
+    )
+
+    grpo_rows = [row for row in report["rows"] if row["arm"] == "grpo"]
+    assert {row["status"] for row in grpo_rows} == {"not-run"}
+    assert {
+        row["launch_blocker"] for row in grpo_rows if row["model"] == "100m"
+    } == {blocker}
+    assert {
+        row["launch_blocker"] for row in grpo_rows if row["model"] in {"1m", "10m"}
+    } == {None}
+    assert report["launch_blockers"] == {"100m": {"grpo": blocker}}
+    markdown = (output / "intermediate_results.md").read_text(encoding="utf-8")
+    assert "## Per-arm launch gates" in markdown
+    assert f"`100m/grpo` was not launched: {blocker}" in markdown
+
+
 def test_exp13_report_includes_manifest_matched_source_trace_audit(workspace_tmpdir):
     baseline = _baseline_snapshot(workspace_tmpdir / "baseline.json")
     bundle = workspace_tmpdir / "bundle"
