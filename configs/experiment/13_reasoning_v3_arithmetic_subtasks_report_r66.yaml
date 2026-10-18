@@ -1,0 +1,48 @@
+# @package _global_
+# Experiment 13 report refresh after the 1M GRPO step-1,000 checkpoint.
+defaults:
+  - override /rollout: v3_exact
+  - _self_
+
+experiment:
+  number: 13
+  name: exp13-fresh5d493a0f-report-r66
+  title: "Experiment 13 — Reasoning-v3 report at 1M GRPO step 1,000"
+  baseline: restarted_100k_greedy_restart_2
+  lineage: exp13-fresh5d493a0f-report-r66
+  protocol: reasoning_v3
+  phase: main
+  seed: 18
+  data_budget: 500000
+  ood_examples_per_module: 1000
+  updates: 100000
+  max_steps: 100000
+  run_optimization: true
+  context_length: 512
+
+seed: 18
+data_bundle: data/processed/exp13_reasoning_v3_arithmetic_subtasks-seed18
+
+reporting:
+  output_dir: ${paths.root}/reports/exp13_reasoning_v3_arithmetic_subtasks/seed18
+  baseline_snapshot: ${paths.root}/baselines/exp10_restarted_100k_greedy_restart_2/seed18/snapshot.json
+  annotation_bundle_dir: ${paths.root}/data/processed/exp13_reasoning_v3_arithmetic_subtasks-seed18
+  run_namespaces:
+    "1m":
+      sft: exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k
+      grpo: exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k-grpo1m-rawsft-r3
+      continued_sft: exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k
+    "10m":
+      sft: exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k
+      grpo: exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k-grpo10m
+      continued_sft: exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k
+    "100m":
+      sft: exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k
+      grpo: exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k-grpo100m
+      continued_sft: exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k
+  launch_blockers:
+    "100m":
+      grpo: >-
+        GPU admission gate: nvidia-smi reports 99% utilization (21,108 MiB free of
+        24,564 MiB); configured limit is <=75%, with an 8 GB model reservation plus
+        2 GB headroom. The 1M and 10M GRPO jobs are active.
