@@ -1989,10 +1989,18 @@ def make_exp13_report(
                 training_dir / "metrics.csv", arm, (result or {}).get("checkpoint_step")
             )
             source_sft_checkpoint = (result or {}).get("source_sft_checkpoint")
-            source_sft_path = (
-                Path(source_sft_checkpoint)
-                if source_sft_checkpoint else None
-            )
+            if not source_sft_checkpoint and arm != "sft":
+                source_sft_checkpoint = training_config.get("init_checkpoint")
+            source_sft_path = Path(source_sft_checkpoint) if source_sft_checkpoint else None
+            if source_sft_path is not None and not source_sft_path.is_absolute():
+                source_sft_path = (Path.cwd() / source_sft_path).resolve()
+            if source_sft_path is None and arm in {"grpo", "continued_sft"}:
+                sft_experiment = run_namespaces.get(model, {}).get("sft", experiment)
+                candidate = (
+                    runs_dir / sft_experiment / model / "sft" / f"seed{seed}" / "best.pt"
+                )
+                if candidate.is_file():
+                    source_sft_path = candidate.resolve()
             source_sft_checkpoint_hash = (
                 _sha256_file(source_sft_path)
                 if source_sft_path is not None and source_sft_path.is_file()

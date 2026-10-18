@@ -330,6 +330,51 @@ def test_exp13_report_links_grpo_to_its_sft_checkpoint_and_run(workspace_tmpdir)
     assert row["source_sft_wandb"]["run_id"] == "sft-run-id"
 
 
+def test_exp13_report_preserves_source_sft_provenance_before_grpo_starts(workspace_tmpdir):
+    baseline = _baseline_snapshot(workspace_tmpdir / "baseline.json")
+    runs = workspace_tmpdir / "runs"
+    source_sft = runs / "fresh-sft" / "100m" / "sft" / "seed18" / "best.pt"
+    source_sft.parent.mkdir(parents=True)
+    source_sft.write_bytes(b"selected-sft-checkpoint")
+    (source_sft.parent / "wandb_run.json").write_text(json.dumps({
+        "id": "100m-sft-run-id",
+        "mode": "online",
+        "sync_status": "synced",
+        "run_status": "finished",
+        "url": "https://wandb.ai/entity/project/runs/100m-sft-run-id",
+        "entity": "entity",
+        "project": "project",
+        "identity": {"name": "sft-run", "group": "exp13-100m-sft"},
+    }), encoding="utf-8")
+    bundle = workspace_tmpdir / "bundle"
+    bundle.mkdir()
+    (bundle / "manifest.json").write_text(json.dumps({
+        "annotation": {}, "tokenizer": {}, "splits": {},
+    }), encoding="utf-8")
+
+    report, _ = make_exp13_report(
+        runs_dir=runs,
+        output_dir=workspace_tmpdir / "reports",
+        baseline_snapshot=baseline,
+        annotation_bundle_dir=bundle,
+        experiment="report-only",
+        run_namespaces={
+            "100m": {"sft": "fresh-sft", "grpo": "fresh-grpo"},
+        },
+    )
+
+    rows = [row for row in report["rows"] if row["model"] == "100m" and row["arm"] == "grpo"]
+    assert len(rows) == 3
+    assert {row["status"] for row in rows} == {"not-run"}
+    assert {row["checkpoint"] for row in rows} == {None}
+    assert {row["checkpoint_sha256"] for row in rows} == {None}
+    assert {row["source_sft_checkpoint"] for row in rows} == {str(source_sft.resolve())}
+    assert {row["source_sft_checkpoint_sha256"] for row in rows} == {
+        hashlib.sha256(source_sft.read_bytes()).hexdigest()
+    }
+    assert {row["source_sft_wandb"]["run_id"] for row in rows} == {"100m-sft-run-id"}
+
+
 def test_exp13_compute_matching_uses_arm_namespaces_and_reports_checkpoint_update(workspace_tmpdir):
     baseline = _baseline_snapshot(workspace_tmpdir / "baseline.json")
     runs = workspace_tmpdir / "runs"
