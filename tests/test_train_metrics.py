@@ -39,3 +39,33 @@ def test_elapsed_seconds_survives_metric_truncation_for_resume(tmp_path):
 
     assert elapsed_before == 3376.0
     assert elapsed_seconds_through_step(metrics, step_column="update", step=500) == 3376.0
+
+
+def test_truncate_upgrades_mixed_rows_to_current_metric_schema(tmp_path):
+    metrics = tmp_path / "metrics.csv"
+    old_fields = ["update", "wall_seconds", "accuracy"]
+    current_fields = ["update", "timing", "wall_seconds", "accuracy"]
+    with metrics.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(old_fields)
+        writer.writerow([1, 10.0, 0.5])
+        writer.writerow([2, 20.0, 0.75])
+        # These values were appended by a newer writer before the CSV header
+        # was upgraded, so their positions follow current_fields.
+        writer.writerow([3, 0.25, 30.0, 1.0])
+
+    truncate_csv_after_step(
+        metrics,
+        step_column="update",
+        step=3,
+        fieldnames=current_fields,
+    )
+
+    with metrics.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert list(rows[0]) == current_fields
+    assert rows == [
+        {"update": "1", "timing": "", "wall_seconds": "10.0", "accuracy": "0.5"},
+        {"update": "2", "timing": "", "wall_seconds": "20.0", "accuracy": "0.75"},
+        {"update": "3", "timing": "0.25", "wall_seconds": "30.0", "accuracy": "1.0"},
+    ]

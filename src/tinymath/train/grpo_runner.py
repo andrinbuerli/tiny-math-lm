@@ -212,10 +212,6 @@ def train_grpo(
         if start_update
         else 0.0
     )
-    if start_update:
-        truncate_csv_after_step(metrics_path, step_column="update", step=start_update)
-    mode = "a" if metrics_path.exists() and start_update else "w"
-    metrics_file = metrics_path.open(mode, newline="", encoding="utf-8")
     fields = [
         "update", "reward/mean", "reward/format_valid_rate", "reward/verifier_failure_rate",
         "reward/trace_valid_rate", "reward/trace_reference_exact_match_rate",
@@ -233,6 +229,15 @@ def train_grpo(
         "flops_estimator_version", "train/greedy_accuracy", "val/greedy_accuracy",
         "test/greedy_accuracy",
     ] + [f"calls/failure/{reason}" for reason in CALL_FAILURES]
+    if start_update:
+        truncate_csv_after_step(
+            metrics_path,
+            step_column="update",
+            step=start_update,
+            fieldnames=fields,
+        )
+    mode = "a" if metrics_path.exists() and start_update else "w"
+    metrics_file = metrics_path.open(mode, newline="", encoding="utf-8")
     writer = csv.DictWriter(metrics_file, fieldnames=fields)
     if mode == "w":
         writer.writeheader()
