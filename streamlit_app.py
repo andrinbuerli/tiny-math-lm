@@ -146,10 +146,14 @@ if selected is not None:
         cols[2].metric("Training arm", metadata["training_arm"])
         cols[3].metric("Update", metadata["update"] if metadata["update"] is not None else "—")
 
-        source_column, sample_column = st.columns([3, 1])
+        source_column, sample_column, clear_column = st.columns([3, 1, 1])
         source = source_column.selectbox(
             "Question source", ["Freeform", "Sample from train", "Sample from validation", "Sample from test"]
         )
+        if clear_column.button("Clear chat"):
+            st.session_state.chat_history.clear()
+            st.session_state.sampled_reference = None
+            st.session_state.chat_prompt = ""
         if source != "Freeform" and sample_column.button("Sample question"):
             split = source.removeprefix("Sample from ")
             try:
