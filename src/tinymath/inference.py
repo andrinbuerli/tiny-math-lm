@@ -36,8 +36,6 @@ SPLIT_FILES = {
 }
 _SCALAR = r"-?(?:0|[1-9][0-9]*)(?:/[1-9][0-9]*)?"
 _CALL_REQUEST = re.compile(rf"call:(?:add|subtract|multiply|divide)\({_SCALAR},{_SCALAR}\) -> ")
-_CALL_DISPLAY = re.compile(r"^call:(add|subtract|multiply|divide)\(([^,]+),([^)]+)\) -> (.*)$")
-_CALL_PREFIX = re.compile(r"^call:(add|subtract|multiply|divide)\((.*)$")
 
 
 def discover_inference_checkpoints(run_root: str | Path) -> list[InferenceCheckpoint]:
@@ -161,43 +159,15 @@ def _escape_markdown(text: str) -> str:
     return re.sub(r"([\\`*_{}\[\]()#+\-.!|>])", r"\\\1", escaped)
 
 
-def _code_span(text: str) -> str:
-    return html.escape(text, quote=False).replace("`", "&#96;")
+def format_raw_text(text: str) -> str:
+    """Safely render raw model text while retaining visible protocol markers."""
+    return "  \n".join(_escape_markdown(line) for line in text.splitlines())
 
 
-def format_inline_completion(text: str, *, format_tool_calls: bool = True) -> str:
-    """Format reasoning output, optionally rendering exact calls inline."""
-    rendered_lines = []
-    for line in text.splitlines():
-        if line == "<scp>":
-            rendered_lines.append("**Reasoning**")
-            continue
-        if line == "</scp>":
-            continue
-        if not format_tool_calls:
-            rendered_lines.append(_escape_markdown(line))
-            continue
-        match = _CALL_DISPLAY.fullmatch(line)
-        if match:
-            operation, left, right, result = match.groups()
-            expression = f"`{_code_span(operation)}({_code_span(left)}, {_code_span(right)})`"
-            if result:
-                rendered_lines.append(f"**🧮 {expression} → `{_code_span(result)}`**")
-            else:
-                rendered_lines.append(f"**🧮 {expression} →** _running exact tool…_")
-            continue
-        partial = _CALL_PREFIX.match(line)
-        if partial:
-            operation, arguments = partial.groups()
-            rendered_lines.append(
-                f"**🧮 `{_code_span(operation)}`** `{_code_span(arguments)}`"
-            )
-            continue
-        if line.startswith("call:"):
-            rendered_lines.append(f"**⚠ Unrecognized tool request** `{_code_span(line[5:])}`")
-            continue
-        rendered_lines.append(_escape_markdown(line))
-    return "  \n".join(rendered_lines)
+def format_tool_call(operation: str, left: str, right: str) -> str:
+    """Render a tool call as a compact, readable inline expression."""
+    expression = f"{operation}({left}, {right})"
+    return f"**`{html.escape(expression).replace('`', '&#96;')}`**"
 
 
 def _sample_logits(logits: torch.Tensor, temperature: float) -> torch.Tensor:
@@ -219,14 +189,18 @@ def _stream_plain_task(
     *,
     temperature: float,
     max_new_tokens: int,
+    call_id: int,
     events: queue.Queue,
 ) -> None:
     """Generate an independent, tool-disabled sidecar answer into the event queue."""
-    events.put({"kind": "sidecar_start", "task": _plain_task(call)})
     try:
         prompt_ids = tokenizer.encode(
             format_prompt(_plain_task(call), protocol=tokenizer.protocol), add_bos=True
         )
+        events.put({
+            "kind": "sidecar_start", "call_id": call_id, "task": _plain_task(call),
+            "input_tokens": len(prompt_ids),
+        })
         available = model.config.context_length - len(prompt_ids)
         if available <= 0:
             raise ValueError("Sidecar prompt exceeds the checkpoint context length")
@@ -240,12 +214,12 @@ def _stream_plain_task(
                 break
             piece = tokenizer.decode([token_id], skip_special=False)
             if piece:
-                events.put({"kind": "sidecar_token", "text": piece})
+                events.put({"kind": "sidecar_token", "call_id": call_id, "text": piece})
             pending = token
     except (OSError, ValueError, RuntimeError, TypeError, KeyError) as exc:
-        events.put({"kind": "sidecar_error", "text": str(exc)})
+        events.put({"kind": "sidecar_error", "call_id": call_id, "text": str(exc)})
     finally:
-        events.put({"kind": "sidecar_done"})
+        events.put({"kind": "sidecar_done", "call_id": call_id})
 
 
 def _primary_generation(
@@ -264,6 +238,7 @@ def _primary_generation(
     if len(prompt_ids) >= model.config.context_length:
         raise ValueError("Question leaves no room for a completion in the model context")
     device = next(model.parameters()).device
+    events.put({"kind": "generation_start", "input_tokens": len(prompt_ids)})
     pending = torch.tensor([prompt_ids], dtype=torch.long, device=device)
     cache = None
     generated_count = 0
@@ -271,6 +246,7 @@ def _primary_generation(
     in_scratchpad = False
     seen = ""
     sidecar_futures = []
+    call_index = 0
 
     with ThreadPoolExecutor(max_workers=2, thread_name_prefix="tinymath-tool") as executor:
         while generated_count < max_new_tokens:
@@ -287,7 +263,10 @@ def _primary_generation(
             if not piece:
                 pending = token
                 continue
-            events.put({"kind": "primary_token", "text": piece, "source": "model"})
+            events.put({
+                "kind": "primary_token", "text": piece, "source": "model",
+                "region": "reasoning" if in_scratchpad else "completion",
+            })
             seen += piece
             if not in_scratchpad and seen.endswith("<scp>\n"):
                 in_scratchpad = True
@@ -307,17 +286,21 @@ def _primary_generation(
                                 "request": line,
                             })
                         else:
-                            events.put({
-                                "kind": "tool_started",
-                                "request": line,
-                                "task": line,
-                            })
-                            tool_future = executor.submit(execute_call, line)
-                            # Parse the validated request only to form the sidecar
-                            # prompt. The exact executor remains the sole result source.
+                            call_index += 1
+                            call_id = call_index
                             operation, operands = line[5:].split("(", 1)
                             left, right = operands[:-5].split(",", 1)
                             sidecar_call = ArithmeticCall(operation, left, right, "")
+                            events.put({
+                                "kind": "tool_started",
+                                "call_id": call_id,
+                                "request": line,
+                                "tool_tokens": len(tokenizer.encode(line)),
+                                "operation": operation,
+                                "left": left,
+                                "right": right,
+                            })
+                            tool_future = executor.submit(execute_call, line)
                             sidecar = executor.submit(
                                 _stream_plain_task,
                                 model,
@@ -325,13 +308,19 @@ def _primary_generation(
                                 sidecar_call,
                                 temperature=temperature,
                                 max_new_tokens=min(96, max_new_tokens),
+                                call_id=call_id,
                                 events=events,
                             )
                             sidecar_futures.append(sidecar)
                             try:
                                 exact_call = tool_future.result()
                             except CallError as exc:
-                                events.put({"kind": "tool_error", "text": str(exc), "request": line})
+                                events.put({
+                                    "kind": "tool_error",
+                                    "call_id": call_id,
+                                    "text": str(exc),
+                                    "request": line,
+                                })
                                 return
                             result_ids = tokenizer.encode(exact_call.result)
                             room = min(
@@ -339,15 +328,26 @@ def _primary_generation(
                                 max_new_tokens - generated_count,
                             )
                             if len(result_ids) > room:
-                                events.put({"kind": "tool_error", "text": "completion budget leaves no room for tool result", "request": line})
+                                events.put({
+                                    "kind": "tool_error",
+                                    "call_id": call_id,
+                                    "text": "completion budget leaves no room for tool result",
+                                    "request": line,
+                                })
                                 return
                             events.put({
                                 "kind": "tool_result",
+                                "call_id": call_id,
                                 "request": line,
                                 "result": exact_call.result,
                             })
                             for character, result_id in zip(exact_call.result, result_ids):
-                                events.put({"kind": "primary_token", "text": character, "source": "tool"})
+                                events.put({
+                                    "kind": "primary_token",
+                                    "text": character,
+                                    "source": "tool",
+                                    "call_id": call_id,
+                                })
                             generated_count += len(result_ids)
                             line += exact_call.result
                             pending = torch.cat(

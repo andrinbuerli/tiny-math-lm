@@ -1,6 +1,5 @@
 """Streamlit interface for interactive TinyMath checkpoint inference."""
 
-import html
 from pathlib import Path
 
 import streamlit as st
@@ -8,7 +7,8 @@ import torch
 
 from tinymath.inference import (
     discover_inference_checkpoints,
-    format_inline_completion,
+    format_raw_text,
+    format_tool_call,
     load_inference_bundle,
     sample_split_question,
     stream_inference_events,
@@ -119,22 +119,50 @@ if selected is not None:
 
         st.subheader("Streamed response")
         response_view = st.empty()
+        stats_view = st.empty()
 
         if run:
-            primary_text = ""
-            sidecar_text = ""
-            sidecar_task = None
+            parts = [{"kind": "model", "text": ""}]
+            calls = {}
+            stats = {"input": 0, "output": 0, "reasoning": 0, "tool": 0}
             notices = []
 
-            def render_response():
-                sections = [format_inline_completion(primary_text)]
-                if sidecar_task is not None:
-                    sections.append(
-                        f"**Parallel LM · `{html.escape(sidecar_task)}`**  \n"
-                        f"{format_inline_completion(sidecar_text, format_tool_calls=False)}"
+            def render_call(part):
+                rendered = [format_tool_call(part["operation"], part["left"], part["right"])]
+                if part.get("task"):
+                    rendered.extend(["", f"_{format_raw_text(part['task'])}_"])
+                if part.get("sidecar"):
+                    quoted = "\n".join(
+                        f"> {line}" if line else ">"
+                        for line in format_raw_text(part["sidecar"]).splitlines()
                     )
-                sections.extend(f"> ⚠ {html.escape(notice)}" for notice in notices)
+                    rendered.extend(["", quoted])
+                if part.get("sidecar_error"):
+                    rendered.extend(["", f"> Parallel LM error: {format_raw_text(part['sidecar_error'])}"])
+                if part.get("result") is not None:
+                    rendered.extend(["", f"**→ `{part['result']}`**"])
+                if part.get("error"):
+                    rendered.extend(["", f"> ⚠ {format_raw_text(part['error'])}"])
+                return "\n".join(rendered)
+
+            def render_response():
+                sections = [
+                    format_raw_text(part["text"]) if part["kind"] == "model" else render_call(part)
+                    for part in parts
+                ]
+                sections.extend(f"> ⚠ {format_raw_text(notice)}" for notice in notices)
                 response_view.markdown("\n\n".join(section for section in sections if section))
+
+            def render_stats():
+                stats["total"] = stats["input"] + stats["output"]
+                with stats_view.container():
+                    columns = st.columns(5)
+                    for column, label, key in zip(
+                        columns,
+                        ("Total tokens", "Input tokens", "Output tokens", "Reasoning tokens", "Tool call tokens"),
+                        ("total", "input", "output", "reasoning", "tool"),
+                    ):
+                        column.metric(label, stats[key])
 
             with st.spinner("Generating streamed output…"):
                 for event in stream_inference_events(
@@ -144,19 +172,60 @@ if selected is not None:
                     max_new_tokens=max_tokens,
                     temperature=temperature,
                 ):
-                    if event["kind"] == "primary_token":
-                        primary_text += event["text"]
+                    if event["kind"] == "generation_start":
+                        stats["input"] += event["input_tokens"]
+                        render_stats()
+                    elif event["kind"] == "primary_token":
+                        if event.get("source") == "tool":
+                            continue
+                        parts[-1]["text"] += event["text"]
+                        stats["output"] += 1
+                        if event.get("region") == "reasoning":
+                            stats["reasoning"] += 1
                         render_response()
+                        render_stats()
+                    elif event["kind"] == "tool_started":
+                        current = parts[-1]["text"]
+                        request = event["request"]
+                        if current.endswith(request):
+                            parts[-1]["text"] = current[:-len(request)]
+                        part = {
+                            "kind": "tool",
+                            "operation": event["operation"],
+                            "left": event["left"],
+                            "right": event["right"],
+                            "sidecar": "",
+                        }
+                        parts.append(part)
+                        parts.append({"kind": "model", "text": ""})
+                        calls[event["call_id"]] = part
+                        stats["tool"] += event["tool_tokens"]
+                        stats["reasoning"] = max(0, stats["reasoning"] - event["tool_tokens"])
+                        render_response()
+                        render_stats()
                     elif event["kind"] == "sidecar_start":
-                        sidecar_task = event["task"]
+                        stats["input"] += event["input_tokens"]
+                        calls[event["call_id"]]["task"] = event["task"]
                         render_response()
+                        render_stats()
                     elif event["kind"] == "sidecar_token":
-                        sidecar_text += event["text"]
+                        calls[event["call_id"]]["sidecar"] += event["text"]
+                        stats["output"] += 1
+                        render_response()
+                        render_stats()
+                    elif event["kind"] == "tool_result":
+                        calls[event["call_id"]]["result"] = event["result"]
                         render_response()
                     elif event["kind"] == "tool_error":
-                        notices.append(f"Tool request not executed: {event['text']}")
+                        if event.get("call_id") in calls:
+                            calls[event["call_id"]]["error"] = event["text"]
+                        else:
+                            notices.append(f"Tool request not executed: {event['text']}")
                         render_response()
-                    elif event["kind"] in {"generation_error", "sidecar_error"}:
+                    elif event["kind"] == "sidecar_error":
+                        calls[event["call_id"]]["sidecar_error"] = event["text"]
+                        render_response()
+                    elif event["kind"] == "generation_error":
                         notices.append(event["text"])
                         render_response()
     except (OSError, ValueError, RuntimeError, TypeError, KeyError) as exc:

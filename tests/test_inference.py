@@ -9,7 +9,8 @@ import torch
 from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.inference import (
     discover_inference_checkpoints,
-    format_inline_completion,
+    format_raw_text,
+    format_tool_call,
     load_inference_bundle,
     sample_split_question,
     stream_inference_events,
@@ -181,25 +182,31 @@ def test_streams_primary_and_parallel_sidecar_with_exact_tool_result():
     assert primary == main
     assert sidecar_output == sidecar
     assert any(event["kind"] == "tool_started" for event in events)
+    call = next(event for event in events if event["kind"] == "tool_started")
+    assert call["operation"] == "add"
+    assert call["left"] == "1"
+    assert call["right"] == "2"
+    assert call["tool_tokens"] == len(tokenizer.encode("call:add(1,2) -> "))
+    sidecar_start = next(event for event in events if event["kind"] == "sidecar_start")
+    assert sidecar_start["call_id"] == call["call_id"]
+    assert sidecar_start["input_tokens"] > 0
+    primary_start = next(event for event in events if event["kind"] == "generation_start")
+    assert primary_start["input_tokens"] == len(tokenizer.encode(
+        "Q: Calculate 1+2.\n", add_bos=True
+    ))
     assert any(
         event["kind"] == "tool_result" and event["result"] == "3" for event in events
     )
     assert not any(event["kind"] == "tool_error" for event in events)
 
 
-def test_formats_tool_call_inline_and_hides_reasoning_markers():
-    rendered = format_inline_completion(
-        "<scp>\nstep:add numbers\ncall:add(-1,2) -> 1\n</scp>\nA: 1"
-    )
-    pending = format_inline_completion("<scp>\ncall:divide(1,2) -> ")
-    sidecar = format_inline_completion("call:add(1,2) -> 3", format_tool_calls=False)
+def test_formats_raw_completion_and_inline_tool_expression():
+    raw = format_raw_text("<scp>\nstep:add numbers\nA: 1\n</scp>")
 
-    assert "**Reasoning**" in rendered
-    assert "🧮 `add(-1, 2)` → `1`" in rendered
-    assert "call:add" not in rendered
-    assert "<scp>" not in rendered
-    assert "running exact tool" in pending
-    assert "🧮" not in sidecar
+    assert "&lt;scp&gt;" in raw
+    assert "step:add numbers" in raw
+    assert "A: 1" in raw
+    assert format_tool_call("add", "23", "48") == "**`add(23, 48)`**"
 
 
 def test_stream_rejects_unknown_characters_and_nonempty_constraint():
