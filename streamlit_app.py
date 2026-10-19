@@ -245,6 +245,7 @@ if selected is not None:
                         value = f"{stats['output'] / elapsed:.1f}" if key == "speed" else stats[key]
                         column.metric(label, value)
 
+            new_row()
             with st.spinner("Generating streamed output…"):
                 for event in stream_inference_events(
                     model,
