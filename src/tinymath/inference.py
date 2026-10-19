@@ -306,7 +306,7 @@ def _primary_generation(
                                 tokenizer,
                                 sidecar_call,
                                 temperature=temperature,
-                                max_new_tokens=min(96, max_new_tokens),
+                                max_new_tokens=max_new_tokens,
                                 call_id=call_id,
                                 events=events,
                             )
