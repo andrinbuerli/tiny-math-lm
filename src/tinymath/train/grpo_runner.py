@@ -62,11 +62,16 @@ def _prompt_buckets(
     if strategy not in {"left_pad", "exact_length"}:
         raise ValueError("prompt_batching must be left_pad or exact_length")
     buckets: dict[int, list[int]] = {}
+    if strategy == "left_pad":
+        for length in prompt_lengths:
+            if context_length - length < 1:
+                raise ValueError("Prepared RLVR prompt leaves no room for a completion")
+        return [list(range(len(prompt_lengths)))] if prompt_lengths else []
     for index, length in enumerate(prompt_lengths):
         room = context_length - length
         if room < 1:
             raise ValueError("Prepared RLVR prompt leaves no room for a completion")
-        key = min(max_completion_tokens, room) if strategy == "left_pad" else length
+        key = length
         buckets.setdefault(key, []).append(index)
     return list(buckets.values())
 
@@ -355,7 +360,10 @@ def train_grpo(
                         model,
                         bucket_prompts,
                         group_size=group_size,
-                        max_completion_tokens=min(max_completion, bucket_room),
+                        max_completion_tokens=(
+                            max_completion if rollout_config.prompt_batching == "left_pad"
+                            else min(max_completion, bucket_room)
+                        ),
                         temperature=temperature,
                         eos_id=tokenizer.eos_id,
                         pad_id=tokenizer.pad_id,

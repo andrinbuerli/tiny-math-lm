@@ -50,8 +50,14 @@ def _apply_rope(x: torch.Tensor, positions: torch.Tensor, theta: float) -> torch
     )
     angles = positions.float().unsqueeze(-1) * frequencies
     angles = torch.repeat_interleave(angles, repeats=2, dim=-1)
-    cosine = angles.cos().to(dtype=x.dtype).unsqueeze(0).unsqueeze(0)
-    sine = angles.sin().to(dtype=x.dtype).unsqueeze(0).unsqueeze(0)
+    if positions.ndim == 1:
+        cosine = angles.cos().to(dtype=x.dtype).unsqueeze(0).unsqueeze(0)
+        sine = angles.sin().to(dtype=x.dtype).unsqueeze(0).unsqueeze(0)
+    elif positions.ndim == 2:
+        cosine = angles.cos().to(dtype=x.dtype).unsqueeze(1)
+        sine = angles.sin().to(dtype=x.dtype).unsqueeze(1)
+    else:
+        raise ValueError("RoPE positions must be [sequence] or [batch, sequence]")
     return x * cosine + _rotate_half(x) * sine
 
 
@@ -89,13 +95,15 @@ class CausalSelfAttention(nn.Module):
         x: torch.Tensor,
         past_key_value: tuple[torch.Tensor, torch.Tensor] | None = None,
         attention_mask: torch.Tensor | None = None,
+        position_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         """Run attention incrementally, returning the concatenated KV cache."""
         batch, length, width = x.shape
         q, k, v = self.qkv(x).view(batch, length, 3, self.n_heads, self.head_dim).unbind(dim=2)
         q, k, v = (value.transpose(1, 2) for value in (q, k, v))
         past_length = past_key_value[0].shape[-2] if past_key_value is not None else 0
-        positions = torch.arange(past_length, past_length + length, device=x.device)
+        positions = (torch.arange(past_length, past_length + length, device=x.device)
+                     if position_ids is None else position_ids)
         q, k = _apply_rope(q, positions, self.theta), _apply_rope(k, positions, self.theta)
         if past_key_value is not None:
             past_key, past_value = past_key_value
@@ -157,9 +165,11 @@ class TransformerBlock(nn.Module):
         x: torch.Tensor,
         past_key_value: tuple[torch.Tensor, torch.Tensor] | None = None,
         attention_mask: torch.Tensor | None = None,
+        position_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         attended, present = self.attn.forward_with_cache(
-            self.attn_norm(x), past_key_value, attention_mask=attention_mask
+            self.attn_norm(x), past_key_value, attention_mask=attention_mask,
+            position_ids=position_ids,
         )
         x = x + attended
         return x + self.ffn(self.ffn_norm(x)), present
@@ -195,13 +205,21 @@ class TinyMathGPT(nn.Module):
         input_ids: torch.Tensor,
         past_key_values: tuple[tuple[torch.Tensor, torch.Tensor], ...] | None = None,
         attention_mask: torch.Tensor | None = None,
+        position_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, tuple[tuple[torch.Tensor, torch.Tensor], ...]]:
         """Return logits and per-layer KV state for prefix-cached decoding."""
         if input_ids.ndim != 2 or input_ids.shape[1] == 0:
             raise ValueError("input_ids must be a nonempty [batch, sequence] tensor")
         past_length = 0 if past_key_values is None else past_key_values[0][0].shape[-2]
-        if past_length + input_ids.shape[1] > self.config.context_length:
+        if position_ids is None and past_length + input_ids.shape[1] > self.config.context_length:
             raise ValueError("cached input exceeds configured context length")
+        if position_ids is not None and (
+            position_ids.shape != input_ids.shape
+            or position_ids.dtype not in {torch.int32, torch.int64}
+            or torch.any(position_ids < 0)
+            or torch.any(position_ids >= self.config.context_length)
+        ):
+            raise ValueError("position_ids must be integer [batch, sequence] within context")
         if attention_mask is not None and attention_mask.shape != (
             input_ids.shape[0], past_length + input_ids.shape[1]
         ):
@@ -213,7 +231,7 @@ class TinyMathGPT(nn.Module):
         for index, block in enumerate(self.blocks):
             cached = None if past_key_values is None else past_key_values[index]
             x, layer_present = block.forward_with_cache(
-                x, cached, attention_mask=attention_mask
+                x, cached, attention_mask=attention_mask, position_ids=position_ids
             )
             present.append(layer_present)
         return F.linear(self.final_norm(x), self.token_embedding.weight), tuple(present)

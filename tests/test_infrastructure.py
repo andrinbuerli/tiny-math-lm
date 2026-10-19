@@ -123,6 +123,39 @@ def test_resume_allows_reasoning_generation_ceiling_to_match_context():
     assert not tracking._compatible_with_runtime_extension(saved, changed_context)
 
 
+def test_resume_allows_only_reasoning_v3_sampler_strategy_change():
+    saved = {
+        "experiment": {"protocol": "reasoning_v3"},
+        "data_bundle": "bundle-a",
+        "rollout": {
+            "rollout_version": 3,
+            "scorer_version": 3,
+            "executor_version": 1,
+        },
+    }
+    current = {
+        "experiment": {"protocol": "reasoning_v3"},
+        "data_bundle": "bundle-a",
+        "rollout": {
+            "rollout_version": 3,
+            "scorer_version": 3,
+            "executor_version": 1,
+            "sampler_version": 2,
+            "prompt_batching": "left_pad",
+        },
+    }
+    assert tracking._compatible_with_runtime_extension(saved, current)
+
+    changed_scorer = {
+        **current,
+        "rollout": {**current["rollout"], "scorer_version": 4},
+    }
+    assert not tracking._compatible_with_runtime_extension(saved, changed_scorer)
+
+    changed_bundle = {**current, "data_bundle": "bundle-b"}
+    assert not tracking._compatible_with_runtime_extension(saved, changed_bundle)
+
+
 def test_wandb_entity_defaults_to_configured_team(monkeypatch):
     monkeypatch.delenv("WANDB_ENTITY", raising=False)
     with initialize_config_dir(version_base="1.3", config_dir=str(Path(__file__).resolve().parents[1] / "configs")):

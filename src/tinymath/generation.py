@@ -189,16 +189,20 @@ def generate_rollouts(
     if min(caps) < 1:
         raise ValueError("Prompt leaves no room for a completion")
     cap = max(caps)
-    if prompt_length + cap > model.config.context_length:
-        raise ValueError(
-            "Padded prompt batch exceeds context; bucket prompts by effective completion cap"
-        )
     lanes = batch * group_size
     sequences = prompt_ids[:, None, :].expand(batch, group_size, prompt_length).reshape(
         lanes, prompt_length
     )
     if lane_attention_mask is not None:
         lane_attention_mask = lane_attention_mask.to(device=prompt_ids.device)
+        lane_prompt_lengths = torch.tensor(
+            prompt_lengths, dtype=torch.long, device=prompt_ids.device
+        ).repeat_interleave(group_size)
+        position_ids = lane_attention_mask.long().cumsum(dim=1) - 1
+        position_ids.masked_fill_(~lane_attention_mask, 0)
+    else:
+        lane_prompt_lengths = None
+        position_ids = None
     active = torch.ones(lanes, dtype=torch.bool, device=prompt_ids.device)
     active_lanes = [True] * lanes
     if task_rows is not None and len(task_rows) != batch:
@@ -237,8 +241,13 @@ def generate_rollouts(
             if lane_attention_mask is None:
                 logits, cache = model.forward_with_cache(model_input, cache)
             else:
+                if cache is not None:
+                    position_ids = (lane_prompt_lengths + position - 1).clamp(
+                        max=model.config.context_length - 1
+                    )[:, None]
                 logits, cache = model.forward_with_cache(
-                    model_input, cache, attention_mask=lane_attention_mask
+                    model_input, cache, attention_mask=lane_attention_mask,
+                    position_ids=position_ids,
                 )
             valid = active.clone()
             forced_lanes = [

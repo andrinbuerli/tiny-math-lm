@@ -10,12 +10,12 @@ def test_left_padding_is_default_and_old_rollout_config_stays_legacy():
     assert legacy.prompt_batching == "exact_length"
 
 
-def test_left_padding_buckets_by_effective_completion_cap():
+def test_left_padding_batches_all_compatible_prompts_together():
     lengths = [19, 41, 17, 27, 25, 16, 52, 22, 500, 500, 504]
     buckets = _prompt_buckets(
         lengths, max_completion_tokens=128, context_length=512, strategy="left_pad"
     )
-    assert buckets == [[0, 1, 2, 3, 4, 5, 6, 7], [8, 9], [10]]
+    assert buckets == [list(range(len(lengths)))]
 
 
 def test_exact_length_strategy_remains_available_for_legacy_replay():

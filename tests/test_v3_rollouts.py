@@ -26,7 +26,7 @@ class ScriptedModel(torch.nn.Module):
         self.eos = tokenizer.eos_id
         self.seen = []
 
-    def forward_with_cache(self, ids, cache, attention_mask=None):
+    def forward_with_cache(self, ids, cache, attention_mask=None, position_ids=None):
         position = 0 if cache is None else cache
         self.seen.append(ids.clone())
         logits = torch.full((len(ids), ids.shape[1], self.vocab), -100.0, device=ids.device)
@@ -104,27 +104,64 @@ def test_left_padded_rollout_keeps_prompt_alignment_and_exact_executor_events():
     assert tokenizer.decode(result.completion_ids[1, 0].tolist()) == texts[1]
 
 
+def test_left_pad_uses_one_64_lane_batch_for_mixed_prompt_lengths():
+    questions = ["Calculate 1+2." + (" " * length) for length in range(8)]
+    prompt_texts = [f"Q: {question}\n" for question in questions]
+    tokenizer = CharacterTokenizer.from_texts([*prompt_texts], protocol="reasoning_v3")
+    encoded = [tokenizer.encode(text, add_bos=True) for text in prompt_texts]
+    width = max(map(len, encoded))
+    prompts = torch.full((len(encoded), width), tokenizer.pad_id, dtype=torch.long)
+    mask = torch.zeros_like(prompts, dtype=torch.bool)
+    for index, ids in enumerate(encoded):
+        prompts[index, -len(ids):] = torch.tensor(ids)
+        mask[index, -len(ids):] = True
+    model = ScriptedModel(tokenizer, [""] * 64, cap=128)
+    result = generate_rollouts(
+        model, prompts, group_size=8, max_completion_tokens=64, temperature=0,
+        eos_id=tokenizer.eos_id, pad_id=tokenizer.pad_id, tokenizer=tokenizer,
+        rollout=RolloutConfig(), prompt_mask=mask,
+    )
+    assert result.completion_ids.shape[:2] == (8, 8)
+    assert model.seen[0].shape == (64, width)
+    assert len(model.seen) == 1
+
+
 def test_masked_cached_attention_matches_unpadded_prompt_logits_and_decode():
     torch.manual_seed(31)
     model = TinyMathGPT(
-        GPTConfig(vocab_size=19, context_length=32, n_layers=1, n_heads=1, d_model=8, d_ff=16)
+        GPTConfig(vocab_size=19, context_length=8, n_layers=1, n_heads=1, d_model=8, d_ff=16)
     ).eval()
     prompts = torch.tensor([[0, 0, 1, 5, 7], [1, 4, 8, 3, 6]])
     mask = torch.tensor([[False, False, True, True, True], [True, True, True, True, True]])
+    logical_positions = (mask.long().cumsum(dim=1) - 1).masked_fill(~mask, 0)
     with torch.no_grad():
-        padded_logits, padded_cache = model.forward_with_cache(prompts, attention_mask=mask)
+        padded_logits, padded_cache = model.forward_with_cache(
+            prompts, attention_mask=mask, position_ids=logical_positions
+        )
         reference_logits, reference_cache = model.forward_with_cache(prompts[0:1, 2:])
         assert torch.allclose(padded_logits[0, -1], reference_logits[0, -1], atol=1e-6, rtol=1e-5)
         next_token = torch.tensor([[9]])
         padded_mask = torch.cat((mask[0:1], torch.ones((1, 1), dtype=torch.bool)), dim=1)
         padded_cache_single = tuple((key[0:1], value[0:1]) for key, value in padded_cache)
         decoded_logits, _ = model.forward_with_cache(
-            next_token, padded_cache_single, attention_mask=padded_mask
+            next_token, padded_cache_single, attention_mask=padded_mask,
+            position_ids=torch.tensor([[3]]),
         )
         reference_decoded_logits, _ = model.forward_with_cache(next_token, reference_cache)
         assert torch.allclose(
             decoded_logits[0, -1], reference_decoded_logits[0, -1], atol=1e-6, rtol=1e-5
         )
+        cache = padded_cache
+        growing_mask = mask.clone()
+        for step in range(5):
+            active = torch.tensor([True, step < 3])
+            growing_mask = torch.cat((growing_mask, active[:, None]), dim=1)
+            positions = torch.tensor([[3 + step], [min(5 + step, 7)]])
+            _, cache = model.forward_with_cache(
+                torch.tensor([[9], [9]]), cache, attention_mask=growing_mask,
+                position_ids=positions,
+            )
+        assert cache[0][0].shape[-2] == 10  # physical left padding can exceed logical context
 
 
 @pytest.mark.parametrize(("line", "reason", "config"), [

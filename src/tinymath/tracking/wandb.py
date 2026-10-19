@@ -90,6 +90,31 @@ def _compatible_with_runtime_extension(
     normalized = copy.deepcopy(current)
     saved_normalized = copy.deepcopy(saved)
 
+    # Sampler v2 changes prompt batching and therefore RNG lane order. It is
+    # the only reasoning-v3 training setting that may change when resuming a
+    # checkpoint; the runner validates the saved sampler identity and emits a
+    # warning before continuing. Treat pre-versioned rollout configs as v1.
+    if (
+        saved_normalized.get("experiment", {}).get("protocol") == "reasoning_v3"
+        and normalized.get("experiment", {}).get("protocol") == "reasoning_v3"
+    ):
+        for config in (saved_normalized, normalized):
+            rollout = config.get("rollout")
+            if not isinstance(rollout, dict):
+                return False
+            sampler_version = rollout.get(
+                "sampler_version", 1 if "rollout_version" in rollout else 2
+            )
+            prompt_batching = rollout.get(
+                "prompt_batching", "exact_length" if sampler_version == 1 else "left_pad"
+            )
+            if (sampler_version, prompt_batching) not in {
+                (1, "exact_length"), (2, "left_pad")
+            }:
+                return False
+            rollout.pop("sampler_version", None)
+            rollout.pop("prompt_batching", None)
+
     # The default rollout group is inert for legacy non-v3 experiments.
     if ("rollout" not in saved_normalized
             and normalized.get("experiment", {}).get("protocol") != "reasoning_v3"):
