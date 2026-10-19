@@ -35,8 +35,8 @@ def main(config: DictConfig) -> None:
         run_dir = workspace_path(
             "runs", str(experiment.name), "comparison", f"seed{int(config.seed)}"
         )
-    is_exp13 = int(experiment.get("number", 0) or 0) == 13
-    if is_exp13:
+    is_reasoning_v3_comparison = int(experiment.get("number", 0) or 0) in {13, 14}
+    if is_reasoning_v3_comparison:
         identity = comparison_identity(str(experiment.name), int(config.seed))
         config.tracking.name = identity["name"]
         config.tracking.group = identity["group"]
@@ -47,7 +47,7 @@ def main(config: DictConfig) -> None:
     output_dir = workspace_path(str(config.reporting.output_dir))
     run = initialize_wandb(config, run_dir, job_type="comparison")
     try:
-        if is_exp13:
+        if is_reasoning_v3_comparison:
             report, outputs = make_exp13_report(
                 runs_dir=workspace_path("runs"),
                 experiment=str(experiment.name),
@@ -126,7 +126,7 @@ def main(config: DictConfig) -> None:
                 "comparison/markdown_path": str(output_dir / (
                     "intermediate_results.md"
                     if str(config.experiment.name) == "exp11_reasoning_500k_100k"
-                    or int(experiment.get("number", 0) or 0) == 13
+                    or is_reasoning_v3_comparison
                     else "report.md"
                 )),
                 "comparison/csv_path": str(output_dir / "comparison.csv"),
