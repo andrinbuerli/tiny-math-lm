@@ -328,7 +328,7 @@ if selected is not None:
                             response_rows = st.container()
                             generation_started = time.perf_counter()
                             calls = {}
-                            stats = {"input": 0, "output": 0, "reasoning": 0}
+                            stats = {"input": 0, "agent_output": 0, "subagent": 0}
                             parser = {
                                 "scratchpad_lines": [], "scratchpad_active": False,
                                 "scratchpad_line": "", "outside_line": "",
@@ -434,13 +434,26 @@ if selected is not None:
 
                             def render_stats():
                                 elapsed = max(time.perf_counter() - generation_started, 1e-9)
-                                total = stats["input"] + stats["output"]
+                                output = stats["agent_output"] + stats["subagent"]
+                                total = stats["input"] + output
                                 with stats_view.container():
-                                    columns = st.columns(5)
-                                    values = (total, stats["input"], stats["output"],
-                                              stats["reasoning"], f"{stats['output'] / elapsed:.1f}")
-                                    labels = ("Total tokens", "Input tokens", "Output tokens",
-                                              "Reasoning tokens", "Tokens / s")
+                                    columns = st.columns(6)
+                                    values = (
+                                        total,
+                                        stats["input"],
+                                        output,
+                                        stats["agent_output"],
+                                        stats["subagent"],
+                                        f"{total / elapsed:.1f}",
+                                    )
+                                    labels = (
+                                        "Total tokens",
+                                        "Input tokens (prompt)",
+                                        "Output tokens",
+                                        "Agent tokens",
+                                        "Subagent tokens",
+                                        "Tokens / s (overall)",
+                                    )
                                     for column, label, value in zip(columns, labels, values):
                                         column.metric(label, value)
 
@@ -466,9 +479,7 @@ if selected is not None:
                                             if answer:
                                                 answer_view.markdown(format_raw_text(answer))
                                             continue
-                                        stats["output"] += 1
-                                        if event.get("region") == "reasoning":
-                                            stats["reasoning"] += 1
+                                        stats["agent_output"] += 1
                                         answer = _final_answer(generated_response)
                                         if answer:
                                             answer_view.markdown(format_raw_text(answer))
@@ -481,17 +492,16 @@ if selected is not None:
                                             "right": event["right"], "sidecar": "",
                                         }
                                         calls[event["call_id"]] = row
-                                        stats["reasoning"] = max(0, stats["reasoning"] - event["tool_tokens"])
                                         render_row(row)
                                     elif kind == "sidecar_start":
-                                        stats["input"] += event["input_tokens"]
+                                        stats["subagent"] += event["input_tokens"]
                                         row = calls[event["call_id"]]
                                         row["tool"]["task"] = event["task"]
                                         render_row(row)
                                     elif kind == "sidecar_token":
                                         row = calls[event["call_id"]]
                                         row["tool"]["sidecar"] += event["text"]
-                                        stats["output"] += 1
+                                        stats["subagent"] += 1
                                         render_row(row)
                                     elif kind == "tool_result":
                                         row = calls[event["call_id"]]
