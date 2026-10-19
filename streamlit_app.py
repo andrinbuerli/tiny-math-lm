@@ -6,6 +6,7 @@ from pathlib import Path
 import streamlit as st
 import torch
 
+from tinymath.data.trace_explanations import transcribe_scratchpad
 from tinymath.inference import (
     discover_inference_checkpoints,
     format_raw_text,
@@ -119,8 +120,13 @@ if selected is not None:
         run = control_columns[3].button("Generate", type="primary", disabled=bool(unsupported))
 
         stats_view = st.empty()
-        st.subheader("Streamed response")
-        response_view = st.empty()
+        response_column, explanation_column = st.columns([3, 2])
+        with response_column:
+            st.subheader("Streamed response")
+            response_view = st.empty()
+        with explanation_column:
+            st.subheader("Line explanations")
+            explanation_view = st.empty()
 
         if run:
             generation_started = time.perf_counter()
@@ -128,6 +134,14 @@ if selected is not None:
             calls = {}
             stats = {"input": 0, "output": 0, "reasoning": 0}
             notices = []
+            explanations = []
+            parser = {
+                "scratchpad_lines": [],
+                "scratchpad_active": False,
+                "scratchpad_line": "",
+                "outside_line": "",
+                "known_explanation_count": 0,
+            }
 
             def render_call(part):
                 rendered = [format_tool_call(part["operation"], part["left"], part["right"])]
@@ -155,6 +169,58 @@ if selected is not None:
                 sections.extend(f"> ⚠ {format_raw_text(notice)}" for notice in notices)
                 response_view.markdown("\n\n".join(section for section in sections if section))
 
+            def render_explanations():
+                rendered = [
+                    f"**{format_raw_text(line)}**\n\n{format_raw_text(explanation)}"
+                    for line, explanation in explanations
+                ]
+                explanation_view.markdown("\n\n---\n\n".join(rendered))
+
+            def explain_line(line, *, is_scratchpad):
+                if not line.strip() or line in {"<scp>", "</scp>"}:
+                    return
+                if is_scratchpad:
+                    parser["scratchpad_lines"].append(line)
+                    explanation = None
+                    try:
+                        trace_explanations = transcribe_scratchpad(
+                            "\n".join(parser["scratchpad_lines"]), version="reasoning_v3"
+                        )
+                        if len(trace_explanations) > parser["known_explanation_count"]:
+                            explanation = trace_explanations[-1]
+                            parser["known_explanation_count"] = len(trace_explanations)
+                    except ValueError:
+                        pass
+                    if explanation is None:
+                        explanation = f"Trace line: {line}."
+                elif line.startswith("A:"):
+                    explanation = f"This is the model's final answer: {line[2:].strip()}."
+                else:
+                    explanation = f"Model output: {line}."
+                explanations.append((line, explanation))
+                render_explanations()
+
+            def consume_prediction(text):
+                for character in text:
+                    if parser["scratchpad_active"]:
+                        if character == "\n":
+                            if parser["scratchpad_line"] == "</scp>":
+                                parser["scratchpad_active"] = False
+                            else:
+                                explain_line(parser["scratchpad_line"], is_scratchpad=True)
+                            parser["scratchpad_line"] = ""
+                        else:
+                            parser["scratchpad_line"] += character
+                    else:
+                        parser["outside_line"] += character
+                        if parser["outside_line"].endswith("<scp>\n"):
+                            parser["outside_line"] = ""
+                            parser["scratchpad_active"] = True
+                        elif character == "\n":
+                            line = parser["outside_line"][:-1].rstrip("\r")
+                            parser["outside_line"] = ""
+                            explain_line(line, is_scratchpad=False)
+
             def render_stats():
                 stats["total"] = stats["input"] + stats["output"]
                 elapsed = max(time.perf_counter() - generation_started, 1e-9)
@@ -181,6 +247,7 @@ if selected is not None:
                         stats["input"] += event["input_tokens"]
                         render_stats()
                     elif event["kind"] == "primary_token":
+                        consume_prediction(event["text"])
                         if event.get("source") == "tool":
                             continue
                         parts[-1]["text"] += event["text"]
@@ -234,6 +301,13 @@ if selected is not None:
                     elif event["kind"] == "generation_error":
                         notices.append(event["text"])
                         render_response()
+            if parser["scratchpad_line"] and parser["scratchpad_line"] != "</scp>":
+                explain_line(
+                    parser["scratchpad_line"],
+                    is_scratchpad=parser["scratchpad_active"],
+                )
+            if parser["outside_line"].strip():
+                explain_line(parser["outside_line"].strip(), is_scratchpad=False)
     except (OSError, ValueError, RuntimeError, TypeError, KeyError) as exc:
         st.error(f"Could not load this checkpoint: {exc}")
 
