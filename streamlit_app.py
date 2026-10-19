@@ -26,8 +26,20 @@ st.set_page_config(page_title="TinyMath Inference", page_icon="∑", layout="wid
 st.markdown(
     """
     <style>
+    [data-testid="stAppViewContainer"] .main .block-container {
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        height: 100dvh;
+        min-height: 0;
+    }
+    [data-testid="stAppViewContainer"] .main .block-container > div[data-testid="stVerticalBlock"] {
+        flex: 1 1 auto;
+        min-height: 0;
+    }
     .st-key-chat_history {
-        height: max(240px, calc(100vh - 230px)) !important;
+        flex: 1 1 0%;
+        min-height: 0;
     }
     .tm-reasoning-activity {
         align-items: center;
@@ -237,7 +249,7 @@ if selected is not None:
         prompt = st.chat_input("Ask a math question", key="chat_prompt")
         sampled_reference = st.session_state.sampled_reference
         chat_history_container = st.container(
-            height=480, border=False, key="chat_history", autoscroll=True
+            height="stretch", border=False, key="chat_history", autoscroll=True
         )
         with chat_history_container:
             for message in st.session_state.chat_history:
