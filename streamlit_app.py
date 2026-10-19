@@ -112,7 +112,7 @@ if selected is not None:
 
         control_columns = st.columns([1, 1, 2, 1])
         max_tokens = control_columns[0].slider(
-            "Max output chars", 8, min(512, model.config.context_length),
+            "Max output chars (both streams)", 8, min(512, model.config.context_length),
             min(256, model.config.context_length), 8,
         )
         temperature = control_columns[1].slider("Temperature", 0.0, 1.5, 0.0, 0.05)
@@ -174,6 +174,7 @@ if selected is not None:
                     tokenizer,
                     question,
                     max_new_tokens=max_tokens,
+                    sidecar_max_new_tokens=max_tokens,
                     temperature=temperature,
                 ):
                     if event["kind"] == "generation_start":

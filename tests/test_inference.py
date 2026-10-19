@@ -200,7 +200,7 @@ def test_streams_primary_and_parallel_sidecar_with_exact_tool_result():
     assert not any(event["kind"] == "tool_error" for event in events)
 
 
-def test_sidecar_uses_the_full_configured_completion_limit():
+def test_sidecar_uses_the_same_configured_completion_limit():
     main = "<scp>\ncall:add(1,2) -> "
     sidecar = "x" * 100
     tokenizer = CharacterTokenizer.from_texts(
@@ -209,14 +209,14 @@ def test_sidecar_uses_the_full_configured_completion_limit():
     )
     model = ScriptedInferenceModel(tokenizer, main, sidecar)
 
-    events = list(stream_inference_events(
-        model, tokenizer, "Calculate 1+2.", max_new_tokens=128
-    ))
+    events = list(
+        stream_inference_events(model, tokenizer, "Calculate 1+2.", max_new_tokens=64)
+    )
 
     streamed_sidecar = "".join(
         event["text"] for event in events if event["kind"] == "sidecar_token"
     )
-    assert streamed_sidecar == sidecar
+    assert streamed_sidecar == sidecar[:64]
 
 
 def test_formats_raw_completion_and_inline_tool_expression():

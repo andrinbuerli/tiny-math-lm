@@ -227,6 +227,7 @@ def _primary_generation(
     question: str,
     *,
     max_new_tokens: int,
+    sidecar_max_new_tokens: int,
     temperature: float,
     events: queue.Queue,
 ) -> None:
@@ -306,7 +307,7 @@ def _primary_generation(
                                 tokenizer,
                                 sidecar_call,
                                 temperature=temperature,
-                                max_new_tokens=max_new_tokens,
+                                max_new_tokens=sidecar_max_new_tokens,
                                 call_id=call_id,
                                 events=events,
                             )
@@ -366,6 +367,7 @@ def stream_inference_events(
     question: str,
     *,
     max_new_tokens: int = 256,
+    sidecar_max_new_tokens: int | None = None,
     temperature: float = 0.0,
 ) -> Iterator[dict[str, Any]]:
     """Yield interleaved primary, tool, and sidecar events as inference progresses."""
@@ -373,6 +375,10 @@ def stream_inference_events(
         raise ValueError("Enter a nonempty question")
     if max_new_tokens < 1 or temperature < 0:
         raise ValueError("Completion length must be positive and temperature nonnegative")
+    if sidecar_max_new_tokens is None:
+        sidecar_max_new_tokens = max_new_tokens
+    if sidecar_max_new_tokens < 1:
+        raise ValueError("Parallel LM completion length must be positive")
     unsupported = unsupported_characters(tokenizer, question)
     if unsupported:
         rendered = ", ".join(f"{char!r} (U+{ord(char):04X})" for char in unsupported)
@@ -388,6 +394,7 @@ def stream_inference_events(
                 tokenizer,
                 question,
                 max_new_tokens=max_new_tokens,
+                sidecar_max_new_tokens=sidecar_max_new_tokens,
                 temperature=temperature,
                 events=events,
             )
