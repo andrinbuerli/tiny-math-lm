@@ -175,28 +175,30 @@ if selected is not None:
         temperature = control_columns[1].slider("Temperature", 0.0, 1.5, 0.0, 0.05)
 
         st.caption("Each turn is independent. Earlier messages are displayed here but are not sent to the model.")
-        for message in st.session_state.chat_history:
-            with st.chat_message(message["role"]):
-                if message["role"] == "user":
-                    st.markdown(message["content"])
-                    if message.get("reference"):
-                        _render_reference(message["reference"])
-                    continue
-                if message.get("rows"):
-                    with st.status("Reasoning", state="complete", expanded=False):
-                        for saved in message["rows"]:
-                            left_column, right_column = st.columns([3, 2])
-                            left, right = _row_markdown(saved)
-                            left_column.markdown(left)
-                            right_column.markdown(right)
-                if message.get("answer"):
-                    st.markdown(message["answer"])
-
         prompt = st.chat_input("Ask a math question", key="chat_prompt")
         sampled_reference = st.session_state.sampled_reference
-        if prompt is None and sampled_reference is not None:
-            st.caption(f"Sampled from {sampled_reference['split']}; reference is UI-only.")
-            _render_reference(sampled_reference)
+        chat_history_container = st.container(height=480, border=False)
+        with chat_history_container:
+            for message in st.session_state.chat_history:
+                with st.chat_message(message["role"]):
+                    if message["role"] == "user":
+                        st.markdown(message["content"])
+                        if message.get("reference"):
+                            _render_reference(message["reference"])
+                        continue
+                    if message.get("rows"):
+                        with st.status("Reasoning", state="complete", expanded=False):
+                            for saved in message["rows"]:
+                                left_column, right_column = st.columns([3, 2])
+                                left, right = _row_markdown(saved)
+                                left_column.markdown(left)
+                                right_column.markdown(right)
+                    if message.get("answer"):
+                        st.markdown(message["answer"])
+
+            if prompt is None and sampled_reference is not None:
+                st.caption(f"Sampled from {sampled_reference['split']}; reference is UI-only.")
+                _render_reference(sampled_reference)
         if prompt is not None:
             unsupported = unsupported_characters(tokenizer, prompt)
             if unsupported:
@@ -205,202 +207,203 @@ if selected is not None:
                 )
                 st.warning(f"This checkpoint cannot encode: {rendered}")
             else:
-                reference = (
-                    sampled_reference
-                    if sampled_reference is not None and sampled_reference["question"] == prompt
-                    else None
-                )
-                st.session_state.sampled_reference = None
-                st.session_state.chat_history.append({
-                    "role": "user", "content": prompt, "reference": reference,
-                })
-                with st.chat_message("user"):
-                    st.markdown(prompt)
-                    if reference is not None:
-                        _render_reference(reference)
-                assistant_history = {"role": "assistant", "rows": [], "answer": ""}
-                st.session_state.chat_history.append(assistant_history)
-                with st.chat_message("assistant"):
-                    stats_view = st.empty()
-                    reasoning_status = st.status("Reasoning", expanded=True)
-                    answer_view = st.empty()
-                    with reasoning_status:
-                        response_rows = st.container()
-                        generation_started = time.perf_counter()
-                        calls = {}
-                        stats = {"input": 0, "output": 0, "reasoning": 0}
-                        parser = {
-                            "scratchpad_lines": [], "scratchpad_active": False,
-                            "scratchpad_line": "", "outside_line": "",
-                            "known_explanation_count": 0,
-                        }
-                        row_state = {"current": None, "rows": []}
-                        generated_response = ""
+                with chat_history_container:
+                    reference = (
+                        sampled_reference
+                        if sampled_reference is not None and sampled_reference["question"] == prompt
+                        else None
+                    )
+                    st.session_state.sampled_reference = None
+                    st.session_state.chat_history.append({
+                        "role": "user", "content": prompt, "reference": reference,
+                    })
+                    with st.chat_message("user"):
+                        st.markdown(prompt)
+                        if reference is not None:
+                            _render_reference(reference)
+                    assistant_history = {"role": "assistant", "rows": [], "answer": ""}
+                    st.session_state.chat_history.append(assistant_history)
+                    with st.chat_message("assistant"):
+                        stats_view = st.empty()
+                        reasoning_status = st.status("Reasoning", expanded=True)
+                        answer_view = st.empty()
+                        with reasoning_status:
+                            response_rows = st.container()
+                            generation_started = time.perf_counter()
+                            calls = {}
+                            stats = {"input": 0, "output": 0, "reasoning": 0}
+                            parser = {
+                                "scratchpad_lines": [], "scratchpad_active": False,
+                                "scratchpad_line": "", "outside_line": "",
+                                "known_explanation_count": 0,
+                            }
+                            row_state = {"current": None, "rows": []}
+                            generated_response = ""
 
-                        def new_row():
-                            with response_rows:
-                                left_column, right_column = st.columns([3, 2])
-                                row = {
-                                    "left": "", "tool": None, "explanation": "", "notices": [],
-                                    "left_view": left_column.empty(),
-                                    "right_view": right_column.empty(),
-                                }
-                            row_state["rows"].append(row)
-                            row_state["current"] = row
-                            return row
+                            def new_row():
+                                with response_rows:
+                                    left_column, right_column = st.columns([3, 2])
+                                    row = {
+                                        "left": "", "tool": None, "explanation": "", "notices": [],
+                                        "left_view": left_column.empty(),
+                                        "right_view": right_column.empty(),
+                                    }
+                                row_state["rows"].append(row)
+                                row_state["current"] = row
+                                return row
 
-                        def render_row(row):
-                            left, right = _row_markdown(row)
-                            row["left_view"].markdown(left)
-                            row["right_view"].markdown(right)
+                            def render_row(row):
+                                left, right = _row_markdown(row)
+                                row["left_view"].markdown(left)
+                                row["right_view"].markdown(right)
 
-                        def explain_line(line, *, is_scratchpad):
-                            if not line.strip() or line in {"<scp>", "</scp>"}:
-                                return
-                            if is_scratchpad:
-                                parser["scratchpad_lines"].append(line)
-                                explanation = None
-                                try:
-                                    explanations = transcribe_scratchpad(
-                                        "\n".join(parser["scratchpad_lines"]),
-                                        version="reasoning_v3",
-                                    )
-                                    if len(explanations) > parser["known_explanation_count"]:
-                                        explanation = explanations[-1]
-                                        parser["known_explanation_count"] = len(explanations)
-                                except ValueError:
-                                    pass
-                                if explanation is None:
-                                    explanation = f"Trace line: {line}."
-                            elif line.startswith("A:"):
-                                explanation = f"This is the model's final answer: {line[2:].strip()}."
-                            else:
-                                explanation = f"Model output: {line}."
-                            row_state["current"]["explanation"] = explanation
-                            render_row(row_state["current"])
-
-                        def consume_prediction(text, *, display=True):
-                            row = row_state["current"]
-                            for character in text:
-                                if display:
-                                    row["left"] += character
-                                if parser["scratchpad_active"]:
-                                    if character == "\n":
-                                        if parser["scratchpad_line"] == "</scp>":
-                                            parser["scratchpad_active"] = False
-                                        else:
-                                            explain_line(parser["scratchpad_line"], is_scratchpad=True)
-                                        parser["scratchpad_line"] = ""
+                            def explain_line(line, *, is_scratchpad):
+                                if not line.strip() or line in {"<scp>", "</scp>"}:
+                                    return
+                                if is_scratchpad:
+                                    parser["scratchpad_lines"].append(line)
+                                    explanation = None
+                                    try:
+                                        explanations = transcribe_scratchpad(
+                                            "\n".join(parser["scratchpad_lines"]),
+                                            version="reasoning_v3",
+                                        )
+                                        if len(explanations) > parser["known_explanation_count"]:
+                                            explanation = explanations[-1]
+                                            parser["known_explanation_count"] = len(explanations)
+                                    except ValueError:
+                                        pass
+                                    if explanation is None:
+                                        explanation = f"Trace line: {line}."
+                                elif line.startswith("A:"):
+                                    explanation = f"This is the model's final answer: {line[2:].strip()}."
                                 else:
-                                    parser["outside_line"] += character
-                                    if parser["outside_line"].endswith("<scp>\n"):
-                                        parser["outside_line"] = ""
-                                        parser["scratchpad_active"] = True
-                                    elif character == "\n":
-                                        line = parser["outside_line"][:-1].rstrip("\r")
-                                        parser["outside_line"] = ""
-                                        explain_line(line, is_scratchpad=False)
-                                if display:
-                                    render_row(row)
-                                if display and character == "\n":
-                                    row = new_row()
+                                    explanation = f"Model output: {line}."
+                                row_state["current"]["explanation"] = explanation
+                                render_row(row_state["current"])
 
-                        def render_stats():
-                            elapsed = max(time.perf_counter() - generation_started, 1e-9)
-                            total = stats["input"] + stats["output"]
-                            with stats_view.container():
-                                columns = st.columns(5)
-                                values = (total, stats["input"], stats["output"],
-                                          stats["reasoning"], f"{stats['output'] / elapsed:.1f}")
-                                labels = ("Total tokens", "Input tokens", "Output tokens",
-                                          "Reasoning tokens", "Tokens / s")
-                                for column, label, value in zip(columns, labels, values):
-                                    column.metric(label, value)
+                            def consume_prediction(text, *, display=True):
+                                row = row_state["current"]
+                                for character in text:
+                                    if display:
+                                        row["left"] += character
+                                    if parser["scratchpad_active"]:
+                                        if character == "\n":
+                                            if parser["scratchpad_line"] == "</scp>":
+                                                parser["scratchpad_active"] = False
+                                            else:
+                                                explain_line(parser["scratchpad_line"], is_scratchpad=True)
+                                            parser["scratchpad_line"] = ""
+                                    else:
+                                        parser["outside_line"] += character
+                                        if parser["outside_line"].endswith("<scp>\n"):
+                                            parser["outside_line"] = ""
+                                            parser["scratchpad_active"] = True
+                                        elif character == "\n":
+                                            line = parser["outside_line"][:-1].rstrip("\r")
+                                            parser["outside_line"] = ""
+                                            explain_line(line, is_scratchpad=False)
+                                    if display:
+                                        render_row(row)
+                                    if display and character == "\n":
+                                        row = new_row()
 
-                        render_stats()
-                        new_row()
-                        try:
-                            with st.spinner("Generating streamed output…"):
-                                for event in stream_inference_events(
-                                    model, tokenizer, prompt,
-                                    max_new_tokens=max_tokens,
-                                    sidecar_max_new_tokens=max_tokens,
-                                    temperature=temperature,
-                                ):
-                                    kind = event["kind"]
-                                    if kind == "generation_start":
-                                        stats["input"] += event["input_tokens"]
-                                    elif kind == "primary_token":
-                                        tool_result = event.get("source") == "tool"
-                                        if not tool_result:
-                                            generated_response += event["text"]
-                                        consume_prediction(event["text"], display=not tool_result)
-                                        if tool_result:
+                            def render_stats():
+                                elapsed = max(time.perf_counter() - generation_started, 1e-9)
+                                total = stats["input"] + stats["output"]
+                                with stats_view.container():
+                                    columns = st.columns(5)
+                                    values = (total, stats["input"], stats["output"],
+                                              stats["reasoning"], f"{stats['output'] / elapsed:.1f}")
+                                    labels = ("Total tokens", "Input tokens", "Output tokens",
+                                              "Reasoning tokens", "Tokens / s")
+                                    for column, label, value in zip(columns, labels, values):
+                                        column.metric(label, value)
+
+                            render_stats()
+                            new_row()
+                            try:
+                                with st.spinner("Generating streamed output…"):
+                                    for event in stream_inference_events(
+                                        model, tokenizer, prompt,
+                                        max_new_tokens=max_tokens,
+                                        sidecar_max_new_tokens=max_tokens,
+                                        temperature=temperature,
+                                    ):
+                                        kind = event["kind"]
+                                        if kind == "generation_start":
+                                            stats["input"] += event["input_tokens"]
+                                        elif kind == "primary_token":
+                                            tool_result = event.get("source") == "tool"
+                                            if not tool_result:
+                                                generated_response += event["text"]
+                                            consume_prediction(event["text"], display=not tool_result)
+                                            if tool_result:
+                                                answer = _final_answer(generated_response)
+                                                if answer:
+                                                    answer_view.markdown(format_raw_text(answer))
+                                                continue
+                                            stats["output"] += 1
+                                            if event.get("region") == "reasoning":
+                                                stats["reasoning"] += 1
                                             answer = _final_answer(generated_response)
                                             if answer:
                                                 answer_view.markdown(format_raw_text(answer))
-                                            continue
-                                        stats["output"] += 1
-                                        if event.get("region") == "reasoning":
-                                            stats["reasoning"] += 1
-                                        answer = _final_answer(generated_response)
-                                        if answer:
-                                            answer_view.markdown(format_raw_text(answer))
-                                    elif kind == "tool_started":
-                                        row = row_state["current"]
-                                        request = event["request"]
-                                        row["left"] = row["left"].removesuffix(request)
-                                        row["tool"] = {
-                                            "operation": event["operation"], "left": event["left"],
-                                            "right": event["right"], "sidecar": "",
-                                        }
-                                        calls[event["call_id"]] = row
-                                        stats["reasoning"] = max(0, stats["reasoning"] - event["tool_tokens"])
-                                        render_row(row)
-                                    elif kind == "sidecar_start":
-                                        stats["input"] += event["input_tokens"]
-                                        row = calls[event["call_id"]]
-                                        row["tool"]["task"] = event["task"]
-                                        render_row(row)
-                                    elif kind == "sidecar_token":
-                                        row = calls[event["call_id"]]
-                                        row["tool"]["sidecar"] += event["text"]
-                                        stats["output"] += 1
-                                        render_row(row)
-                                    elif kind == "tool_result":
-                                        row = calls[event["call_id"]]
-                                        row["tool"]["result"] = event["result"]
-                                        render_row(row)
-                                    elif kind in {"tool_error", "sidecar_error"}:
-                                        row = calls.get(event.get("call_id"), row_state["current"])
-                                        key = "sidecar_error" if kind == "sidecar_error" else "error"
-                                        if row["tool"] is not None:
-                                            row["tool"][key] = event["text"]
-                                        else:
-                                            row["notices"].append(f"Tool request not executed: {event['text']}")
-                                        render_row(row)
-                                    elif kind == "generation_error":
-                                        row_state["current"]["notices"].append(event["text"])
-                                        render_row(row_state["current"])
-                                    render_stats()
-                        except (OSError, ValueError, RuntimeError, TypeError, KeyError) as exc:
-                            row_state["current"]["notices"].append(str(exc))
-                            render_row(row_state["current"])
+                                        elif kind == "tool_started":
+                                            row = row_state["current"]
+                                            request = event["request"]
+                                            row["left"] = row["left"].removesuffix(request)
+                                            row["tool"] = {
+                                                "operation": event["operation"], "left": event["left"],
+                                                "right": event["right"], "sidecar": "",
+                                            }
+                                            calls[event["call_id"]] = row
+                                            stats["reasoning"] = max(0, stats["reasoning"] - event["tool_tokens"])
+                                            render_row(row)
+                                        elif kind == "sidecar_start":
+                                            stats["input"] += event["input_tokens"]
+                                            row = calls[event["call_id"]]
+                                            row["tool"]["task"] = event["task"]
+                                            render_row(row)
+                                        elif kind == "sidecar_token":
+                                            row = calls[event["call_id"]]
+                                            row["tool"]["sidecar"] += event["text"]
+                                            stats["output"] += 1
+                                            render_row(row)
+                                        elif kind == "tool_result":
+                                            row = calls[event["call_id"]]
+                                            row["tool"]["result"] = event["result"]
+                                            render_row(row)
+                                        elif kind in {"tool_error", "sidecar_error"}:
+                                            row = calls.get(event.get("call_id"), row_state["current"])
+                                            key = "sidecar_error" if kind == "sidecar_error" else "error"
+                                            if row["tool"] is not None:
+                                                row["tool"][key] = event["text"]
+                                            else:
+                                                row["notices"].append(f"Tool request not executed: {event['text']}")
+                                            render_row(row)
+                                        elif kind == "generation_error":
+                                            row_state["current"]["notices"].append(event["text"])
+                                            render_row(row_state["current"])
+                                        render_stats()
+                            except (OSError, ValueError, RuntimeError, TypeError, KeyError) as exc:
+                                row_state["current"]["notices"].append(str(exc))
+                                render_row(row_state["current"])
 
-                        if parser["scratchpad_line"] and parser["scratchpad_line"] != "</scp>":
-                            explain_line(parser["scratchpad_line"], is_scratchpad=parser["scratchpad_active"])
-                        if parser["outside_line"].strip():
-                            explain_line(parser["outside_line"].strip(), is_scratchpad=False)
-                        answer = _final_answer(generated_response)
-                        if not answer:
-                            answer = "No final answer generated."
-                        answer_view.markdown(format_raw_text(answer))
-                        reasoning_status.update(label="Reasoning", state="complete", expanded=False)
-                        assistant_history["answer"] = answer
-                        assistant_history["rows"] = [
-                            _saved_row(row) for row in row_state["rows"]
-                            if row["left"].strip() or row["tool"] or row["notices"]
-                        ]
+                            if parser["scratchpad_line"] and parser["scratchpad_line"] != "</scp>":
+                                explain_line(parser["scratchpad_line"], is_scratchpad=parser["scratchpad_active"])
+                            if parser["outside_line"].strip():
+                                explain_line(parser["outside_line"].strip(), is_scratchpad=False)
+                            answer = _final_answer(generated_response)
+                            if not answer:
+                                answer = "No final answer generated."
+                            answer_view.markdown(format_raw_text(answer))
+                            reasoning_status.update(label="Reasoning", state="complete", expanded=False)
+                            assistant_history["answer"] = answer
+                            assistant_history["rows"] = [
+                                _saved_row(row) for row in row_state["rows"]
+                                if row["left"].strip() or row["tool"] or row["notices"]
+                            ]
     except (OSError, ValueError, RuntimeError, TypeError, KeyError) as exc:
         st.error(f"Could not load this checkpoint: {exc}")
 
