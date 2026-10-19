@@ -137,12 +137,6 @@ if selected is not None:
         model, tokenizer, metadata = cached_bundle(
             str(selected.path), device, selected.path.stat().st_mtime
         )
-        params = sum(parameter.numel() for parameter in model.parameters())
-        cols = st.columns(4)
-        cols[0].metric("Parameters", f"{params / 1_000_000:.1f}M")
-        cols[1].metric("Protocol", metadata["protocol"])
-        cols[2].metric("Training arm", metadata["training_arm"])
-        cols[3].metric("Update", metadata["update"] if metadata["update"] is not None else "—")
 
         with st.sidebar:
             st.divider()
@@ -181,7 +175,6 @@ if selected is not None:
                 st.session_state.sampled_reference = None
                 st.session_state.chat_prompt = ""
 
-        st.caption("Each turn is independent. Earlier messages are displayed here but are not sent to the model.")
         prompt = st.chat_input("Ask a math question", key="chat_prompt")
         sampled_reference = st.session_state.sampled_reference
         chat_history_container = st.container(height=480, border=False)
