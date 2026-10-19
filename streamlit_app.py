@@ -117,9 +117,9 @@ if selected is not None:
         temperature = control_columns[1].slider("Temperature", 0.0, 1.5, 0.0, 0.05)
         run = control_columns[3].button("Generate", type="primary", disabled=bool(unsupported))
 
+        stats_view = st.empty()
         st.subheader("Streamed response")
         response_view = st.empty()
-        stats_view = st.empty()
 
         if run:
             parts = [{"kind": "model", "text": ""}]
