@@ -104,12 +104,28 @@ def _tool_markdown(tool: dict) -> str:
         )
         rendered.extend(["", quoted])
     if tool.get("sidecar_error"):
-        rendered.extend(["", f"> Parallel LM error: {format_raw_text(tool['sidecar_error'])}"])
-    if tool.get("result") is not None:
-        rendered.extend(["", f"→ Parallel LM: {format_raw_text(tool['result'])}"])
+        rendered.extend(["", f"> Recursive LM error: {format_raw_text(tool['sidecar_error'])}"])
     if tool.get("error"):
         rendered.extend(["", f"> ⚠ {format_raw_text(tool['error'])}"])
     return "\n".join(rendered)
+
+
+def _recursive_result_markdown(tool: dict) -> str:
+    if tool.get("result") is None:
+        return ""
+    return f"→ Recursive LM: {format_raw_text(tool['result'])}"
+
+
+def _render_saved_row(row: dict) -> None:
+    left_column, right_column = st.columns([3, 2])
+    left, right = _row_markdown(row)
+    left_column.markdown(left)
+    right_column.markdown(right)
+    tool = row.get("tool")
+    if tool and tool.get("result") is not None:
+        result_left, result_right = st.columns([3, 2])
+        result_left.markdown(_recursive_result_markdown(tool))
+        result_right.markdown("Computed by the Recursive LM.")
 
 
 def _row_markdown(row: dict) -> tuple[str, str]:
@@ -268,10 +284,7 @@ if selected is not None:
                     if message.get("rows"):
                         with st.status("Reasoning", state="complete", expanded=False):
                             for saved in message["rows"]:
-                                left_column, right_column = st.columns([3, 2])
-                                left, right = _row_markdown(saved)
-                                left_column.markdown(left)
-                                right_column.markdown(right)
+                                _render_saved_row(saved)
                     if message.get("answer"):
                         st.markdown(message["answer"])
 
@@ -341,10 +354,13 @@ if selected is not None:
                             def new_row():
                                 with response_rows:
                                     left_column, right_column = st.columns([3, 2])
+                                    result_left_column, result_right_column = st.columns([3, 2])
                                     row = {
                                         "left": "", "tool": None, "explanation": "", "notices": [],
                                         "left_view": left_column.empty(),
                                         "right_view": right_column.empty(),
+                                        "result_left_view": result_left_column.empty(),
+                                        "result_right_view": result_right_column.empty(),
                                     }
                                 row_state["rows"].append(row)
                                 row_state["current"] = row
@@ -354,6 +370,13 @@ if selected is not None:
                                 left, right = _row_markdown(row)
                                 row["left_view"].markdown(left)
                                 row["right_view"].markdown(right)
+                                if row["tool"]:
+                                    result = _recursive_result_markdown(row["tool"])
+                                    row["result_left_view"].markdown(result)
+                                    row["result_right_view"].markdown(
+                                        "Computed by the Recursive LM."
+                                        if row["tool"].get("result") is not None else ""
+                                    )
 
                             def explain_line(line, *, is_scratchpad):
                                 if not line.strip() or line in {"<scp>", "</scp>"}:
