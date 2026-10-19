@@ -198,6 +198,11 @@ if selected is not None:
                         if message.get("reference"):
                             _render_reference(message["reference"])
                         continue
+                    if message.get("latest_reasoning_line"):
+                        st.markdown(
+                            "**Latest reasoning line**  \n"
+                            f"{format_raw_text(message['latest_reasoning_line'])}"
+                        )
                     if message.get("rows"):
                         with st.status("Reasoning", state="complete", expanded=False):
                             for saved in message["rows"]:
@@ -233,13 +238,14 @@ if selected is not None:
                         st.markdown(prompt)
                         if reference is not None:
                             _render_reference(reference)
-                    assistant_history = {"role": "assistant", "rows": [], "answer": ""}
+                    assistant_history = {
+                        "role": "assistant", "rows": [], "answer": "",
+                        "latest_reasoning_line": "",
+                    }
                     st.session_state.chat_history.append(assistant_history)
                     with st.chat_message("assistant"):
                         stats_view = st.empty()
-                        generation_progress = st.progress(0, text="Generating response…")
                         latest_step_view = st.empty()
-                        latest_step_view.caption("Waiting for the first reasoning step…")
                         reasoning_status = st.status("Reasoning", expanded=False)
                         answer_view = st.empty()
                         with reasoning_status:
@@ -254,10 +260,11 @@ if selected is not None:
                             }
                             row_state = {"current": None, "rows": []}
                             generated_response = ""
-                            progress_state = {"tokens": 0}
+                            latest_line_state = {"text": ""}
 
                             def render_latest_step(line):
                                 if line.strip():
+                                    latest_line_state["text"] = line
                                     latest_step_view.markdown(
                                         f"**Latest reasoning line**  \n{format_raw_text(line)}"
                                     )
@@ -317,6 +324,8 @@ if selected is not None:
                                             else:
                                                 explain_line(parser["scratchpad_line"], is_scratchpad=True)
                                             parser["scratchpad_line"] = ""
+                                        else:
+                                            parser["scratchpad_line"] += character
                                     else:
                                         parser["outside_line"] += character
                                         if parser["outside_line"].endswith("<scp>\n"):
@@ -326,12 +335,6 @@ if selected is not None:
                                             line = parser["outside_line"][:-1].rstrip("\r")
                                             parser["outside_line"] = ""
                                             explain_line(line, is_scratchpad=False)
-                                    if (
-                                        parser["scratchpad_active"]
-                                        and parser["scratchpad_line"]
-                                        and parser["scratchpad_line"] != "</scp>"
-                                    ):
-                                        render_latest_step(parser["scratchpad_line"])
                                     if display:
                                         render_row(row)
                                     if display and character == "\n":
@@ -362,14 +365,6 @@ if selected is not None:
                                     if kind == "generation_start":
                                         stats["input"] += event["input_tokens"]
                                     elif kind == "primary_token":
-                                        progress_state["tokens"] += 1
-                                        generation_progress.progress(
-                                            min(progress_state["tokens"] / max_tokens, 1.0),
-                                            text=(
-                                                "Generating response… "
-                                                f"{progress_state['tokens']}/{max_tokens} chars"
-                                            ),
-                                        )
                                         tool_result = event.get("source") == "tool"
                                         if not tool_result:
                                             generated_response += event["text"]
@@ -430,13 +425,13 @@ if selected is not None:
                                 explain_line(parser["scratchpad_line"], is_scratchpad=parser["scratchpad_active"])
                             if parser["outside_line"].strip():
                                 explain_line(parser["outside_line"].strip(), is_scratchpad=False)
-                            generation_progress.empty()
                             answer = _final_answer(generated_response)
                             if not answer:
                                 answer = "No final answer generated."
                             answer_view.markdown(format_raw_text(answer))
                             reasoning_status.update(label="Reasoning", state="complete", expanded=False)
                             assistant_history["answer"] = answer
+                            assistant_history["latest_reasoning_line"] = latest_line_state["text"]
                             assistant_history["rows"] = [
                                 _saved_row(row) for row in row_state["rows"]
                                 if row["left"].strip() or row["tool"] or row["notices"]
