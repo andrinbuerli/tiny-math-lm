@@ -1,5 +1,12 @@
 # TinyMath-RL experiment guide
 
+W&B is for experiments only: training, named optimization pilots/smokes,
+checkpoint evaluations, OOD benchmarks and experimental comparisons. Data preparation
+and annotation may be tracked as stages of a named experiment. Documentation, code
+maintenance, unit/integration tests, configuration checks, local browsing, Git
+operations and documentation figures must not create, resume or upload W&B runs.
+Routine development requires neither W&B authentication nor W&B status reporting.
+
 ## Environment and tracking
 
 Run commands from `/workspace`. Use the checked-in lockfile and the existing CUDA/PyTorch environment:
@@ -68,6 +75,6 @@ Run the unit and integration suite with:
 uv run pytest -q
 ```
 
-The integration test uses CUDA when available. To force its CPU fallback, run `CUDA_VISIBLE_DEVICES='' uv run pytest -q`.
+The integration test uses CUDA when available. To force its CPU fallback, run `CUDA_VISIBLE_DEVICES='' uv run pytest -q`. Unit/integration tests must use local fixtures or mocked tracking and must not connect to W&B or create offline runs, even when they exercise optimizer steps.
 
 Every command accepts Hydra overrides. For example, change a model, seed, W&B project, group, or run name by adding `model=10m seed=18 tracking.project=tinymath-rl tracking.group=scale-seed18 tracking.name=pilot-10m-seed18`.

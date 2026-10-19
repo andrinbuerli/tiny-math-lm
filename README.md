@@ -87,7 +87,9 @@ uv sync --locked
 export WANDB_ENTITY=your-wandb-entity
 ```
 
-All experiments use W&B. Supply `WANDB_API_KEY` through the environment or an
+W&B is used only for experiments and their provenance/results. Documentation,
+code maintenance, tests, and Git operations do not require W&B runs or status
+reporting. For experiments, supply `WANDB_API_KEY` through the environment or an
 ignored `/workspace/.env` file; the tracking helper reads it at runtime. Set
 `WANDB_ENTITY` to your own account or team. Credentials must stay out of Hydra
 overrides and version control.

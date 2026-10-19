@@ -96,6 +96,11 @@ trained on the old annotations.
 
 ## Controlled validation
 
+The commands below launch a named, W&B-tracked optimization smoke experiment.
+They are separate from ordinary unit/integration tests, which must use local
+fixtures or mocked tracking and must not create W&B runs. Do not launch this
+experiment merely to validate a documentation change or routine code maintenance.
+
 ```bash
 # Run twice with identical overrides: checkpoint interruption, then same-run resume.
 uv run python scripts/validate_reasoning_v3.py
@@ -112,7 +117,9 @@ The scripted trajectories and entropy are plumbing checks, not learning measurem
 greedy evaluation uses real model outputs. Unit tests also compare interrupted and
 uninterrupted optimizer results. Run `uv run pytest -q` for the regression suite.
 
-All experiment invocations require W&B. Credentials load at runtime from the workspace
+Only experiment invocations require W&B. Documentation, code maintenance, ordinary
+tests, local browsing and Git operations do not create W&B runs or require status
+reporting. For experiments, credentials load at runtime from the workspace
 `.env` or environment without entering configs. If online tracking is unavailable,
 explicitly select `tracking.mode=offline`; those runs remain unsynced, and offline
 resume does not demonstrate server-side W&B resume. To sync queued data later, run

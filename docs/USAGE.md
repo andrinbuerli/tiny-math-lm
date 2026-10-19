@@ -2,6 +2,16 @@
 
 The repository uses `uv`, Hydra and W&B for experiment setup and tracking. Run commands from `/workspace`.
 
+## Experiment-only tracking
+
+W&B is used only for scientific experiment runs and their provenance/results.
+Data preparation and annotation commands below are tracked stages of named
+experiments. Documentation/README work, code maintenance, unit/integration tests,
+linting, configuration checks, local browsing, Git operations and preparing
+documentation figures must not create, resume or upload W&B runs. Tests use local
+fixtures or mocked tracking, even when exercising optimization. Routine development
+does not require W&B authentication, remote status checks or W&B status in summaries.
+
 ## Environment and prepared data
 
 ```bash
