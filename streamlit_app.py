@@ -1,5 +1,6 @@
 """Streamlit interface for interactive TinyMath checkpoint inference."""
 
+import time
 from pathlib import Path
 
 import streamlit as st
@@ -122,9 +123,10 @@ if selected is not None:
         response_view = st.empty()
 
         if run:
+            generation_started = time.perf_counter()
             parts = [{"kind": "model", "text": ""}]
             calls = {}
-            stats = {"input": 0, "output": 0, "reasoning": 0, "tool": 0}
+            stats = {"input": 0, "output": 0, "reasoning": 0}
             notices = []
 
             def render_call(part):
@@ -155,14 +157,16 @@ if selected is not None:
 
             def render_stats():
                 stats["total"] = stats["input"] + stats["output"]
+                elapsed = max(time.perf_counter() - generation_started, 1e-9)
                 with stats_view.container():
                     columns = st.columns(5)
                     for column, label, key in zip(
                         columns,
-                        ("Total tokens", "Input tokens", "Output tokens", "Reasoning tokens", "Tool call tokens"),
-                        ("total", "input", "output", "reasoning", "tool"),
+                        ("Total tokens", "Input tokens", "Output tokens", "Reasoning tokens", "Tokens / s"),
+                        ("total", "input", "output", "reasoning", "speed"),
                     ):
-                        column.metric(label, stats[key])
+                        value = f"{stats['output'] / elapsed:.1f}" if key == "speed" else stats[key]
+                        column.metric(label, value)
 
             with st.spinner("Generating streamed output…"):
                 for event in stream_inference_events(
@@ -199,8 +203,9 @@ if selected is not None:
                         parts.append(part)
                         parts.append({"kind": "model", "text": ""})
                         calls[event["call_id"]] = part
-                        stats["tool"] += event["tool_tokens"]
-                        stats["reasoning"] = max(0, stats["reasoning"] - event["tool_tokens"])
+                        stats["reasoning"] = max(
+                            0, stats["reasoning"] - event["tool_tokens"]
+                        )
                         render_response()
                         render_stats()
                     elif event["kind"] == "sidecar_start":
