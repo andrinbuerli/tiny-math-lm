@@ -88,6 +88,7 @@ class CausalSelfAttention(nn.Module):
         self,
         x: torch.Tensor,
         past_key_value: tuple[torch.Tensor, torch.Tensor] | None = None,
+        attention_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         """Run attention incrementally, returning the concatenated KV cache."""
         batch, length, width = x.shape
@@ -103,11 +104,27 @@ class CausalSelfAttention(nn.Module):
         # Cached calls only contain the causal prefix and current token. A
         # noncausal kernel is correct there and avoids SDPA's upper-left mask
         # alignment when query and key lengths differ.
-        attended = F.scaled_dot_product_attention(
-            q, k, v,
-            is_causal=past_key_value is None,
-            dropout_p=self.dropout if self.training else 0.0,
-        )
+        if attention_mask is None:
+            attended = F.scaled_dot_product_attention(
+                q, k, v,
+                is_causal=past_key_value is None,
+                dropout_p=self.dropout if self.training else 0.0,
+            )
+        else:
+            expected_shape = (batch, past_length + length)
+            if attention_mask.shape != expected_shape or attention_mask.dtype != torch.bool:
+                raise ValueError("attention_mask must be boolean [batch, cached_sequence]")
+            if past_key_value is None:
+                causal = torch.ones(
+                    length, length, dtype=torch.bool, device=x.device
+                ).tril()
+                attention_mask = attention_mask[:, None, None, :] & causal[None, None, :, :]
+            else:
+                attention_mask = attention_mask[:, None, None, :]
+            attended = F.scaled_dot_product_attention(
+                q, k, v, attn_mask=attention_mask, is_causal=False,
+                dropout_p=self.dropout if self.training else 0.0,
+            )
         result = self.out(attended.transpose(1, 2).contiguous().view(batch, length, width))
         return result, (k, v)
 
@@ -139,8 +156,11 @@ class TransformerBlock(nn.Module):
         self,
         x: torch.Tensor,
         past_key_value: tuple[torch.Tensor, torch.Tensor] | None = None,
+        attention_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
-        attended, present = self.attn.forward_with_cache(self.attn_norm(x), past_key_value)
+        attended, present = self.attn.forward_with_cache(
+            self.attn_norm(x), past_key_value, attention_mask=attention_mask
+        )
         x = x + attended
         return x + self.ffn(self.ffn_norm(x)), present
 
@@ -174,6 +194,7 @@ class TinyMathGPT(nn.Module):
         self,
         input_ids: torch.Tensor,
         past_key_values: tuple[tuple[torch.Tensor, torch.Tensor], ...] | None = None,
+        attention_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, tuple[tuple[torch.Tensor, torch.Tensor], ...]]:
         """Return logits and per-layer KV state for prefix-cached decoding."""
         if input_ids.ndim != 2 or input_ids.shape[1] == 0:
@@ -181,13 +202,19 @@ class TinyMathGPT(nn.Module):
         past_length = 0 if past_key_values is None else past_key_values[0][0].shape[-2]
         if past_length + input_ids.shape[1] > self.config.context_length:
             raise ValueError("cached input exceeds configured context length")
+        if attention_mask is not None and attention_mask.shape != (
+            input_ids.shape[0], past_length + input_ids.shape[1]
+        ):
+            raise ValueError("attention_mask must cover the cached prefix and current input")
         if past_key_values is not None and len(past_key_values) != len(self.blocks):
             raise ValueError("KV cache layer count does not match the model")
         x = self.dropout(self.token_embedding(input_ids))
         present: list[tuple[torch.Tensor, torch.Tensor]] = []
         for index, block in enumerate(self.blocks):
             cached = None if past_key_values is None else past_key_values[index]
-            x, layer_present = block.forward_with_cache(x, cached)
+            x, layer_present = block.forward_with_cache(
+                x, cached, attention_mask=attention_mask
+            )
             present.append(layer_present)
         return F.linear(self.final_norm(x), self.token_embedding.weight), tuple(present)
 

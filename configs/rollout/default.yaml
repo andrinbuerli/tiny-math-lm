@@ -6,5 +6,7 @@ success_weight: 0.9
 scorer_version: 3
 executor_version: 1
 rollout_version: 3
+sampler_version: 2
+prompt_batching: left_pad
 token_accounting: transcript_includes_executor_v1
 delegation_policy: compound_task_v1

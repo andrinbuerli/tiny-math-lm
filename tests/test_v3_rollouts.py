@@ -26,7 +26,7 @@ class ScriptedModel(torch.nn.Module):
         self.eos = tokenizer.eos_id
         self.seen = []
 
-    def forward_with_cache(self, ids, cache):
+    def forward_with_cache(self, ids, cache, attention_mask=None):
         position = 0 if cache is None else cache
         self.seen.append(ids.clone())
         logits = torch.full((len(ids), ids.shape[1], self.vocab), -100.0, device=ids.device)
@@ -72,6 +72,59 @@ def test_independent_lanes_dependent_calls_and_observation_masks():
         for event in events:
             for position in range(event["result_start"], event["result_end"]):
                 assert model.seen[position + 1][lane, 0] == result.completion_ids[0, lane, position]
+
+
+def test_left_padded_rollout_keeps_prompt_alignment_and_exact_executor_events():
+    questions = ["Calculate (1+2)+0.", "Calculate 1+2."]
+    texts = [
+        "<scp>\nstep:x\ncall:add(1,2) -> 3\n</scp>\nA: 3",
+        "<scp>\nstep:x\n</scp>\nA: 3",
+    ]
+    prompt_texts = [f"Q: {question}\n" for question in questions]
+    tokenizer = CharacterTokenizer.from_texts([*texts, *prompt_texts], protocol="reasoning_v3")
+    encoded = [tokenizer.encode(text, add_bos=True) for text in prompt_texts]
+    width = max(map(len, encoded))
+    prompts = torch.full((len(encoded), width), tokenizer.pad_id, dtype=torch.long)
+    prompt_mask = torch.zeros_like(prompts, dtype=torch.bool)
+    for index, ids in enumerate(encoded):
+        prompts[index, -len(ids):] = torch.tensor(ids)
+        prompt_mask[index, -len(ids):] = True
+    rows = [{"question": question, "tool_calls_allowed": index == 0}
+            for index, question in enumerate(questions)]
+    model = ScriptedModel(tokenizer, texts)
+    result = generate_rollouts(
+        model, prompts, group_size=1, max_completion_tokens=64, temperature=0,
+        eos_id=tokenizer.eos_id, pad_id=tokenizer.pad_id, tokenizer=tokenizer,
+        rollout=RolloutConfig(executor="exact"), task_rows=rows, prompt_mask=prompt_mask,
+    )
+    assert result.termination_reasons == ("eos", "eos")
+    assert [len(events) for events in result.call_events] == [1, 0]
+    assert model.seen[0].shape == prompts.shape
+    assert tokenizer.decode(result.completion_ids[0, 0].tolist()) == texts[0]
+    assert tokenizer.decode(result.completion_ids[1, 0].tolist()) == texts[1]
+
+
+def test_masked_cached_attention_matches_unpadded_prompt_logits_and_decode():
+    torch.manual_seed(31)
+    model = TinyMathGPT(
+        GPTConfig(vocab_size=19, context_length=32, n_layers=1, n_heads=1, d_model=8, d_ff=16)
+    ).eval()
+    prompts = torch.tensor([[0, 0, 1, 5, 7], [1, 4, 8, 3, 6]])
+    mask = torch.tensor([[False, False, True, True, True], [True, True, True, True, True]])
+    with torch.no_grad():
+        padded_logits, padded_cache = model.forward_with_cache(prompts, attention_mask=mask)
+        reference_logits, reference_cache = model.forward_with_cache(prompts[0:1, 2:])
+        assert torch.allclose(padded_logits[0, -1], reference_logits[0, -1], atol=1e-6, rtol=1e-5)
+        next_token = torch.tensor([[9]])
+        padded_mask = torch.cat((mask[0:1], torch.ones((1, 1), dtype=torch.bool)), dim=1)
+        padded_cache_single = tuple((key[0:1], value[0:1]) for key, value in padded_cache)
+        decoded_logits, _ = model.forward_with_cache(
+            next_token, padded_cache_single, attention_mask=padded_mask
+        )
+        reference_decoded_logits, _ = model.forward_with_cache(next_token, reference_cache)
+        assert torch.allclose(
+            decoded_logits[0, -1], reference_decoded_logits[0, -1], atol=1e-6, rtol=1e-5
+        )
 
 
 @pytest.mark.parametrize(("line", "reason", "config"), [

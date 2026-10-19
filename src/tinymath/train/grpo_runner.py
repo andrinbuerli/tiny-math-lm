@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import random
 import time
 from collections import Counter
@@ -25,7 +26,7 @@ from tinymath.data.completions import parse_reasoning_completion
 from tinymath.data.prompts import format_prompt
 from tinymath.data.trace_explanations import transcribe_scratchpad
 from tinymath.eval.qualitative import build_qualitative_table
-from tinymath.generation import RolloutConfig
+from tinymath.generation import RolloutConfig, Rollouts
 from tinymath.model.gpt import GPTConfig, TinyMathGPT
 from tinymath.rewards.reasoning import score_v3
 from tinymath.rewards.verify import verify_answer
@@ -44,6 +45,30 @@ CALL_FAILURES = (
     "malformed_request", "scalar_limit", "noncanonical_operand", "division_by_zero",
     "incorrect_call_result", "call_limit", "unencodable_result",
 )
+LOGGER = logging.getLogger(__name__)
+
+
+def _rollout_semantics_identity(config: Any) -> dict[str, Any]:
+    identity = RolloutConfig.from_config(config).identity()
+    identity.pop("sampler_version")
+    identity.pop("prompt_batching")
+    return identity
+
+
+def _prompt_buckets(
+    prompt_lengths: list[int], *, max_completion_tokens: int,
+    context_length: int, strategy: str,
+) -> list[list[int]]:
+    if strategy not in {"left_pad", "exact_length"}:
+        raise ValueError("prompt_batching must be left_pad or exact_length")
+    buckets: dict[int, list[int]] = {}
+    for index, length in enumerate(prompt_lengths):
+        room = context_length - length
+        if room < 1:
+            raise ValueError("Prepared RLVR prompt leaves no room for a completion")
+        key = min(max_completion_tokens, room) if strategy == "left_pad" else length
+        buckets.setdefault(key, []).append(index)
+    return list(buckets.values())
 
 def _load_rows(path: Path) -> list[dict[str, str]]:
     with path.open(encoding="utf-8") as handle:
@@ -170,8 +195,21 @@ def train_grpo(
                 compatibility,
                 allow_legacy_answer_only=(tokenizer.protocol == "answer_only"),
             )
-        if tokenizer.protocol == "reasoning_v3" and resumed.get("rollout") != rollout_identity:
-            raise ValueError("GRPO resume rollout/reward settings do not match checkpoint")
+        if tokenizer.protocol == "reasoning_v3":
+            saved_rollout = resumed.get("rollout")
+            if saved_rollout is None or _rollout_semantics_identity(saved_rollout) != \
+                    _rollout_semantics_identity(rollout_identity):
+                raise ValueError("GRPO resume rollout/reward settings do not match checkpoint")
+            saved_sampler = RolloutConfig.from_config(saved_rollout)
+            if (saved_sampler.sampler_version, saved_sampler.prompt_batching) != (
+                rollout_config.sampler_version, rollout_config.prompt_batching
+            ):
+                LOGGER.warning(
+                    "Resuming GRPO with sampler version %s/%s instead of checkpoint version %s/%s; "
+                    "the next sampled tokens will not match legacy RNG lane ordering",
+                    rollout_config.sampler_version, rollout_config.prompt_batching,
+                    saved_sampler.sampler_version, saved_sampler.prompt_batching,
+                )
         policy_tokens_seen = int(resumed.get("policy_tokens_seen", resumed.get("tokens_seen", 0)))
         executor_tokens_seen = int(resumed.get("executor_tokens_seen", 0))
         model.load_state_dict(resumed["model"])
@@ -226,6 +264,10 @@ def train_grpo(
         "generated_tokens", "examples_drawn", "nonpadding_input_tokens",
         "padded_compute_positions", "wall_seconds",
         "tokens_per_second", "estimated_flops", "peak_gpu_memory_bytes",
+        "timing/rollout_seconds", "timing/score_policy_seconds",
+        "timing/optimizer_seconds", "timing/checkpoint_seconds",
+        "timing/qualitative_seconds", "timing/logging_seconds",
+        "timing/previous_logging_seconds",
         "flops_estimator_version", "train/greedy_accuracy", "val/greedy_accuracy",
         "test/greedy_accuracy",
     ] + [f"calls/failure/{reason}" for reason in CALL_FAILURES]
@@ -242,6 +284,7 @@ def train_grpo(
     if mode == "w":
         writer.writeheader()
     started = time.monotonic()
+    previous_logging_seconds = 0.0
     try:
         for update in range(start_update + 1, updates + 1):
             chosen = random.sample(prompts, k=min(prompts_per_batch, len(prompts)))
@@ -255,6 +298,10 @@ def train_grpo(
             failures: Counter[str] = Counter()
             batch_capped = batch_malformed = batch_trace_valid = batch_trace_reference_match = 0
             optimized_groups = 0
+            phase_seconds = {
+                "rollout": 0.0, "score_policy": 0.0, "optimizer": 0.0,
+                "checkpoint": 0.0, "qualitative": 0.0, "logging": 0.0,
+            }
             policy_losses: list[float] = []
             kl_values: list[float] = []
             entropy_values: list[float] = []
@@ -262,7 +309,8 @@ def train_grpo(
             estimated_flops_update = 0
             nonpadding_input_tokens_update = 0
             padded_compute_positions_update = 0
-            for row in chosen:
+            prepared_prompts = []
+            for index, row in enumerate(chosen):
                 prompt_text = format_prompt(row["question"], protocol=tokenizer.protocol)
                 prompt_ids = torch.tensor(
                     [tokenizer.encode(prompt_text, add_bos=True)], dtype=torch.long, device=device
@@ -270,22 +318,77 @@ def train_grpo(
                 room = model_config.context_length - prompt_ids.shape[1]
                 if room < 1:
                     raise ValueError("Prepared RLVR prompt leaves no room for a completion")
+                prepared_prompts.append((prompt_ids, room))
+
+            rollout_by_prompt: dict[int, Rollouts] = {}
+            rollout_prompt_width_by_prompt: dict[int, int] = {}
+            prompt_lengths = [int(prompt_ids.shape[1]) for prompt_ids, _room in prepared_prompts]
+            prompt_buckets = _prompt_buckets(
+                prompt_lengths,
+                max_completion_tokens=max_completion,
+                context_length=model_config.context_length,
+                strategy=rollout_config.prompt_batching,
+            )
+            phase_started = time.perf_counter()
+            for indices in prompt_buckets:
+                bucket_width = max(prompt_lengths[index] for index in indices)
+                if rollout_config.prompt_batching == "left_pad":
+                    bucket_prompts = torch.full(
+                        (len(indices), bucket_width), tokenizer.pad_id,
+                        dtype=torch.long, device=device,
+                    )
+                    bucket_mask = torch.zeros_like(bucket_prompts, dtype=torch.bool)
+                    for bucket_index, prompt_index in enumerate(indices):
+                        prompt_ids = prepared_prompts[prompt_index][0][0]
+                        prompt_len = prompt_ids.numel()
+                        bucket_prompts[bucket_index, -prompt_len:] = prompt_ids
+                        bucket_mask[bucket_index, -prompt_len:] = True
+                else:
+                    bucket_prompts = torch.cat(
+                        [prepared_prompts[index][0] for index in indices], dim=0
+                    )
+                    bucket_mask = None
+                bucket_rows = [chosen[index] for index in indices]
+                bucket_room = min(prepared_prompts[index][1] for index in indices)
                 with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_bf16):
-                    rollouts = sample_group_rollouts(
+                    bucket_rollouts = sample_group_rollouts(
                         model,
-                        prompt_ids,
+                        bucket_prompts,
                         group_size=group_size,
-                        max_completion_tokens=min(max_completion, room),
+                        max_completion_tokens=min(max_completion, bucket_room),
                         temperature=temperature,
                         eos_id=tokenizer.eos_id,
                         pad_id=tokenizer.pad_id,
                         tokenizer=tokenizer, rollout=rollout_config,
-                        task_rows=[row],
+                        task_rows=bucket_rows,
+                        prompt_mask=bucket_mask,
                     )
+                for bucket_index, prompt_index in enumerate(indices):
+                    lane_start = bucket_index * group_size
+                    lane_end = lane_start + group_size
+                    rollout_by_prompt[prompt_index] = Rollouts(
+                        bucket_rollouts.completion_ids[bucket_index:bucket_index + 1],
+                        bucket_rollouts.completion_mask[bucket_index:bucket_index + 1],
+                        bucket_rollouts.old_log_probs[bucket_index:bucket_index + 1],
+                        bucket_rollouts.entropy[bucket_index:bucket_index + 1],
+                        (bucket_rollouts.policy_mask[bucket_index:bucket_index + 1]
+                         if bucket_rollouts.policy_mask is not None else None),
+                        bucket_rollouts.termination_reasons[lane_start:lane_end],
+                        bucket_rollouts.call_events[lane_start:lane_end],
+                    )
+                    rollout_prompt_width_by_prompt[prompt_index] = bucket_width
+            phase_seconds["rollout"] = time.perf_counter() - phase_started
+
+            for prompt_index, row in enumerate(chosen):
+                phase_started = time.perf_counter()
+                prompt_ids, room = prepared_prompts[prompt_index]
+                rollouts = rollout_by_prompt[prompt_index]
                 completions = rollouts.completion_ids[0]
+                completion_values = completions.detach().cpu().tolist()
+                completion_lengths = rollouts.completion_mask[0].sum(dim=-1).detach().cpu().tolist()
                 generated_ids = [
-                    completion[: int(mask.sum().item())].tolist()
-                    for completion, mask in zip(completions, rollouts.completion_mask[0], strict=True)
+                    completion[:length]
+                    for completion, length in zip(completion_values, completion_lengths, strict=True)
                 ]
                 v3_scores = []
                 if tokenizer.protocol == "reasoning_v3":
@@ -367,11 +470,14 @@ def train_grpo(
                 if torch.any(advantages):
                     (metrics.loss / len(chosen)).backward()
                     optimized_groups += 1
+                phase_seconds["score_policy"] += time.perf_counter() - phase_started
                 completion_length = completions.shape[-1]
                 # Rollout decoding uses a KV cache: the prompt is prefetched
                 # once and each generated position is forwarded once. The
                 # policy pass still evaluates the padded full completion batch.
-                rollout_positions = group_size * (prompt_ids.shape[1] + completion_length)
+                rollout_positions = group_size * (
+                    rollout_prompt_width_by_prompt[prompt_index] + completion_length
+                )
                 policy_positions = group_size * (prompt_ids.shape[1] + completion_length)
                 padded_compute_positions_update += (
                     rollout_positions
@@ -389,10 +495,12 @@ def train_grpo(
                 clip_values.append(float(metrics.clip_fraction.detach().item()))
             grad_norm_value = 0.0
             if optimized_groups:
+                phase_started = time.perf_counter()
                 grad_norm_value = float(
                     torch.nn.utils.clip_grad_norm_(model.parameters(), float(config.trainer.grad_clip)).item()
                 )
                 optimizer.step()
+                phase_seconds["optimizer"] = time.perf_counter() - phase_started
             tokens_seen += token_total
             policy_tokens_seen += policy_token_total
             executor_tokens_seen += executor_token_total
@@ -453,8 +561,13 @@ def train_grpo(
                 "peak_gpu_memory_bytes": (
                     torch.cuda.max_memory_allocated(device) if device.type == "cuda" else 0
                 ),
+                "timing/rollout_seconds": phase_seconds["rollout"],
+                "timing/score_policy_seconds": phase_seconds["score_policy"],
+                "timing/optimizer_seconds": phase_seconds["optimizer"],
+                "timing/previous_logging_seconds": previous_logging_seconds,
             }
             if update % int(config.trainer.save_every) == 0 or update == updates:
+                phase_started = time.perf_counter()
                 save_checkpoint(
                     latest_path,
                     {
@@ -492,8 +605,11 @@ def train_grpo(
                         "source_sft_checkpoint": str(init_checkpoint.resolve()),
                     },
                 )
+                phase_seconds["checkpoint"] = time.perf_counter() - phase_started
+                values["timing/checkpoint_seconds"] = phase_seconds["checkpoint"]
             qualitative_due = update % qualitative_every == 0 or update == updates
             if qualitative_due:
+                phase_started = time.perf_counter()
                 qualitative_table, qualitative_count, greedy_accuracy = build_qualitative_table(
                     model=model,
                     tokenizer=tokenizer,
@@ -523,12 +639,15 @@ def train_grpo(
                 for split, value in greedy_accuracy.items():
                     metric_name = "val/greedy_accuracy" if split == "validation" else f"{split}/greedy_accuracy"
                     values[metric_name] = value
+                phase_seconds["qualitative"] = time.perf_counter() - phase_started
+                values["timing/qualitative_seconds"] = phase_seconds["qualitative"]
             if (
                 update % int(config.tracking.log_every) == 0
                 or update == 1
                 or update == updates
                 or qualitative_due
             ):
+                phase_started = time.perf_counter()
                 logged = {"optimizer_step": update}
                 for key, value in values.items():
                     if key == "update":
@@ -542,6 +661,9 @@ def train_grpo(
                 for reason, count in failures.items():
                     logged[f"grpo/calls/failure/{reason}"] = count
                 run.log(logged)
+                phase_seconds["logging"] = time.perf_counter() - phase_started
+                values["timing/logging_seconds"] = phase_seconds["logging"]
+                previous_logging_seconds = phase_seconds["logging"]
             writer.writerow({key: value for key, value in values.items() if key in fields})
             metrics_file.flush()
     finally:
