@@ -33,8 +33,35 @@ with st.sidebar:
     run_root = (ROOT / run_path).resolve()
     checkpoints = discover_inference_checkpoints(run_root)
     if checkpoints:
-        selected_label = st.selectbox("Model / training arm", [item.label for item in checkpoints])
-        selected = next(item for item in checkpoints if item.label == selected_label)
+        checkpoint_parts = {item.label: Path(item.label).parts for item in checkpoints}
+        model_sizes = sorted(
+            {parts[0] for parts in checkpoint_parts.values() if len(parts) >= 3},
+            key=lambda value: int(value.removesuffix("m")),
+        )
+        default_size = "1m" if "1m" in model_sizes else model_sizes[0]
+        model_size = st.selectbox(
+            "Model size", model_sizes, index=model_sizes.index(default_size), key="model_size"
+        )
+        size_checkpoints = [
+            item for item in checkpoints if checkpoint_parts[item.label][0] == model_size
+        ]
+        arms = sorted({checkpoint_parts[item.label][1] for item in size_checkpoints})
+        if st.session_state.get("training_arm") not in arms:
+            st.session_state.training_arm = arms[0]
+        training_arm = st.selectbox("Training arm", arms, key="training_arm")
+        arm_checkpoints = [
+            item for item in size_checkpoints
+            if checkpoint_parts[item.label][1] == training_arm
+        ]
+        seeds = sorted({checkpoint_parts[item.label][2] for item in arm_checkpoints})
+        if st.session_state.get("checkpoint_seed") not in seeds:
+            st.session_state.checkpoint_seed = seeds[0]
+        checkpoint_seed = st.selectbox("Seed", seeds, key="checkpoint_seed")
+        selected = next(
+            item for item in arm_checkpoints
+            if checkpoint_parts[item.label][2] == checkpoint_seed
+        )
+        st.caption(f"Selected checkpoint: {selected.label}")
     else:
         selected = None
         st.warning(f"No latest_inference.pt snapshots found under {run_root}")
