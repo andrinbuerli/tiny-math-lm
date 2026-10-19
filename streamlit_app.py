@@ -120,21 +120,15 @@ if selected is not None:
         run = control_columns[3].button("Generate", type="primary", disabled=bool(unsupported))
 
         stats_view = st.empty()
-        response_column, explanation_column = st.columns([3, 2])
-        with response_column:
-            st.subheader("Streamed response")
-            response_view = st.empty()
-        with explanation_column:
-            st.subheader("Line explanations")
-            explanation_view = st.empty()
+        heading_columns = st.columns([3, 2])
+        heading_columns[0].subheader("Streamed response")
+        heading_columns[1].subheader("Line explanation")
+        response_rows = st.container()
 
         if run:
             generation_started = time.perf_counter()
-            parts = [{"kind": "model", "text": ""}]
             calls = {}
             stats = {"input": 0, "output": 0, "reasoning": 0}
-            notices = []
-            explanations = []
             parser = {
                 "scratchpad_lines": [],
                 "scratchpad_active": False,
@@ -142,39 +136,49 @@ if selected is not None:
                 "outside_line": "",
                 "known_explanation_count": 0,
             }
+            row_state = {"current": None}
 
-            def render_call(part):
-                rendered = [format_tool_call(part["operation"], part["left"], part["right"])]
-                if part.get("task"):
-                    rendered.extend(["", f"_{format_raw_text(part['task'])}_"])
-                if part.get("sidecar"):
-                    quoted = "\n".join(
-                        f"> {line}" if line else ">"
-                        for line in format_raw_text(part["sidecar"]).splitlines()
-                    )
-                    rendered.extend(["", quoted])
-                if part.get("sidecar_error"):
-                    rendered.extend(["", f"> Parallel LM error: {format_raw_text(part['sidecar_error'])}"])
-                if part.get("result") is not None:
-                    rendered.extend(["", f"**→ `{part['result']}`**"])
-                if part.get("error"):
-                    rendered.extend(["", f"> ⚠ {format_raw_text(part['error'])}"])
-                return "\n".join(rendered)
+            def new_row():
+                with response_rows:
+                    left_column, right_column = st.columns([3, 2])
+                    row = {
+                        "left": "",
+                        "tool": None,
+                        "explanation": "",
+                        "notices": [],
+                        "left_view": left_column.empty(),
+                        "right_view": right_column.empty(),
+                    }
+                row_state["current"] = row
+                return row
 
-            def render_response():
-                sections = [
-                    format_raw_text(part["text"]) if part["kind"] == "model" else render_call(part)
-                    for part in parts
-                ]
-                sections.extend(f"> ⚠ {format_raw_text(notice)}" for notice in notices)
-                response_view.markdown("\n\n".join(section for section in sections if section))
-
-            def render_explanations():
-                rendered = [
-                    f"**{format_raw_text(line)}**\n\n{format_raw_text(explanation)}"
-                    for line, explanation in explanations
-                ]
-                explanation_view.markdown("\n\n---\n\n".join(rendered))
+            def render_row(row):
+                sections = [format_raw_text(row["left"])]
+                tool = row["tool"]
+                if tool is not None:
+                    rendered = [format_tool_call(tool["operation"], tool["left"], tool["right"])]
+                    if tool.get("task"):
+                        rendered.extend(["", f"_{format_raw_text(tool['task'])}_"])
+                    if tool.get("sidecar"):
+                        quoted = "\n".join(
+                            f"> {line}" if line else ">"
+                            for line in format_raw_text(tool["sidecar"]).splitlines()
+                        )
+                        rendered.extend(["", quoted])
+                    if tool.get("sidecar_error"):
+                        rendered.extend([
+                            "", f"> Parallel LM error: {format_raw_text(tool['sidecar_error'])}"
+                        ])
+                    if tool.get("result") is not None:
+                        rendered.extend(["", f"**→ `{tool['result']}`**"])
+                    if tool.get("error"):
+                        rendered.extend(["", f"> ⚠ {format_raw_text(tool['error'])}"])
+                    sections.append("\n".join(rendered))
+                sections.extend(
+                    f"> ⚠ {format_raw_text(notice)}" for notice in row["notices"]
+                )
+                row["left_view"].markdown("\n\n".join(section for section in sections if section))
+                row["right_view"].markdown(format_raw_text(row["explanation"]))
 
             def explain_line(line, *, is_scratchpad):
                 if not line.strip() or line in {"<scp>", "</scp>"}:
@@ -197,11 +201,14 @@ if selected is not None:
                     explanation = f"This is the model's final answer: {line[2:].strip()}."
                 else:
                     explanation = f"Model output: {line}."
-                explanations.append((line, explanation))
-                render_explanations()
+                row_state["current"]["explanation"] = explanation
+                render_row(row_state["current"])
 
-            def consume_prediction(text):
+            def consume_prediction(text, *, display=True):
+                row = row_state["current"]
                 for character in text:
+                    if display:
+                        row["left"] += character
                     if parser["scratchpad_active"]:
                         if character == "\n":
                             if parser["scratchpad_line"] == "</scp>":
@@ -220,6 +227,10 @@ if selected is not None:
                             line = parser["outside_line"][:-1].rstrip("\r")
                             parser["outside_line"] = ""
                             explain_line(line, is_scratchpad=False)
+                    if display:
+                        render_row(row)
+                    if display and character == "\n":
+                        row = new_row()
 
             def render_stats():
                 stats["total"] = stats["input"] + stats["output"]
@@ -247,60 +258,64 @@ if selected is not None:
                         stats["input"] += event["input_tokens"]
                         render_stats()
                     elif event["kind"] == "primary_token":
-                        consume_prediction(event["text"])
-                        if event.get("source") == "tool":
+                        is_tool_result = event.get("source") == "tool"
+                        consume_prediction(event["text"], display=not is_tool_result)
+                        if is_tool_result:
                             continue
-                        parts[-1]["text"] += event["text"]
                         stats["output"] += 1
                         if event.get("region") == "reasoning":
                             stats["reasoning"] += 1
-                        render_response()
                         render_stats()
                     elif event["kind"] == "tool_started":
-                        current = parts[-1]["text"]
+                        current = row_state["current"]["left"]
                         request = event["request"]
                         if current.endswith(request):
-                            parts[-1]["text"] = current[:-len(request)]
-                        part = {
-                            "kind": "tool",
+                            row_state["current"]["left"] = current[:-len(request)]
+                        row_state["current"]["tool"] = {
                             "operation": event["operation"],
                             "left": event["left"],
                             "right": event["right"],
                             "sidecar": "",
                         }
-                        parts.append(part)
-                        parts.append({"kind": "model", "text": ""})
-                        calls[event["call_id"]] = part
+                        calls[event["call_id"]] = row_state["current"]
                         stats["reasoning"] = max(
                             0, stats["reasoning"] - event["tool_tokens"]
                         )
-                        render_response()
+                        render_row(row_state["current"])
                         render_stats()
                     elif event["kind"] == "sidecar_start":
                         stats["input"] += event["input_tokens"]
-                        calls[event["call_id"]]["task"] = event["task"]
-                        render_response()
+                        row = calls[event["call_id"]]
+                        row["tool"]["task"] = event["task"]
+                        render_row(row)
                         render_stats()
                     elif event["kind"] == "sidecar_token":
-                        calls[event["call_id"]]["sidecar"] += event["text"]
+                        row = calls[event["call_id"]]
+                        row["tool"]["sidecar"] += event["text"]
                         stats["output"] += 1
-                        render_response()
+                        render_row(row)
                         render_stats()
                     elif event["kind"] == "tool_result":
-                        calls[event["call_id"]]["result"] = event["result"]
-                        render_response()
+                        row = calls[event["call_id"]]
+                        row["tool"]["result"] = event["result"]
+                        render_row(row)
                     elif event["kind"] == "tool_error":
                         if event.get("call_id") in calls:
-                            calls[event["call_id"]]["error"] = event["text"]
+                            row = calls[event["call_id"]]
+                            row["tool"]["error"] = event["text"]
                         else:
-                            notices.append(f"Tool request not executed: {event['text']}")
-                        render_response()
+                            row = row_state["current"]
+                            row["notices"].append(
+                                f"Tool request not executed: {event['text']}"
+                            )
+                        render_row(row)
                     elif event["kind"] == "sidecar_error":
-                        calls[event["call_id"]]["sidecar_error"] = event["text"]
-                        render_response()
+                        row = calls[event["call_id"]]
+                        row["tool"]["sidecar_error"] = event["text"]
+                        render_row(row)
                     elif event["kind"] == "generation_error":
-                        notices.append(event["text"])
-                        render_response()
+                        row_state["current"]["notices"].append(event["text"])
+                        render_row(row_state["current"])
             if parser["scratchpad_line"] and parser["scratchpad_line"] != "</scp>":
                 explain_line(
                     parser["scratchpad_line"],
