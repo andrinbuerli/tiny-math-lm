@@ -95,11 +95,12 @@ def cached_bundle(checkpoint: str, device: str, modified: float):
 def _tool_markdown(tool: dict) -> str:
     rendered = [format_tool_call(tool["operation"], tool["left"], tool["right"])]
     if tool.get("task"):
-        rendered.extend(["", f"_{format_raw_text(tool['task'])}_"])
+        rendered.extend(["", f"*{format_raw_text(tool['task'])}*"])
     if tool.get("sidecar"):
+        sidecar = format_raw_text(tool["sidecar"].rstrip("\r\n"))
         quoted = "\n".join(
             f"> {line}" if line else ">"
-            for line in format_raw_text(tool["sidecar"]).splitlines()
+            for line in sidecar.splitlines()
         )
         rendered.extend(["", quoted])
     if tool.get("sidecar_error"):
