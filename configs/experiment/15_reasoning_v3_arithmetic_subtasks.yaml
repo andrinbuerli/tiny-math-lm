@@ -1,0 +1,137 @@
+# @package _global_
+# Experiment 15 — shorter GRPO update budget with wider rollout batches.
+# SFT and continued-SFT comparison arms reuse their verified Experiment 14 artifacts.
+defaults:
+  - override /rollout: v3_exact
+
+experiment:
+  number: 15
+  name: exp15_reasoning_v3_arithmetic_subtasks
+  title: "Experiment 15 — Reasoning-v3 arithmetic subtasks, GRPO 10k / 16x16"
+  baseline: restarted_100k_greedy_restart_2
+  lineage: exp14_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f
+  protocol: reasoning_v3
+  phase: main
+  seed: 18
+  data_budget: 500000
+  ood_examples_per_module: 1000
+  updates: 10000
+  max_steps: 10000
+  run_optimization: true
+  context_length: 512
+
+seed: 18
+data_bundle: data/processed/exp13_reasoning_v3_arithmetic_subtasks-seed18
+
+model:
+  context_length: 512
+
+data:
+  context_length: 512
+
+trainer:
+  max_steps: 10000
+
+rlvr:
+  updates: 10000
+  prompts_per_batch: 16
+  group_size: 16
+  temperature: 1.0
+  max_completion_tokens: 512
+
+eval:
+  splits: [test, number_length_ood, expression_length_ood]
+  max_new_tokens: 512
+  batch_size: 64
+  greedy: true
+  temperature: 0.8
+  max_examples_per_split: null
+
+checkpoint_provenance:
+  source_experiment: 14
+  source_namespace: exp14_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f
+  source_report: reports/exp14_reasoning_v3_arithmetic_subtasks/seed18/comparison.csv
+  data_bundle_manifest_sha256: 5d493a0f4c961b84b873036ea1bc93ebb6d01b6f022d7ed81997b094da3a018f
+  annotation_sha256: 97c89724efc407a4b5d5db417e263259b002377e0bff08c0fcfdc22bca04dcad
+  tokenizer_sha256: 1ec41b1dedab822e57e86a3e6ebd54e9a165431fbe1b1ff9622e89dfed57163d
+  fixed_evaluation_question_identity_sha256:
+    test: c19d79c7c8da7dae553af612182bfaacac0548576e2186fca0e89d1e40b60312
+    number_length_ood: 274ba2aa3b15fd7ef8f39c103eb1ca5f944991515e9ee279d7249bf44471f6cb
+    expression_length_ood: 8af8fa3a6c2742882968774a6c7d98be05977279a1958d7292eede1530325fd2
+  grpo_initialization:
+    1m: runs/exp14_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f/1m/sft/seed18/best.pt
+    10m: runs/exp14_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f/10m/sft/seed18/best.pt
+    100m: runs/exp14_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f/100m/sft/seed18/best.pt
+  comparison_arms:
+    1m:
+      sft:
+        path: runs/exp14_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f/1m/sft/seed18/best.pt
+        sha256: b730af5b88dd83207e26a90ad77559e81658f6b20e1f713a34f2969234ce888d
+        step: 100000
+        validation_loss: 0.0245318970565443
+        wandb_run_id: 9064cb8cc472b809
+      continued_sft:
+        path: runs/exp14_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f/1m/continued_sft/seed18/best.pt
+        sha256: 00137535e08d08a3648f1872ff7b46649ce9b32a7a2657911f50ce33127b043e
+        step: 99100
+        validation_loss: 0.014834068665539754
+        wandb_run_id: 31d3991cc3e6f618
+    10m:
+      sft:
+        path: runs/exp14_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f/10m/sft/seed18/best.pt
+        sha256: ab69ec255daca2b004153d1ddf03b271ca17154fdf6e5fe787f310734b208a29
+        step: 100000
+        validation_loss: 0.009070085089290712
+        wandb_run_id: 16d5dedb33cdcebe
+      continued_sft:
+        path: runs/exp14_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f/10m/continued_sft/seed18/best.pt
+        sha256: 129328dfd81ceb803c373ebd8a33ace3112e8bebbdf3eb64b72f6d4a697b014c
+        step: 37400
+        validation_loss: 0.0097861813619381
+        wandb_run_id: 02ce9f5dd7505d10
+    100m:
+      sft:
+        path: runs/exp14_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f/100m/sft/seed18/best.pt
+        sha256: baae5c80f9a5f5bf4d4009dcdb7c8e168419a908debc78fba38e393e8f7e2589
+        step: 100000
+        validation_loss: 0.005642440454327178
+        wandb_run_id: 2c9d9213cf557e5b
+      continued_sft:
+        path: runs/exp14_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f/100m/continued_sft/seed18/best.pt
+        sha256: f64a6420819b598a0ccfd9cc47093abaac78c79eb1a8c4f3404a98f50c38710b
+        step: 7800
+        validation_loss: 0.006678907722243821
+        wandb_run_id: d0986b0d34484d54
+
+reporting:
+  output_dir: ${paths.root}/reports/exp15_reasoning_v3_arithmetic_subtasks/seed18
+  annotation_bundle_dir: ${paths.root}/data/processed/exp13_reasoning_v3_arithmetic_subtasks-seed18
+  run_namespaces:
+    1m:
+      sft: exp14_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f
+      continued_sft: exp14_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f
+      grpo: exp15_reasoning_v3_arithmetic_subtasks
+    10m:
+      sft: exp14_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f
+      continued_sft: exp14_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f
+      grpo: exp15_reasoning_v3_arithmetic_subtasks
+    100m:
+      sft: exp14_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f
+      continued_sft: exp14_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f
+      grpo: exp15_reasoning_v3_arithmetic_subtasks
+
+# Resolve init_checkpoint from the selected model size at compose time.
+init_checkpoint: ${checkpoint_provenance.grpo_initialization.${model.name}}
+
+tracking:
+  mode: online
+  resume: true
+  group: exp15_reasoning_v3_arithmetic_subtasks-${model.name}-grpo
+  name: exp15_reasoning_v3_arithmetic_subtasks-${model.name}-grpo-10k-16x16-seed18
+  tags:
+    - exp15_reasoning_v3_arithmetic_subtasks
+    - ${model.name}
+    - grpo
+    - 10k-updates
+    - 16-prompts
+    - group-16
