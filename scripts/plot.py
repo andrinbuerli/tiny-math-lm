@@ -35,7 +35,7 @@ def main(config: DictConfig) -> None:
         run_dir = workspace_path(
             "runs", str(experiment.name), "comparison", f"seed{int(config.seed)}"
         )
-    is_reasoning_v3_comparison = int(experiment.get("number", 0) or 0) in {13, 14}
+    is_reasoning_v3_comparison = int(experiment.get("number", 0) or 0) in {13, 14, 15}
     if is_reasoning_v3_comparison:
         identity = comparison_identity(str(experiment.name), int(config.seed))
         config.tracking.name = identity["name"]
