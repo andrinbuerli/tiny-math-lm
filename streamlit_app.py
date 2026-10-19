@@ -146,37 +146,42 @@ if selected is not None:
         cols[2].metric("Training arm", metadata["training_arm"])
         cols[3].metric("Update", metadata["update"] if metadata["update"] is not None else "—")
 
-        source_column, sample_column, clear_column = st.columns([3, 1, 1])
-        source = source_column.selectbox(
-            "Question source", ["Freeform", "Sample from train", "Sample from validation", "Sample from test"]
-        )
-        if clear_column.button("Clear chat"):
-            st.session_state.chat_history.clear()
-            st.session_state.sampled_reference = None
-            st.session_state.chat_prompt = ""
-        if source != "Freeform" and sample_column.button("Sample question"):
-            split = source.removeprefix("Sample from ")
-            try:
-                example = sample_split_example(
-                    split, data_bundle=metadata["data_bundle"]
-                )
-                st.session_state.chat_prompt = example["question"]
-                st.session_state.sampled_reference = {
-                    "split": split,
-                    "question": example["question"],
-                    "answer": example.get("answer", "Unavailable"),
-                    "scratchpad": example.get("scratchpad", ""),
-                }
-            except (OSError, ValueError, TypeError) as exc:
-                st.session_state.sampled_reference = None
-                st.error(f"Could not sample that split: {exc}")
+        with st.sidebar:
+            st.divider()
+            st.header("Inference")
+            st.subheader("Question")
+            source = st.selectbox(
+                "Question source",
+                ["Freeform", "Sample from train", "Sample from validation", "Sample from test"],
+            )
+            if source != "Freeform" and st.button("Sample question"):
+                split = source.removeprefix("Sample from ")
+                try:
+                    example = sample_split_example(
+                        split, data_bundle=metadata["data_bundle"]
+                    )
+                    st.session_state.chat_prompt = example["question"]
+                    st.session_state.sampled_reference = {
+                        "split": split,
+                        "question": example["question"],
+                        "answer": example.get("answer", "Unavailable"),
+                        "scratchpad": example.get("scratchpad", ""),
+                    }
+                except (OSError, ValueError, TypeError) as exc:
+                    st.session_state.sampled_reference = None
+                    st.error(f"Could not sample that split: {exc}")
 
-        control_columns = st.columns([1, 1, 2])
-        max_tokens = control_columns[0].slider(
-            "Max output chars (both streams)", 8, min(512, model.config.context_length),
-            min(256, model.config.context_length), 8,
-        )
-        temperature = control_columns[1].slider("Temperature", 0.0, 1.5, 0.0, 0.05)
+            st.subheader("Generation")
+            max_tokens = st.slider(
+                "Max output chars (both streams)", 8, min(512, model.config.context_length),
+                min(256, model.config.context_length), 8,
+            )
+            temperature = st.slider("Temperature", 0.0, 1.5, 0.0, 0.05)
+            st.divider()
+            if st.button("Clear chat"):
+                st.session_state.chat_history.clear()
+                st.session_state.sampled_reference = None
+                st.session_state.chat_prompt = ""
 
         st.caption("Each turn is independent. Earlier messages are displayed here but are not sent to the model.")
         prompt = st.chat_input("Ask a math question", key="chat_prompt")
