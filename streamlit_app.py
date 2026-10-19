@@ -22,7 +22,6 @@ ROOT = Path(__file__).resolve().parent
 DEFAULT_RUN = "runs/exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k"
 
 st.set_page_config(page_title="TinyMath Inference", page_icon="∑", layout="wide")
-st.title("TinyMath checkpoint playground")
 st.caption("Ask a new question or sample one from this experiment's data splits.")
 
 
