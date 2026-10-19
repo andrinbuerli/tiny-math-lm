@@ -20,7 +20,7 @@ from torch.nn import functional as F
 from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.data.prompts import format_prompt
 from tinymath.model.gpt import GPTConfig, TinyMathGPT
-from tinymath.rewards.calls import ArithmeticCall, CallError, execute_call
+from tinymath.rewards.calls import ArithmeticCall
 
 
 @dataclass(frozen=True)
@@ -181,6 +181,15 @@ def _plain_task(call: ArithmeticCall) -> str:
     return f"Compute {call.left} {symbol} {call.right}."
 
 
+def _sidecar_observation(response: str) -> str:
+    """Use the parallel LM's final answer when present, otherwise its raw response."""
+    answers = re.findall(r"(?m)^\s*A:\s*(.*?)\s*$", response)
+    for answer in reversed(answers):
+        if answer:
+            return answer
+    return response.strip()
+
+
 def _stream_plain_task(
     model: TinyMathGPT,
     tokenizer: CharacterTokenizer,
@@ -190,8 +199,9 @@ def _stream_plain_task(
     max_new_tokens: int,
     call_id: int,
     events: queue.Queue,
-) -> None:
+) -> str:
     """Generate an independent, tool-disabled sidecar answer into the event queue."""
+    output = []
     try:
         prompt_ids = tokenizer.encode(
             format_prompt(_plain_task(call), protocol=tokenizer.protocol), add_bos=True
@@ -213,12 +223,15 @@ def _stream_plain_task(
                 break
             piece = tokenizer.decode([token_id], skip_special=False)
             if piece:
+                output.append(piece)
                 events.put({"kind": "sidecar_token", "call_id": call_id, "text": piece})
             pending = token
     except (OSError, ValueError, RuntimeError, TypeError, KeyError) as exc:
         events.put({"kind": "sidecar_error", "call_id": call_id, "text": str(exc)})
+        return ""
     finally:
         events.put({"kind": "sidecar_done", "call_id": call_id})
+    return "".join(output)
 
 
 def _primary_generation(
@@ -231,7 +244,7 @@ def _primary_generation(
     temperature: float,
     events: queue.Queue,
 ) -> None:
-    """Incrementally generate the main trace and splice exact tool observations."""
+    """Generate the main trace and splice parallel LM observations into tool calls."""
     prompt_ids = tokenizer.encode(
         format_prompt(question.strip(), protocol=tokenizer.protocol), add_bos=True
     )
@@ -300,7 +313,6 @@ def _primary_generation(
                                 "left": left,
                                 "right": right,
                             })
-                            tool_future = executor.submit(execute_call, line)
                             sidecar = executor.submit(
                                 _stream_plain_task,
                                 model,
@@ -312,17 +324,17 @@ def _primary_generation(
                                 events=events,
                             )
                             sidecar_futures.append(sidecar)
-                            try:
-                                exact_call = tool_future.result()
-                            except CallError as exc:
+                            sidecar_response = sidecar.result()
+                            observation = _sidecar_observation(sidecar_response)
+                            if not observation:
                                 events.put({
                                     "kind": "tool_error",
                                     "call_id": call_id,
-                                    "text": str(exc),
+                                    "text": "parallel_lm_empty_response",
                                     "request": line,
                                 })
                                 return
-                            result_ids = tokenizer.encode(exact_call.result)
+                            result_ids = tokenizer.encode(observation)
                             room = min(
                                 model.config.context_length - len(prompt_ids) - generated_count,
                                 max_new_tokens - generated_count,
@@ -339,9 +351,10 @@ def _primary_generation(
                                 "kind": "tool_result",
                                 "call_id": call_id,
                                 "request": line,
-                                "result": exact_call.result,
+                                "result": observation,
+                                "source": "parallel_lm",
                             })
-                            for character, result_id in zip(exact_call.result, result_ids):
+                            for character, result_id in zip(observation, result_ids):
                                 events.put({
                                     "kind": "primary_token",
                                     "text": character,
@@ -349,7 +362,7 @@ def _primary_generation(
                                     "call_id": call_id,
                                 })
                             generated_count += len(result_ids)
-                            line += exact_call.result
+                            line += observation
                             pending = torch.cat(
                                 (token, torch.tensor([result_ids], dtype=torch.long, device=device)),
                                 dim=1,

@@ -155,9 +155,9 @@ def test_load_checkpoint_bundle_and_generate(tmp_path):
     assert sum(event["kind"] == "primary_token" for event in events) == 2
 
 
-def test_streams_primary_and_parallel_sidecar_with_exact_tool_result():
-    main = "<scp>\nstep:add\ncall:add(1,2) -> 3\n</scp>\nA: 3"
-    sidecar = "3"
+def test_primary_uses_the_parallel_lm_tool_response_without_exact_calculation():
+    main = "<scp>\nstep:add\ncall:add(1,2) -> 9\n</scp>\nA: 9"
+    sidecar = "<scp>\nstep:+(1,2)=9\n</scp>\nA: 9"
     tokenizer = CharacterTokenizer.from_texts(
         [
             "Q: Calculate 1+2.\n",
@@ -195,7 +195,10 @@ def test_streams_primary_and_parallel_sidecar_with_exact_tool_result():
         "Q: Calculate 1+2.\n", add_bos=True
     ))
     assert any(
-        event["kind"] == "tool_result" and event["result"] == "3" for event in events
+        event["kind"] == "tool_result"
+        and event["result"] == "9"
+        and event["source"] == "parallel_lm"
+        for event in events
     )
     assert not any(event["kind"] == "tool_error" for event in events)
 
@@ -244,13 +247,7 @@ def test_stream_rejects_unknown_characters_and_nonempty_constraint():
         list(stream_inference_events(model, tokenizer, "   "))
 
 
-def test_malformed_call_is_shown_but_never_reaches_executor(monkeypatch):
-    from tinymath import inference
-
-    def forbidden(*args, **kwargs):
-        raise AssertionError("malformed call reached the exact executor")
-
-    monkeypatch.setattr(inference, "execute_call", forbidden)
+def test_malformed_call_is_shown_but_never_starts_parallel_lm():
     main = "<scp>\nstep:try a function\ncall:power(1,2) -> \n</scp>\nA: 1"
     tokenizer = CharacterTokenizer.from_texts(
         ["Q: Calculate 1+2.\n", "Q: Compute 1 + 2.\n", main, "1"],

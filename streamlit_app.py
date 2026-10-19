@@ -170,7 +170,9 @@ if selected is not None:
                             "", f"> Parallel LM error: {format_raw_text(tool['sidecar_error'])}"
                         ])
                     if tool.get("result") is not None:
-                        rendered.extend(["", f"**→ `{tool['result']}`**"])
+                        rendered.extend([
+                            "", f"→ Parallel LM: {format_raw_text(tool['result'])}"
+                        ])
                     if tool.get("error"):
                         rendered.extend(["", f"> ⚠ {format_raw_text(tool['error'])}"])
                     sections.append("\n".join(rendered))
