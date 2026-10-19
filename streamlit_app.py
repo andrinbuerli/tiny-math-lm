@@ -1,5 +1,6 @@
 """Streamlit interface for interactive TinyMath checkpoint inference."""
 
+import html
 from pathlib import Path
 
 import streamlit as st
@@ -7,6 +8,7 @@ import torch
 
 from tinymath.inference import (
     discover_inference_checkpoints,
+    format_inline_completion,
     load_inference_bundle,
     sample_split_question,
     stream_inference_events,
@@ -115,16 +117,25 @@ if selected is not None:
         temperature = control_columns[1].slider("Temperature", 0.0, 1.5, 0.0, 0.05)
         run = control_columns[3].button("Generate", type="primary", disabled=bool(unsupported))
 
-        primary_column, sidecar_column = st.columns(2)
-        primary_column.subheader("Checkpoint response")
-        sidecar_column.subheader("Parallel model response to tool calls")
-        primary_view = primary_column.empty()
-        sidecar_view = sidecar_column.empty()
-        tool_view = st.container()
+        st.subheader("Streamed response")
+        response_view = st.empty()
 
         if run:
             primary_text = ""
             sidecar_text = ""
+            sidecar_task = None
+            notices = []
+
+            def render_response():
+                sections = [format_inline_completion(primary_text)]
+                if sidecar_task is not None:
+                    sections.append(
+                        f"**Parallel LM · `{html.escape(sidecar_task)}`**  \n"
+                        f"{format_inline_completion(sidecar_text, format_tool_calls=False)}"
+                    )
+                sections.extend(f"> ⚠ {html.escape(notice)}" for notice in notices)
+                response_view.markdown("\n\n".join(section for section in sections if section))
+
             with st.spinner("Generating streamed output…"):
                 for event in stream_inference_events(
                     model,
@@ -135,20 +146,19 @@ if selected is not None:
                 ):
                     if event["kind"] == "primary_token":
                         primary_text += event["text"]
-                        primary_view.code(primary_text or " ", language=None)
+                        render_response()
+                    elif event["kind"] == "sidecar_start":
+                        sidecar_task = event["task"]
+                        render_response()
                     elif event["kind"] == "sidecar_token":
                         sidecar_text += event["text"]
-                        sidecar_view.code(sidecar_text or " ", language=None)
-                    elif event["kind"] == "tool_started":
-                        tool_view.info(f"Exact tool running: {event['request'].strip()}")
-                    elif event["kind"] == "tool_result":
-                        tool_view.success(
-                            f"Exact tool result: {event['request'].strip()}{event['result']}"
-                        )
+                        render_response()
                     elif event["kind"] == "tool_error":
-                        tool_view.warning(f"Tool request not executed: {event['text']}")
+                        notices.append(f"Tool request not executed: {event['text']}")
+                        render_response()
                     elif event["kind"] in {"generation_error", "sidecar_error"}:
-                        st.error(event["text"])
+                        notices.append(event["text"])
+                        render_response()
     except (OSError, ValueError, RuntimeError, TypeError, KeyError) as exc:
         st.error(f"Could not load this checkpoint: {exc}")
 

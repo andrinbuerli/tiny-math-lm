@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 import queue
 import random
@@ -35,6 +36,8 @@ SPLIT_FILES = {
 }
 _SCALAR = r"-?(?:0|[1-9][0-9]*)(?:/[1-9][0-9]*)?"
 _CALL_REQUEST = re.compile(rf"call:(?:add|subtract|multiply|divide)\({_SCALAR},{_SCALAR}\) -> ")
+_CALL_DISPLAY = re.compile(r"^call:(add|subtract|multiply|divide)\(([^,]+),([^)]+)\) -> (.*)$")
+_CALL_PREFIX = re.compile(r"^call:(add|subtract|multiply|divide)\((.*)$")
 
 
 def discover_inference_checkpoints(run_root: str | Path) -> list[InferenceCheckpoint]:
@@ -153,6 +156,50 @@ def unsupported_characters(tokenizer: CharacterTokenizer, question: str) -> list
     return list(dict.fromkeys(character for character in question if character not in tokenizer.token_to_id))
 
 
+def _escape_markdown(text: str) -> str:
+    escaped = html.escape(text, quote=False)
+    return re.sub(r"([\\`*_{}\[\]()#+\-.!|>])", r"\\\1", escaped)
+
+
+def _code_span(text: str) -> str:
+    return html.escape(text, quote=False).replace("`", "&#96;")
+
+
+def format_inline_completion(text: str, *, format_tool_calls: bool = True) -> str:
+    """Format reasoning output, optionally rendering exact calls inline."""
+    rendered_lines = []
+    for line in text.splitlines():
+        if line == "<scp>":
+            rendered_lines.append("**Reasoning**")
+            continue
+        if line == "</scp>":
+            continue
+        if not format_tool_calls:
+            rendered_lines.append(_escape_markdown(line))
+            continue
+        match = _CALL_DISPLAY.fullmatch(line)
+        if match:
+            operation, left, right, result = match.groups()
+            expression = f"`{_code_span(operation)}({_code_span(left)}, {_code_span(right)})`"
+            if result:
+                rendered_lines.append(f"**🧮 {expression} → `{_code_span(result)}`**")
+            else:
+                rendered_lines.append(f"**🧮 {expression} →** _running exact tool…_")
+            continue
+        partial = _CALL_PREFIX.match(line)
+        if partial:
+            operation, arguments = partial.groups()
+            rendered_lines.append(
+                f"**🧮 `{_code_span(operation)}`** `{_code_span(arguments)}`"
+            )
+            continue
+        if line.startswith("call:"):
+            rendered_lines.append(f"**⚠ Unrecognized tool request** `{_code_span(line[5:])}`")
+            continue
+        rendered_lines.append(_escape_markdown(line))
+    return "  \n".join(rendered_lines)
+
+
 def _sample_logits(logits: torch.Tensor, temperature: float) -> torch.Tensor:
     logits = logits.float()
     if temperature == 0:
@@ -175,6 +222,7 @@ def _stream_plain_task(
     events: queue.Queue,
 ) -> None:
     """Generate an independent, tool-disabled sidecar answer into the event queue."""
+    events.put({"kind": "sidecar_start", "task": _plain_task(call)})
     try:
         prompt_ids = tokenizer.encode(
             format_prompt(_plain_task(call), protocol=tokenizer.protocol), add_bos=True

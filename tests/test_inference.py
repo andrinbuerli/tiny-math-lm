@@ -9,6 +9,7 @@ import torch
 from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.inference import (
     discover_inference_checkpoints,
+    format_inline_completion,
     load_inference_bundle,
     sample_split_question,
     stream_inference_events,
@@ -184,6 +185,21 @@ def test_streams_primary_and_parallel_sidecar_with_exact_tool_result():
         event["kind"] == "tool_result" and event["result"] == "3" for event in events
     )
     assert not any(event["kind"] == "tool_error" for event in events)
+
+
+def test_formats_tool_call_inline_and_hides_reasoning_markers():
+    rendered = format_inline_completion(
+        "<scp>\nstep:add numbers\ncall:add(-1,2) -> 1\n</scp>\nA: 1"
+    )
+    pending = format_inline_completion("<scp>\ncall:divide(1,2) -> ")
+    sidecar = format_inline_completion("call:add(1,2) -> 3", format_tool_calls=False)
+
+    assert "**Reasoning**" in rendered
+    assert "🧮 `add(-1, 2)` → `1`" in rendered
+    assert "call:add" not in rendered
+    assert "<scp>" not in rendered
+    assert "running exact tool" in pending
+    assert "🧮" not in sidecar
 
 
 def test_stream_rejects_unknown_characters_and_nonempty_constraint():
