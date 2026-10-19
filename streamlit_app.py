@@ -79,9 +79,9 @@ def _saved_row(row: dict) -> dict:
 
 
 def _render_reference(reference: dict) -> None:
-    with st.expander("Reference solution and scratchpad", expanded=False):
+    with st.expander("Reference solution", expanded=False):
         st.markdown(f"**Answer:** {format_raw_text(reference.get('answer', 'Unavailable'))}")
-        st.markdown("**Reference scratchpad**")
+    with st.expander("Reference scratchpad", expanded=False):
         scratchpad = reference.get("scratchpad")
         st.code(scratchpad if scratchpad else "No reference scratchpad in this dataset row.")
 
