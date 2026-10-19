@@ -63,7 +63,8 @@ def main(config: DictConfig) -> None:
                     if experiment.get("launch_blocker") else None
                 ),
                 launch_blockers=OmegaConf.to_container(
-                    config.reporting.get("launch_blockers", {}), resolve=True
+                    OmegaConf.create(config.reporting.get("launch_blockers", {})),
+                    resolve=True,
                 ),
             )
             run.log({
