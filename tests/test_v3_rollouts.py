@@ -223,6 +223,26 @@ def test_cached_probabilities_seed_and_context_cap():
     assert result.completion_ids.shape[-1] <= 10
 
 
+def test_completion_log_probs_ignores_only_masked_padding_past_context():
+    torch.manual_seed(12)
+    model = TinyMathGPT(
+        GPTConfig(vocab_size=8, context_length=8, n_layers=1, n_heads=1, d_model=8, d_ff=16)
+    ).eval()
+    prompts = torch.tensor([[1, 4, 5, 6, 7, 2]])
+    completions = torch.tensor([[[3, 4, 5, 6], [2, 3, 4, 5]]])
+    mask = torch.tensor([[[True, True, False, False], [True, True, False, False]]])
+    scored = completion_log_probs(
+        model, prompts, completions, completion_mask=mask
+    )
+    assert scored.shape == completions.shape
+    assert torch.isfinite(scored[..., :2]).all()
+    assert torch.equal(scored[..., 2:], torch.zeros_like(scored[..., 2:]))
+    with pytest.raises(ValueError, match="valid completion token exceeds"):
+        completion_log_probs(
+            model, prompts, completions, completion_mask=torch.ones_like(mask)
+        )
+
+
 def test_fractional_groups_and_action_only_loss():
     rewards = torch.tensor([[0.1, 0.1], [0.1, 1.0], [0, 0], [1, 1]])
     advantages = group_relative_advantages(rewards)

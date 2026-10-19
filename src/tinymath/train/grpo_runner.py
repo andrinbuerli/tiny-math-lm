@@ -458,11 +458,13 @@ def train_grpo(
                 metric_groups.append(group_outcome_rates(rewards.unsqueeze(0)))
                 with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_bf16):
                     current = completion_log_probs(
-                        model, prompt_ids, rollouts.completion_ids, temperature=temperature
+                        model, prompt_ids, rollouts.completion_ids, temperature=temperature,
+                        completion_mask=rollouts.completion_mask,
                     )
                     reference_logs = (
                         completion_log_probs(reference, prompt_ids, rollouts.completion_ids,
-                                             temperature=temperature)
+                                             temperature=temperature,
+                                             completion_mask=rollouts.completion_mask)
                         if reference is not None else None
                     )
                 metrics = grpo_objective(

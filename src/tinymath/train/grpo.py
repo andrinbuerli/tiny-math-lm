@@ -72,6 +72,7 @@ def completion_log_probs(
     completion_ids: torch.Tensor,
     *,
     temperature: float = 1.0,
+    completion_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Recompute per-token policy log probabilities for `[B,G,T]` completions."""
     if prompt_ids.ndim != 2 or completion_ids.ndim != 3:
@@ -81,15 +82,31 @@ def completion_log_probs(
     batch, group_size, completion_length = completion_ids.shape
     if prompt_ids.shape[0] != batch or completion_length == 0:
         raise ValueError("prompt and completion batch dimensions must agree and completion must be nonempty")
+    if completion_mask is not None and (
+        completion_mask.shape != completion_ids.shape or completion_mask.dtype != torch.bool
+    ):
+        raise ValueError("completion_mask must be boolean and match completion_ids")
     prompt_length = prompt_ids.shape[1]
+    context_length = int(model.config.context_length)
+    score_length = min(completion_length, context_length - prompt_length)
+    if score_length < 1:
+        raise ValueError("Prompt leaves no room for a completion within the model context")
+    if score_length < completion_length and (
+        completion_mask is None or torch.any(completion_mask[..., score_length:])
+    ):
+        raise ValueError("A valid completion token exceeds the model context length")
     repeated_prompts = prompt_ids[:, None, :].expand(batch, group_size, prompt_length)
-    sequences = torch.cat((repeated_prompts, completion_ids), dim=-1).reshape(
-        batch * group_size, prompt_length + completion_length
+    scored_completions = completion_ids[..., :score_length]
+    sequences = torch.cat((repeated_prompts, scored_completions), dim=-1).reshape(
+        batch * group_size, prompt_length + score_length
     )
-    logits = model(sequences)[:, prompt_length - 1 : prompt_length + completion_length - 1]
+    logits = model(sequences)[:, prompt_length - 1 : prompt_length + score_length - 1]
     log_probs = F.log_softmax(logits.float() / temperature, dim=-1)
-    selected = log_probs.gather(-1, completion_ids.reshape(batch * group_size, completion_length, 1))
-    return selected.squeeze(-1).view(batch, group_size, completion_length)
+    selected = log_probs.gather(-1, scored_completions.reshape(batch * group_size, score_length, 1))
+    selected = selected.squeeze(-1).view(batch, group_size, score_length)
+    if score_length < completion_length:
+        selected = F.pad(selected, (0, completion_length - score_length))
+    return selected
 
 
 def grpo_objective(
