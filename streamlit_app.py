@@ -406,6 +406,3 @@ if selected is not None:
                             ]
     except (OSError, ValueError, RuntimeError, TypeError, KeyError) as exc:
         st.error(f"Could not load this checkpoint: {exc}")
-
-st.divider()
-st.caption("Start with `uv run streamlit run streamlit_app.py` from the repository root.")
