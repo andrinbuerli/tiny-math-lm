@@ -22,6 +22,16 @@ ROOT = Path(__file__).resolve().parent
 DEFAULT_RUN = "runs/exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k"
 
 st.set_page_config(page_title="TinyMath Inference", page_icon="∑", layout="wide")
+st.markdown(
+    """
+    <style>
+    .st-key-chat_history {
+        height: max(240px, calc(100vh - 230px)) !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 @st.cache_resource(show_spinner="Loading checkpoint…")
@@ -177,7 +187,9 @@ if selected is not None:
 
         prompt = st.chat_input("Ask a math question", key="chat_prompt")
         sampled_reference = st.session_state.sampled_reference
-        chat_history_container = st.container(height=480, border=False)
+        chat_history_container = st.container(
+            height=480, border=False, key="chat_history", autoscroll=True
+        )
         with chat_history_container:
             for message in st.session_state.chat_history:
                 with st.chat_message(message["role"]):
