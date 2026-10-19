@@ -13,7 +13,7 @@ from tinymath.inference import (
     format_raw_text,
     format_tool_call,
     load_inference_bundle,
-    sample_split_question,
+    sample_split_example,
     stream_inference_events,
     unsupported_characters,
 )
@@ -78,6 +78,14 @@ def _saved_row(row: dict) -> dict:
     }
 
 
+def _render_reference(reference: dict) -> None:
+    with st.expander("Reference solution and scratchpad", expanded=False):
+        st.markdown(f"**Answer:** {format_raw_text(reference.get('answer', 'Unavailable'))}")
+        st.markdown("**Reference scratchpad**")
+        scratchpad = reference.get("scratchpad")
+        st.code(scratchpad if scratchpad else "No reference scratchpad in this dataset row.")
+
+
 with st.sidebar:
     st.header("Checkpoint")
     run_path = st.text_input("Run directory", value=DEFAULT_RUN)
@@ -123,6 +131,8 @@ if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "chat_prompt" not in st.session_state:
     st.session_state.chat_prompt = ""
+if "sampled_reference" not in st.session_state:
+    st.session_state.sampled_reference = None
 
 if selected is not None:
     try:
@@ -143,10 +153,18 @@ if selected is not None:
         if source != "Freeform" and sample_column.button("Sample question"):
             split = source.removeprefix("Sample from ")
             try:
-                st.session_state.chat_prompt = sample_split_question(
+                example = sample_split_example(
                     split, data_bundle=metadata["data_bundle"]
                 )
+                st.session_state.chat_prompt = example["question"]
+                st.session_state.sampled_reference = {
+                    "split": split,
+                    "question": example["question"],
+                    "answer": example.get("answer", "Unavailable"),
+                    "scratchpad": example.get("scratchpad", ""),
+                }
             except (OSError, ValueError, TypeError) as exc:
+                st.session_state.sampled_reference = None
                 st.error(f"Could not sample that split: {exc}")
 
         control_columns = st.columns([1, 1, 2])
@@ -161,6 +179,8 @@ if selected is not None:
             with st.chat_message(message["role"]):
                 if message["role"] == "user":
                     st.markdown(message["content"])
+                    if message.get("reference"):
+                        _render_reference(message["reference"])
                     continue
                 if message.get("rows"):
                     with st.status("Reasoning", state="complete", expanded=False):
@@ -173,6 +193,10 @@ if selected is not None:
                     st.markdown(message["answer"])
 
         prompt = st.chat_input("Ask a math question", key="chat_prompt")
+        sampled_reference = st.session_state.sampled_reference
+        if prompt is None and sampled_reference is not None:
+            st.caption(f"Sampled from {sampled_reference['split']}; reference is UI-only.")
+            _render_reference(sampled_reference)
         if prompt is not None:
             unsupported = unsupported_characters(tokenizer, prompt)
             if unsupported:
@@ -181,14 +205,24 @@ if selected is not None:
                 )
                 st.warning(f"This checkpoint cannot encode: {rendered}")
             else:
-                st.session_state.chat_history.append({"role": "user", "content": prompt})
+                reference = (
+                    sampled_reference
+                    if sampled_reference is not None and sampled_reference["question"] == prompt
+                    else None
+                )
+                st.session_state.sampled_reference = None
+                st.session_state.chat_history.append({
+                    "role": "user", "content": prompt, "reference": reference,
+                })
                 with st.chat_message("user"):
                     st.markdown(prompt)
+                    if reference is not None:
+                        _render_reference(reference)
                 assistant_history = {"role": "assistant", "rows": [], "answer": ""}
                 st.session_state.chat_history.append(assistant_history)
                 with st.chat_message("assistant"):
                     stats_view = st.empty()
-                    reasoning_status = st.status("Reasoning", expanded=False)
+                    reasoning_status = st.status("Reasoning", expanded=True)
                     answer_view = st.empty()
                     with reasoning_status:
                         response_rows = st.container()
@@ -361,7 +395,7 @@ if selected is not None:
                         if not answer:
                             answer = "No final answer generated."
                         answer_view.markdown(format_raw_text(answer))
-                        reasoning_status.update(label="Reasoning", state="complete")
+                        reasoning_status.update(label="Reasoning", state="complete", expanded=False)
                         assistant_history["answer"] = answer
                         assistant_history["rows"] = [
                             _saved_row(row) for row in row_state["rows"]

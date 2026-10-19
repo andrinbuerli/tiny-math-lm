@@ -118,13 +118,13 @@ def load_inference_bundle(
     }
 
 
-def sample_split_question(
+def sample_split_example(
     split: str,
     *,
     data_bundle: str | Path,
     rng: random.Random | None = None,
-) -> str:
-    """Select one question uniformly from a JSONL split using reservoir sampling."""
+) -> dict[str, Any]:
+    """Select one question row uniformly from a JSONL split."""
     try:
         filename = SPLIT_FILES[split]
     except KeyError as exc:
@@ -143,10 +143,20 @@ def sample_split_question(
                 continue
             count += 1
             if chooser.randrange(count) == 0:
-                selected = question
+                selected = row
     if selected is None:
         raise ValueError(f"No question rows found in {path}")
     return selected
+
+
+def sample_split_question(
+    split: str,
+    *,
+    data_bundle: str | Path,
+    rng: random.Random | None = None,
+) -> str:
+    """Select a question uniformly from a JSONL split."""
+    return sample_split_example(split, data_bundle=data_bundle, rng=rng)["question"]
 
 
 def unsupported_characters(tokenizer: CharacterTokenizer, question: str) -> list[str]:

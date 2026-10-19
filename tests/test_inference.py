@@ -12,6 +12,7 @@ from tinymath.inference import (
     format_raw_text,
     format_tool_call,
     load_inference_bundle,
+    sample_split_example,
     sample_split_question,
     stream_inference_events,
 )
@@ -67,6 +68,17 @@ def test_sample_questions_from_train_validation_and_test(tmp_path):
     assert sample_split_question("test", data_bundle=tmp_path) == "held-out example"
     with pytest.raises(ValueError, match="Unsupported split"):
         sample_split_question("rlvr", data_bundle=tmp_path)
+
+
+def test_sample_split_example_keeps_reference_answer_and_scratchpad(tmp_path):
+    example = {
+        "question": "2 + 2",
+        "answer": "4",
+        "scratchpad": "step:add\n=>4",
+    }
+    (tmp_path / "test.jsonl").write_text(json.dumps(example) + "\n", encoding="utf-8")
+
+    assert sample_split_example("test", data_bundle=tmp_path) == example
 
 
 class ScriptedInferenceModel(torch.nn.Module):
