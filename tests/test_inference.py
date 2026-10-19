@@ -206,7 +206,7 @@ def test_formats_raw_completion_and_inline_tool_expression():
     assert "&lt;scp&gt;" in raw
     assert "step:add numbers" in raw
     assert "A: 1" in raw
-    assert format_tool_call("add", "23", "48") == "**`add(23, 48)`**"
+    assert format_tool_call("add", "23", "48") == "add(23, 48)"
 
 
 def test_stream_rejects_unknown_characters_and_nonempty_constraint():

@@ -165,9 +165,8 @@ def format_raw_text(text: str) -> str:
 
 
 def format_tool_call(operation: str, left: str, right: str) -> str:
-    """Render a tool call as a compact, readable inline expression."""
-    expression = f"{operation}({left}, {right})"
-    return f"**`{html.escape(expression).replace('`', '&#96;')}`**"
+    """Render a tool call as plain text."""
+    return f"{operation}({left}, {right})"
 
 
 def _sample_logits(logits: torch.Tensor, temperature: float) -> torch.Tensor:
