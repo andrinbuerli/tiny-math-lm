@@ -104,16 +104,27 @@ def _tool_markdown(tool: dict) -> str:
         )
         rendered.extend(["", quoted])
     if tool.get("sidecar_error"):
-        rendered.extend(["", f"> Recursive LM error: {format_raw_text(tool['sidecar_error'])}"])
+        rendered.extend(["", f"> Subagent error: {format_raw_text(tool['sidecar_error'])}"])
     if tool.get("error"):
         rendered.extend(["", f"> ⚠ {format_raw_text(tool['error'])}"])
     return "\n".join(rendered)
 
 
-def _recursive_result_markdown(tool: dict) -> str:
+def _subagent_call_explanation(tool: dict) -> str:
+    task = tool.get("task", "the requested computation")
+    return f'Calling subagent with “{task}”'
+
+
+def _subagent_result_explanation(tool: dict) -> str:
+    task = tool.get("task", "the requested computation")
+    result = tool.get("result", "")
+    return f'Subagent computed “{task}” → {result}'
+
+
+def _subagent_result_markdown(tool: dict) -> str:
     if tool.get("result") is None:
         return ""
-    return f"→ Recursive LM: {format_raw_text(tool['result'])}"
+    return f"→ Subagent: {format_raw_text(tool['result'])}"
 
 
 def _render_saved_row(row: dict) -> None:
@@ -124,8 +135,8 @@ def _render_saved_row(row: dict) -> None:
     tool = row.get("tool")
     if tool and tool.get("result") is not None:
         result_left, result_right = st.columns([3, 2])
-        result_left.markdown(_recursive_result_markdown(tool))
-        result_right.markdown("Computed by the Recursive LM.")
+        result_left.markdown(_subagent_result_markdown(tool))
+        result_right.markdown(format_raw_text(_subagent_result_explanation(tool)))
 
 
 def _row_markdown(row: dict) -> tuple[str, str]:
@@ -371,10 +382,10 @@ if selected is not None:
                                 row["left_view"].markdown(left)
                                 row["right_view"].markdown(right)
                                 if row["tool"]:
-                                    result = _recursive_result_markdown(row["tool"])
+                                    result = _subagent_result_markdown(row["tool"])
                                     row["result_left_view"].markdown(result)
                                     row["result_right_view"].markdown(
-                                        "Computed by the Recursive LM."
+                                        format_raw_text(_subagent_result_explanation(row["tool"]))
                                         if row["tool"].get("result") is not None else ""
                                     )
 
@@ -497,6 +508,7 @@ if selected is not None:
                                         stats["subagent"] += event["input_tokens"]
                                         row = calls[event["call_id"]]
                                         row["tool"]["task"] = event["task"]
+                                        row["explanation"] = _subagent_call_explanation(row["tool"])
                                         render_row(row)
                                     elif kind == "sidecar_token":
                                         row = calls[event["call_id"]]
