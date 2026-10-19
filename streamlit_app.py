@@ -1,5 +1,6 @@
 """Streamlit interface for interactive TinyMath checkpoint inference."""
 
+import html
 import re
 import time
 from pathlib import Path
@@ -27,6 +28,45 @@ st.markdown(
     <style>
     .st-key-chat_history {
         height: max(240px, calc(100vh - 230px)) !important;
+    }
+    .tm-reasoning-activity {
+        align-items: center;
+        color: var(--text-color, #737373);
+        display: flex;
+        font-size: 0.92rem;
+        gap: 0.55rem;
+        line-height: 1.45;
+        opacity: 0.78;
+        padding: 0.25rem 0;
+    }
+    .tm-reasoning-activity span {
+        overflow-wrap: anywhere;
+        white-space: pre-wrap;
+    }
+    .tm-reasoning-activity.is-active::before {
+        animation: tm-reasoning-pulse 1.6s ease-out infinite;
+        background: #7799d3;
+        border-radius: 50%;
+        box-shadow: 0 0 0 0 rgba(119, 153, 211, 0.42);
+        content: "";
+        flex: 0 0 0.48rem;
+        height: 0.48rem;
+    }
+    .tm-reasoning-activity.is-complete::before {
+        color: #5f9b76;
+        content: "✓";
+        flex: 0 0 0.48rem;
+        font-size: 0.82rem;
+        font-weight: 700;
+        text-align: center;
+    }
+    @keyframes tm-reasoning-pulse {
+        0% { box-shadow: 0 0 0 0 rgba(119, 153, 211, 0.42); opacity: 0.85; }
+        70% { box-shadow: 0 0 0 0.42rem rgba(119, 153, 211, 0); opacity: 1; }
+        100% { box-shadow: 0 0 0 0 rgba(119, 153, 211, 0); opacity: 0.85; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .tm-reasoning-activity.is-active::before { animation: none; }
     }
     </style>
     """,
@@ -75,6 +115,15 @@ def _row_markdown(row: dict) -> tuple[str, str]:
 def _final_answer(response: str) -> str:
     answers = re.findall(r"(?m)^A:\s*(.*)$", response)
     return answers[-1].strip() if answers else ""
+
+
+def _reasoning_activity(line: str, *, active: bool) -> str:
+    state = "is-active" if active else "is-complete"
+    text = html.escape(line) if line else "Thinking…"
+    return (
+        f'<div class="tm-reasoning-activity {state}" role="status">'
+        f"<span>{text}</span></div>"
+    )
 
 
 def _saved_row(row: dict) -> dict:
@@ -200,8 +249,8 @@ if selected is not None:
                         continue
                     if message.get("latest_reasoning_line"):
                         st.markdown(
-                            "**Latest reasoning line**  \n"
-                            f"{format_raw_text(message['latest_reasoning_line'])}"
+                            _reasoning_activity(message["latest_reasoning_line"], active=False),
+                            unsafe_allow_html=True,
                         )
                     if message.get("rows"):
                         with st.status("Reasoning", state="complete", expanded=False):
@@ -246,6 +295,7 @@ if selected is not None:
                     with st.chat_message("assistant"):
                         stats_view = st.empty()
                         latest_step_view = st.empty()
+                        generation_state = {"active": True}
                         reasoning_status = st.status("Reasoning", expanded=False)
                         answer_view = st.empty()
                         with reasoning_status:
@@ -262,12 +312,18 @@ if selected is not None:
                             generated_response = ""
                             latest_line_state = {"text": ""}
 
-                            def render_latest_step(line):
+                            def render_latest_step(line=""):
                                 if line.strip():
                                     latest_line_state["text"] = line
-                                    latest_step_view.markdown(
-                                        f"**Latest reasoning line**  \n{format_raw_text(line)}"
-                                    )
+                                if not latest_line_state["text"]:
+                                    latest_step_view.empty()
+                                    return
+                                latest_step_view.markdown(
+                                    _reasoning_activity(
+                                        latest_line_state["text"], active=generation_state["active"]
+                                    ),
+                                    unsafe_allow_html=True,
+                                )
 
                             def new_row():
                                 with response_rows:
@@ -425,6 +481,8 @@ if selected is not None:
                                 explain_line(parser["scratchpad_line"], is_scratchpad=parser["scratchpad_active"])
                             if parser["outside_line"].strip():
                                 explain_line(parser["outside_line"].strip(), is_scratchpad=False)
+                            generation_state["active"] = False
+                            render_latest_step()
                             answer = _final_answer(generated_response)
                             if not answer:
                                 answer = "No final answer generated."
