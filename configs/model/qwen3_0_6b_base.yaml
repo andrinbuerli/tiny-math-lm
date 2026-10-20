@@ -1,0 +1,11 @@
+name: qwen3_0_6b_base
+backend: huggingface
+repo_id: Qwen/Qwen3-0.6B-Base
+revision: da87bfb608c14b7cf20ba1ce41287e8de496c0cd
+context_length: 512
+torch_dtype: bfloat16
+attn_implementation: sdpa
+trust_remote_code: false
+gradient_checkpointing: true
+use_cache: false
+cache_dir: ${paths.data}/cache/huggingface

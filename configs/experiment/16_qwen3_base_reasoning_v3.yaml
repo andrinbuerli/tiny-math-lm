@@ -1,0 +1,90 @@
+# @package _global_
+# Experiment 16: native Qwen3 Base tokenization, supervised reasoning, and GRPO.
+defaults:
+  - override /model: qwen3_0_6b_base
+  - override /rollout: v3_exact
+
+experiment:
+  number: 16
+  name: exp16_qwen3_base_reasoning_v3
+  title: "Experiment 16 — Qwen3-0.6B-Base reasoning-v3"
+  protocol: reasoning_v3_native
+  phase: main
+  seed: 18
+  context_length: 512
+  data_budget: 500000
+  ood_examples_per_module: 1000
+  max_steps: 1000000
+  max_epochs: 3
+  grpo_updates: 10000
+
+seed: 18
+data_bundle: data/processed/exp13_reasoning_v3_arithmetic_subtasks-seed18
+
+data:
+  context_length: 512
+
+trainer:
+  name: sft
+  max_steps: 1000000
+  max_epochs: 3
+  batch_size: 1
+  gradient_accumulation: 32
+  learning_rate: 0.00002
+  weight_decay: 0.01
+  warmup_ratio: 0.03
+  scheduler: cosine
+  grad_clip: 1.0
+  eval_every: 500
+  save_every: 500
+  bf16: true
+  gradient_checkpointing: true
+  early_stopping_patience_epochs: 1
+
+rlvr:
+  name: grpo
+  updates: 10000
+  prompts_per_batch: 16
+  group_size: 16
+  temperature: 1.0
+  max_completion_tokens: 512
+  clip_epsilon: 0.2
+  kl_coefficient: 0.0
+  learning_rate: 0.00001
+  reward_format_weight: 0.1
+  reward_success_weight: 0.9
+  rollout_chunk_size: 1
+
+eval:
+  splits: [test, number_length_ood, expression_length_ood]
+  max_new_tokens: 512
+  batch_size: 1
+  greedy: true
+  temperature: 0.0
+  max_examples_per_split: null
+
+checkpoint_provenance:
+  source_experiment: 15
+  data_bundle_manifest_sha256: 5d493a0f4c961b84b873036ea1bc93ebb6d01b6f022d7ed81997b094da3a018f
+  fixed_evaluation_question_identity_sha256:
+    test: c19d79c7c8da7dae553af612182bfaacac0548576e2186fca0e89d1e40b60312
+    number_length_ood: 274ba2aa3b15fd7ef8f39c103eb1ca5f944991515e9ee279d7249bf44471f6cb
+    expression_length_ood: 8af8fa3a6c2742882968774a6c7d98be05977279a1958d7292eede1530325fd2
+
+tracking:
+  mode: online
+  resume: true
+  project: tinymath-rl
+  group: exp16_qwen3_base_reasoning_v3-${experiment.phase}
+  name: exp16_qwen3_base_reasoning_v3-${experiment.phase}-${model.name}-seed18
+  tags:
+    - exp16_qwen3_base_reasoning_v3
+    - qwen3_base
+    - seed18
+    - ${experiment.phase}
+
+hydra:
+  run:
+    dir: ${paths.outputs}/${experiment.name}/${experiment.phase}/${model.name}/seed${seed}
+  job:
+    chdir: false
