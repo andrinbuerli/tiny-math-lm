@@ -12,7 +12,7 @@ Finish Experiment 15 by completing the existing 10M GRPO run, then running the 1
 - Bundle: `data/processed/exp13_reasoning_v3_arithmetic_subtasks-seed18`
 - GRPO: 10,000 updates, 16 prompts per batch, group size 16, temperature 1.0, max completion 512, learning rate `1e-5`, clip `0.2`, KL `0`
 - Evaluation splits: `test`, `number_length_ood`, `expression_length_ood`
-- 10M GRPO is active in PID 179095 under existing W&B ID `c7a774b40fc8501c`; continue this exact process and identity. Its coordinator is PID 178398 and was stopped while the trainer remained active. Resume the coordinator so it can validate 10M completion and proceed to 100M.
+- 10M GRPO is active in PID 179095 under existing W&B ID `c7a774b40fc8501c`; continue this exact process and identity. At the last inspection, the metrics file had reached update 6,938 and the latest durable checkpoint was step 6,500. Its coordinator (PID 178398) and finalizer (PID 192695) are also alive. Do not restart either process or launch a duplicate trainer; let the current coordinator validate 10M completion and proceed to 100M.
 - 1M GRPO is complete at step 10,000. Preserve its existing checkpoint and report entries.
 - 100M has not started. Initialize it from the verified Experiment 14 100M SFT `best.pt` referenced by the Experiment 15 Hydra preset. Create a new online W&B identity for this arm.
 
