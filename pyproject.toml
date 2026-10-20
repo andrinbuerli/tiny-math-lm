@@ -20,6 +20,7 @@ dependencies = [
   "torch==2.6.0",
   "wandb>=0.17",
   "narwhals>=2.27.1",
+  "transformers>=4.51,<5",
 ]
 
 [dependency-groups]
