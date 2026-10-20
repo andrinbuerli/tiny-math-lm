@@ -40,7 +40,7 @@ def test_orchestrator_emits_hydra_valid_mapping_overrides_and_pilot_budgets():
     assert "experiment.phase=\"pilot\"" in values
     assert "experiment.data_budget=2000" in values
     assert "experiment.max_steps=10" in values
-    assert "runtime.parallel_model_vram_gb={1m:1,10m:3,100m:8}" in values
+    assert "runtime.parallel_model_vram_gb={1m:1,10m:3,100m:8,qwen3_0_6b_base:10}" in values
     assert "tracking.mode=\"offline\"" in values
     assert 'reporting.output_dir="/workspace/reports/custom"' in values
     assert 'reporting.annotation_bundle_dir="/workspace/data/custom"' in values
