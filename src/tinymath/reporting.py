@@ -2433,7 +2433,7 @@ def make_exp13_report(
             axis.bar(
                 [item[0] for item in reasoning_measured],
                 [item[1] for item in reasoning_measured], width,
-                label="Reasoning-v3", color="#3182bd",
+                label="Reasoning-v3", color="#ff7f0e",
             )
         axis.set_title(split)
         axis.set_xticks(x, [f"{r['model']}\n{r['arm']}" for r in selected], rotation=45, ha="right")

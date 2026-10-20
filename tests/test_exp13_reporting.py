@@ -141,6 +141,7 @@ def test_exp15_historical_reference_includes_verified_results_and_svg(workspace_
     ).read_text(encoding="utf-8")
     svg = (output / "accuracy_comparison.svg").read_text(encoding="utf-8")
     assert "Baseline" in svg and "Reasoning-v3" in svg
+    assert "#1f77b4" in svg and "#ff7f0e" in svg
     assert "Exp13" not in svg and "Experiment 15" not in svg
 
 
