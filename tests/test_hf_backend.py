@@ -210,6 +210,8 @@ def test_cpu_fixture_resumes_deterministically_from_optimizer_boundary(monkeypat
     assert result["examples_seen"] == 4
     assert result["tokens_seen"] > 0
     assert (checkpoint_dir / "best" / "experiment_identity.json").is_file()
+    assert (checkpoint_dir / "training_summary.json").is_file()
+    assert (checkpoint_dir / "final" / "experiment_identity.json").is_file()
     completed = torch.load(checkpoint_dir / "latest.pt", map_location="cpu", weights_only=False)
     assert completed["step"] == 2
     assert completed["epoch"] == 1

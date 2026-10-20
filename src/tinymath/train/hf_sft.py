@@ -155,6 +155,7 @@ def _checkpoint_payload(
     tokens_seen: int,
     examples_seen: int,
     supervised_tokens_seen: int,
+    peak_gpu_memory_bytes: int,
     wall_seconds: float,
     config_sha256: str,
 ) -> dict[str, Any]:
@@ -171,6 +172,7 @@ def _checkpoint_payload(
         "tokens_seen": tokens_seen,
         "supervised_tokens_seen": supervised_tokens_seen,
         "examples_seen": examples_seen,
+        "peak_gpu_memory_bytes": peak_gpu_memory_bytes,
         "wall_seconds": wall_seconds,
         "config_sha256": config_sha256,
         "rng_state": capture_rng_state(),
@@ -311,6 +313,7 @@ def train_hf_sft(
     no_improvement_epochs = 0
     tokens_seen = supervised_tokens_seen = examples_seen = 0
     wall_seconds_before = 0.0
+    peak_memory_seen = 0
     if latest_path.is_file():
         state = torch.load(latest_path, map_location="cpu", weights_only=False)
         if state.get("format") != "exp16_hf_sft_v1" or state.get("config_sha256") != config_hash:
@@ -324,6 +327,7 @@ def train_hf_sft(
         tokens_seen = int(state["tokens_seen"])
         supervised_tokens_seen = int(state.get("supervised_tokens_seen", tokens_seen))
         examples_seen = int(state["examples_seen"])
+        peak_memory_seen = int(state.get("peak_gpu_memory_bytes", 0))
         wall_seconds_before = float(state.get("wall_seconds", 0.0))
         restore_rng_state(state["rng_state"])
     fields = [
@@ -402,6 +406,10 @@ def train_hf_sft(
                 running_tokens = 0
                 elapsed = max(wall_seconds_before + time.monotonic() - start_time, 1e-9)
                 estimated_flops = 6 * parameters * tokens_seen
+                peak_memory_seen = max(
+                    peak_memory_seen,
+                    int(torch.cuda.max_memory_allocated(device)) if device.type == "cuda" else 0,
+                )
                 values = {
                     "optimizer_step": step,
                     "epoch": epoch + cursor / len(epoch_order),
@@ -415,9 +423,7 @@ def train_hf_sft(
                     "tokens_per_second": tokens_seen / elapsed,
                     "estimated_flops": estimated_flops,
                     "wall_seconds": elapsed,
-                    "peak_gpu_memory_bytes": (
-                        torch.cuda.max_memory_allocated(device) if device.type == "cuda" else 0
-                    ),
+                    "peak_gpu_memory_bytes": peak_memory_seen,
                 }
                 if run is not None:
                     run.log({key: value for key, value in values.items() if value != ""}, step=step)
@@ -472,6 +478,7 @@ def train_hf_sft(
                             tokens_seen=tokens_seen,
                             examples_seen=examples_seen,
                             supervised_tokens_seen=supervised_tokens_seen,
+                            peak_gpu_memory_bytes=peak_memory_seen,
                             wall_seconds=elapsed,
                             config_sha256=config_hash,
                         ),
@@ -508,6 +515,7 @@ def train_hf_sft(
                         tokens_seen=tokens_seen,
                         examples_seen=examples_seen,
                         supervised_tokens_seen=supervised_tokens_seen,
+                        peak_gpu_memory_bytes=peak_memory_seen,
                         wall_seconds=elapsed,
                         config_sha256=config_hash,
                     ),
@@ -526,6 +534,7 @@ def train_hf_sft(
                 tokens_seen=tokens_seen,
                 examples_seen=examples_seen,
                 supervised_tokens_seen=supervised_tokens_seen,
+                peak_gpu_memory_bytes=peak_memory_seen,
                 wall_seconds=elapsed,
                 config_sha256=config_hash,
             ),
@@ -587,7 +596,7 @@ def train_hf_sft(
     final_identity["checkpoint_sha256"] = final_digest.hexdigest()
     save_model_identity(final_dir / "experiment_identity.json", final_identity)
     selected_checkpoint = final_dir if trainer_name == "continued_sft" else best_dir
-    return {
+    result = {
         "step": step,
         "epoch": epoch,
         "training_examples": len(train_indices),
@@ -597,9 +606,7 @@ def train_hf_sft(
         "wall_seconds": wall_seconds_before + time.monotonic() - start_time,
         "tokens_per_second": tokens_seen
         / max(wall_seconds_before + time.monotonic() - start_time, 1e-9),
-        "peak_gpu_memory_bytes": (
-            torch.cuda.max_memory_allocated(device) if device.type == "cuda" else 0
-        ),
+        "peak_gpu_memory_bytes": peak_memory_seen,
         "parameters": parameters,
         "best_validation_loss": best_val,
         "compute_budget_flops": target_flops,
@@ -623,3 +630,7 @@ def train_hf_sft(
         "additional_estimated_flops": 6 * parameters * tokens_seen,
         "cache_manifest_sha256": sha256_file(cache_dir / "manifest.json"),
     }
+    (run_dir / "training_summary.json").write_text(
+        json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return result

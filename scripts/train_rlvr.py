@@ -60,6 +60,15 @@ def main(config: DictConfig) -> None:
             job_metadata={"phase": str(config.experiment.phase), "training_arm": "grpo"},
         )
         try:
+            run.config.update(
+                {
+                    "source_sft_wandb_run_id": (
+                        read_wandb_run_id(init_checkpoint.parent)
+                        if init_checkpoint is not None else None
+                    ),
+                },
+                allow_val_change=True,
+            )
             result = train_hf_grpo(
                 config=config,
                 bundle_dir=bundle_dir,

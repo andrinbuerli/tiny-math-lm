@@ -78,6 +78,20 @@ def main(config: DictConfig) -> None:
         if str(config.model.get("backend", "tinymath")) == "huggingface":
             if init_checkpoint is not None and not init_checkpoint.exists():
                 raise FileNotFoundError(f"Hugging Face initialization checkpoint not found: {init_checkpoint}")
+            run.config.update(
+                {
+                    "training_arm": str(config.trainer.name),
+                    "source_sft_checkpoint": (
+                        str(init_checkpoint)
+                        if str(config.trainer.name) == "continued_sft" and init_checkpoint else None
+                    ),
+                    "source_sft_wandb_run_id": (
+                        read_wandb_run_id(init_checkpoint.parent)
+                        if str(config.trainer.name) == "continued_sft" and init_checkpoint else None
+                    ),
+                },
+                allow_val_change=True,
+            )
             result = train_hf_sft(
                 config=config,
                 run_dir=run_dir,
