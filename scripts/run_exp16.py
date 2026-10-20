@@ -24,7 +24,7 @@ def _run(config: DictConfig, script: str, *overrides: str) -> None:
         "--locked",
         "python",
         f"scripts/{script}.py",
-        f"experiment={config.experiment.name}",
+        f"experiment={config.experiment.config_group}",
         *overrides,
     ]
     LOGGER.info("Running Experiment 16 stage: %s", " ".join(command[3:]))

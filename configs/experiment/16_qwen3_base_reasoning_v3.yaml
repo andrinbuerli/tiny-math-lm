@@ -8,6 +8,7 @@ defaults:
 
 experiment:
   number: 16
+  config_group: 16_qwen3_base_reasoning_v3
   name: exp16_qwen3_base_reasoning_v3
   title: "Experiment 16 — Qwen3-0.6B-Base reasoning-v3"
   protocol: reasoning_v3_native
