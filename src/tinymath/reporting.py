@@ -1936,7 +1936,7 @@ def make_exp13_report(
         if experiment.startswith("exp") and experiment[3:4].isdigit()
         else "13"
     )
-    report_title = f"Experiment {experiment_number} reasoning-v3 comparison"
+    report_title = "Baseline vs reasoning-v3 comparison"
     output_dir.mkdir(parents=True, exist_ok=True)
     snapshot = _json_file(baseline_snapshot) or {}
     baseline_name = str(
@@ -2354,8 +2354,8 @@ def make_exp13_report(
         historical = report.get("historical_reference", {})
         figure_name = Path(str(historical.get("copied_figure") or historical.get("source_figure"))).name
         lines.extend([
-            "", "## Historical SFT and continued-SFT results (Experiment 13)", "",
-            f"These completed reasoning-v3 evaluations are included as historical comparison arms; they are separate from the current Experiment {experiment_number} rows. Values are verified against their checkpoint hashes, source bundle manifest, and identical frozen-baseline question populations. Source run: `{historical.get('experiment')}`; source figure: `{figure_name}`.", "",
+            "", "## Additional reasoning-v3 SFT and continued-SFT results", "",
+            f"These completed reasoning-v3 evaluations are included with the comparison. Values are verified against their checkpoint hashes, source bundle manifest, and identical frozen-baseline question populations. Source figure: `{figure_name}`.", "",
             "| Model | Arm | Split | Accuracy (scored) | Δ vs frozen baseline (pp) | Verification | Checkpoint SHA256 | Training W&B | Evaluation W&B |",
             "|---|---|---|---:|---:|---|---|---|---|",
         ])
@@ -2368,7 +2368,7 @@ def make_exp13_report(
             )
         lines.append("")
         if historical.get("copied_figure"):
-            lines.append(f"![Experiment 13 baseline versus reasoning-v3 accuracy]({figure_name})")
+            lines.append(f"![Baseline versus reasoning-v3 accuracy]({figure_name})")
         else:
             lines.append(f"Original chart is missing at `{historical.get('source_figure')}`.")
     if "bundle_validation" in report:
@@ -2418,37 +2418,28 @@ def make_exp13_report(
         x = list(range(len(selected)))
         width = 0.25
         base_values = [100 * row["baseline_accuracy"] if row["baseline_accuracy"] is not None else 0 for row in selected]
-        axis.bar([i - width for i in x], base_values, width, label="Frozen baseline")
+        axis.bar([i - width for i in x], base_values, width, label="Baseline")
         historical = [historical_lookup.get((row["model"], row["arm"], split)) for row in selected]
-        historical_measured = [
+        reasoning_measured = [
             (i, 100 * old["accuracy"])
             for i, old in enumerate(historical)
             if old is not None and old.get("accuracy") is not None
         ]
-        if historical_measured:
-            axis.bar(
-                [item[0] for item in historical_measured],
-                [item[1] for item in historical_measured], width,
-                label="Exp13 historical SFT / continued-SFT", color="#8c6bb1",
-            )
-        current_measured = [
+        reasoning_measured.extend(
             (i + width, 100 * row["reasoning_accuracy"])
             for i, row in enumerate(selected) if row["reasoning_accuracy"] is not None
-        ]
-        if current_measured:
+        )
+        if reasoning_measured:
             axis.bar(
-                [item[0] for item in current_measured],
-                [item[1] for item in current_measured], width,
-                label=f"Experiment {experiment_number}", color="#3182bd",
+                [item[0] for item in reasoning_measured],
+                [item[1] for item in reasoning_measured], width,
+                label="Reasoning-v3", color="#3182bd",
             )
         axis.set_title(split)
         axis.set_xticks(x, [f"{r['model']}\n{r['arm']}" for r in selected], rotation=45, ha="right")
         axis.set_ylabel("Accuracy (%)")
         axis.grid(axis="y", alpha=0.25)
     axes[0].legend(fontsize=7)
-    fig.suptitle(
-        f"Experiment {experiment_number} reasoning-v3 vs frozen baseline "
-        "(Exp13 SFT history shown where available)"
-    )
+    fig.suptitle("Baseline vs Reasoning-v3 accuracy")
     figures = _save(fig, output_dir, "accuracy_comparison")
     return report, [markdown_path, json_path, csv_path, *figures, *historical_outputs]

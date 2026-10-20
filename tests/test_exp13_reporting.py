@@ -82,7 +82,7 @@ def test_exp13_report_lists_all_rows_and_marks_missing_evaluations_not_run(works
     assert len(outputs) == 5
     assert all(path.exists() for path in outputs)
     markdown = (output / "intermediate_results.md").read_text(encoding="utf-8")
-    assert markdown.startswith("# Experiment 15 reasoning-v3 comparison")
+    assert markdown.startswith("# Baseline vs reasoning-v3 comparison")
     assert "| Model | Arm | Split | Baseline accuracy (scored) | +Reasoning accuracy (scored) | Δ percentage points | Status |" in markdown
     assert markdown.split("## Provenance", 1)[0].count("| 1m |") == 9
     assert "not-run" in markdown
@@ -136,9 +136,12 @@ def test_exp15_historical_reference_includes_verified_results_and_svg(workspace_
     assert row["accuracy"] == 0.75
     assert (output / "exp13.svg").read_text(encoding="utf-8") == "<svg/>"
     assert output / "historical_reference.csv" in outputs
-    assert "Historical SFT and continued-SFT results" in (
+    assert "Additional reasoning-v3 SFT and continued-SFT results" in (
         output / "intermediate_results.md"
     ).read_text(encoding="utf-8")
+    svg = (output / "accuracy_comparison.svg").read_text(encoding="utf-8")
+    assert "Baseline" in svg and "Reasoning-v3" in svg
+    assert "Exp13" not in svg and "Experiment 15" not in svg
 
 
 def test_exp13_report_records_a_launch_blocker(workspace_tmpdir):
