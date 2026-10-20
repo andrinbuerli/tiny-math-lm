@@ -122,6 +122,7 @@ def main(config: DictConfig) -> None:
                     "training/compute_overshoot_flops": result["compute_overshoot_flops"],
                     "training/compute_matching_error": result["compute_matching_error"],
                     "training/planned_optimizer_steps": result["planned_optimizer_steps"],
+                    "training/planned_epochs": result["planned_epochs"],
                     "training/latest_checkpoint": result["latest_checkpoint"],
                 }
             )

@@ -427,7 +427,8 @@ def train_hf_sft(
                 }
                 if run is not None:
                     run.log({key: value for key, value in values.items() if value != ""}, step=step)
-                if step % eval_every == 0 or cursor == len(epoch_order):
+                target_reached = target_flops is not None and 6 * parameters * tokens_seen >= target_flops
+                if step % eval_every == 0 or cursor == len(epoch_order) or target_reached:
                     validation_loss = _evaluate_loss(
                         model,
                         validation_split,
@@ -574,6 +575,7 @@ def train_hf_sft(
         "compute_budget_flops": target_flops,
         "planned_optimizer_steps": total_updates,
         "planned_input_tokens": planned_tokens,
+        "planned_epochs": planned_epochs,
         "planned_flops": 6 * parameters * planned_tokens if planned_tokens is not None else None,
         "source_sft_checkpoint": (
             str(init_checkpoint)

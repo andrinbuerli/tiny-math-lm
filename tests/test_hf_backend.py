@@ -1,3 +1,6 @@
+import json
+from typing import ClassVar
+
 import pytest
 import torch
 from omegaconf import OmegaConf
@@ -105,6 +108,8 @@ def test_qwen_training_admission_requires_utilization_and_vram_headroom():
 
 
 class TinyCachedSplit:
+    offsets: ClassVar[tuple[int, ...]] = (0, 4, 8, 12, 16)
+
     def __init__(self, _cache_dir, split):
         self.split = split
 
@@ -216,6 +221,65 @@ def test_cpu_fixture_resumes_deterministically_from_optimizer_boundary(monkeypat
     completed = torch.load(checkpoint_dir / "latest.pt", map_location="cpu", weights_only=False)
     assert completed["step"] == 2
     assert completed["epoch"] == 1
+
+
+def test_continued_sft_stops_at_planned_compute_boundary_and_selects_final(monkeypatch, workspace_tmpdir):
+    config = OmegaConf.create(
+        {
+            "seed": 18,
+            "experiment": {"phase": "continued_sft"},
+            "model": {"revision": "revision", "context_length": 512, "gradient_checkpointing": True},
+            "trainer": {
+                "name": "continued_sft",
+                "learning_rate": 1e-3,
+                "weight_decay": 0.01,
+                "batch_size": 1,
+                "gradient_accumulation": 2,
+                "max_epochs": 1,
+                "max_steps": 2,
+                "eval_every": 500,
+                "save_every": 1,
+                "warmup_ratio": 0.03,
+                "grad_clip": 1.0,
+                "early_stopping_patience_epochs": 1,
+                "compute_budget_flops": 336,
+            },
+            "eval": {"batch_size": 1},
+        }
+    )
+    cache_dir = workspace_tmpdir / "cache"
+    cache_dir.mkdir()
+    (cache_dir / "manifest.json").write_text("{}", encoding="utf-8")
+    manifest = {
+        "tokenizer_identity": {"pad_token_id": 6},
+        "tokenizer_sha256": "tokenizer-hash",
+        "model_config_sha256": "config-hash",
+    }
+    monkeypatch.setattr(hf_sft, "_find_cache", lambda _config: (cache_dir, manifest))
+    monkeypatch.setattr(hf_sft, "HFTokenSplit", TinyCachedSplit)
+    monkeypatch.setattr(hf_sft, "load_model", lambda *_args, **_kwargs: TinyTrainModel())
+    monkeypatch.setattr(hf_sft, "load_tokenizer", lambda _config: TinyTokenizer())
+    init_checkpoint = workspace_tmpdir / "sft" / "best"
+    result = hf_sft.train_hf_sft(
+        config=config,
+        run_dir=workspace_tmpdir / "continued_sft",
+        run=None,
+        init_checkpoint=init_checkpoint,
+        device_override=torch.device("cpu"),
+    )
+    assert result["step"] == 1
+    assert result["planned_optimizer_steps"] == 1
+    assert result["additional_estimated_flops"] == 336
+    assert result["compute_matching_error"] == 0.0
+    assert result["checkpoint"] == str(workspace_tmpdir / "continued_sft" / "final")
+    latest_state = torch.load(
+        workspace_tmpdir / "continued_sft" / "latest.pt", map_location="cpu", weights_only=False
+    )
+    assert latest_state["step"] == 1
+    final_identity = json.loads(
+        (workspace_tmpdir / "continued_sft" / "final" / "experiment_identity.json").read_text()
+    )
+    assert final_identity["source_sft_checkpoint"] == str(init_checkpoint)
 
 
 class MultiTokenTokenizer:
