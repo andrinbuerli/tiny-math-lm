@@ -7,8 +7,10 @@ from tinymath.data.hf_cached_dataset import HFTokenSplit
 from tinymath.data.hf_reasoning import (
     encode_completion,
     identity_hash,
+    parse_native_reasoning,
     render_completion,
     render_prompt,
+    score_native_reasoning,
     select_parent_rows,
     select_training_rows,
 )
@@ -85,6 +87,50 @@ def test_identity_hash_ignores_input_order_but_tracks_module_question_target():
     second = _row(question="Calculate 2 + 2.")
     assert identity_hash([first, second]) == identity_hash([second, first])
     assert identity_hash([first])[0] != identity_hash([second])[0]
+
+
+def test_native_text_scoring_reuses_reasoning_v3_verifier_and_executor_policy():
+    simple = {"question": "Calculate 1 + 2.", "answer": "3", "scratchpad": "step:+(1,2)\n=>3"}
+    text = render_completion(simple["scratchpad"], simple["answer"])
+    assert parse_native_reasoning(text) == (simple["scratchpad"], "3")
+    score = score_native_reasoning(text, simple)
+    assert score.reward == 1.0
+    assert score.full_success and score.format_valid and score.trace_valid
+
+    compound = {
+        "question": "Calculate (1+2)+0.",
+        "answer": "3",
+        "scratchpad": (
+            "step:evaluate arithmetic operations in expression order\n"
+            "call:add(1,2) -> 3\nstep:+(3,0)"
+        ),
+    }
+    called = score_native_reasoning(
+        render_completion(compound["scratchpad"], compound["answer"]), compound
+    )
+    assert called.reward == 1.0
+    assert called.call_count == called.correct_calls == 1
+
+    atomic = {"question": "Calculate 1 + 2.", "answer": "3"}
+    disallowed = score_native_reasoning(
+        render_completion("step:+(1,2)\ncall:add(1,2) -> 3", "3"), atomic
+    )
+    assert disallowed.reward == 0.0
+    assert not disallowed.call_policy_valid
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "<think>\nstep:+(1,2)\nA: 3",
+        "<think>\nstep:+(1,2)\n</think>\nA: 3\n",
+        "<think>\nstep:+(1,2)\n</think>\nA: prose 3",
+        "<think>\nstep:+(1,2)\n</think>\nA: 3\n</think>",
+    ],
+)
+def test_native_parser_fails_closed_on_ambiguous_or_malformed_completion(text):
+    with pytest.raises(ValueError):
+        parse_native_reasoning(text)
 
 
 def test_binary_cache_streams_parents_and_only_eligible_standalone_rows(tmp_path):

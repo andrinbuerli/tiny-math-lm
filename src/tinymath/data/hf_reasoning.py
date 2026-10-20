@@ -5,14 +5,116 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from tinymath.data.load import SELECTED_MODULES
+from tinymath.data.reasoning import task_allows_calls
+from tinymath.data.trace_explanations import transcribe_scratchpad
+from tinymath.rewards.calls import CallError, validate_call
+from tinymath.rewards.verify import parse_answer, verify_answer
 
 PROMPT_FORMAT = "Q: {question}\n"
 COMPLETION_FORMAT = "<think>\n{scratchpad}\n</think>\nA: {answer}"
 FORMAT_VERSION = "exp16-qwen3-reasoning-v1"
+
+
+@dataclass(frozen=True)
+class NativeReasoningScore:
+    reward: float = 0.0
+    format_valid: bool = False
+    trace_valid: bool = False
+    answer_correct: bool = False
+    full_success: bool = False
+    scratchpad: str = ""
+    answer: str = ""
+    reference_match: bool = False
+    call_count: int = 0
+    correct_calls: int = 0
+    format_reward: float = 0.0
+    success_reward: float = 0.0
+    call_policy_valid: bool = True
+
+
+def parse_native_reasoning(text: str) -> tuple[str, str]:
+    """Parse the complete native-tokenizer reasoning rendering, without token assumptions."""
+    separator = "\n</think>\nA: "
+    if (
+        not text.startswith("<think>\n")
+        or text.count("<think>") != 1
+        or text.count("</think>") != 1
+        or text.count(separator) != 1
+    ):
+        raise ValueError("Completion must contain one complete native thinking block")
+    prefix, _separator, answer = text.partition(separator)
+    scratchpad = prefix[len("<think>\n") :]
+    if (
+        not scratchpad.strip()
+        or not answer
+        or answer != answer.strip()
+        or "\n" in answer
+        or "\r" in answer
+    ):
+        raise ValueError("Completion has an empty scratchpad or invalid answer line")
+    parse_answer(answer)
+    return scratchpad, answer
+
+
+def score_native_reasoning(
+    text: str,
+    row: dict[str, Any],
+    *,
+    capped: bool = False,
+    failure: str | None = None,
+    format_weight: float = 0.1,
+    success_weight: float = 0.9,
+    max_calls: int = 32,
+    max_scalar_chars: int = 128,
+) -> NativeReasoningScore:
+    """Score decoded native-token text using the existing reasoning-v3 verifier."""
+    if capped or failure:
+        return NativeReasoningScore(call_policy_valid=failure != "disallowed_call")
+    try:
+        scratchpad, answer = parse_native_reasoning(text)
+    except ValueError:
+        return NativeReasoningScore()
+    calls = [line for line in scratchpad.splitlines() if line.lstrip().startswith("call:")]
+    correct_calls = 0
+    policy_valid = not calls or task_allows_calls(row)
+    for line in calls:
+        try:
+            validate_call(line, max_scalar_chars=max_scalar_chars)
+            correct_calls += 1
+        except CallError:
+            pass
+    try:
+        trace_valid = bool(transcribe_scratchpad(scratchpad, version="reasoning_v3"))
+    except ValueError:
+        trace_valid = False
+    trace_valid = trace_valid and correct_calls == len(calls) and len(calls) <= max_calls
+    trace_valid = trace_valid and policy_valid
+    answer_correct, answer_valid = verify_answer(
+        answer, row["answer"], question=row["question"]
+    )
+    full_success = trace_valid and answer_correct and answer_valid
+    format_reward = format_weight if policy_valid else 0.0
+    success_reward = success_weight if full_success else 0.0
+    return NativeReasoningScore(
+        reward=round(format_reward + success_reward, 12),
+        format_valid=True,
+        trace_valid=trace_valid,
+        answer_correct=answer_correct and answer_valid,
+        full_success=full_success,
+        scratchpad=scratchpad,
+        answer=answer,
+        reference_match=scratchpad == row.get("scratchpad"),
+        call_count=len(calls),
+        correct_calls=correct_calls,
+        format_reward=format_reward,
+        success_reward=success_reward,
+        call_policy_valid=policy_valid,
+    )
 
 
 def sha256_file(path: str | Path) -> str:

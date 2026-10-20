@@ -54,6 +54,7 @@ rlvr:
   reward_format_weight: 0.1
   reward_success_weight: 0.9
   rollout_chunk_size: 1
+  save_every: 500
 
 eval:
   splits: [test, number_length_ood, expression_length_ood]

@@ -12,10 +12,12 @@ from omegaconf import DictConfig
 
 from tinymath.config import workspace_path
 from tinymath.data.load import SELECTED_MODULES
+from tinymath.runtime_gpu import wait_for_gpu_capacity
 from tinymath.tracking.provenance import read_wandb_run_id
 from tinymath.tracking.wandb import finish_wandb, initialize_tracked_run
 from tinymath.train.budgets import isolated_training_run_dir
 from tinymath.train.grpo_runner import train_grpo
+from tinymath.train.hf_grpo_runner import train_hf_grpo
 
 LOGGER = logging.getLogger(__name__)
 
@@ -39,6 +41,54 @@ def _bundle_dir(config: DictConfig, revision: str | None = None) -> Path:
 def main(config: DictConfig) -> None:
     if set(config.data.modules) != set(SELECTED_MODULES):
         raise ValueError(f"The experiment is restricted to exactly these modules: {SELECTED_MODULES}")
+    if str(config.model.get("backend", "tinymath")) == "huggingface":
+        init_checkpoint = workspace_path(str(config.init_checkpoint)) if config.init_checkpoint else None
+        if init_checkpoint is not None and not init_checkpoint.is_dir():
+            raise FileNotFoundError(f"Hugging Face SFT checkpoint directory not found: {init_checkpoint}")
+        if init_checkpoint is None and str(config.experiment.phase) not in {"pilot", "smoke"}:
+            raise ValueError("Main Experiment 16 GRPO requires the selected SFT checkpoint")
+        bundle_dir = _bundle_dir(config)
+        wait_for_gpu_capacity(config, str(config.model.name))
+        run_dir = workspace_path(
+            "runs", str(config.experiment.name), str(config.model.name), "grpo",
+            str(config.experiment.phase), f"seed{int(config.seed)}",
+        )
+        run = initialize_tracked_run(
+            config,
+            run_dir,
+            job_type="grpo",
+            job_metadata={"phase": str(config.experiment.phase), "training_arm": "grpo"},
+        )
+        try:
+            result = train_hf_grpo(
+                config=config,
+                bundle_dir=bundle_dir,
+                init_checkpoint=init_checkpoint,
+                run_dir=run_dir,
+                run=run,
+            )
+            run.summary.update(
+                {
+                    "grpo/updates": result["update"],
+                    "grpo/prompt_examples": result["prompt_examples"],
+                    "grpo/tokens_seen": result["tokens_seen"],
+                    "grpo/policy_tokens": result["policy_tokens"],
+                    "grpo/executor_tokens": result["executor_tokens"],
+                    "grpo/estimated_flops": result["estimated_flops"],
+                    "grpo/final_reward": result["final_reward"],
+                    "grpo/final_loss": result["final_loss"],
+                    "grpo/wall_seconds": result["wall_seconds"],
+                    "grpo/tokens_per_second": result["tokens_per_second"],
+                    "grpo/peak_gpu_memory_bytes": result["peak_gpu_memory_bytes"],
+                    "grpo/checkpoint": result["checkpoint"],
+                    "grpo/checkpoint_sha256": result["checkpoint_sha256"],
+                    "grpo/latest_checkpoint": result["latest_checkpoint"],
+                }
+            )
+            LOGGER.info("Hugging Face GRPO finished: %s", result)
+        finally:
+            finish_wandb(run, exit_code=1 if sys.exc_info()[0] else 0)
+        return
     if not config.init_checkpoint:
         raise ValueError("Set init_checkpoint to the corresponding SFT checkpoint")
     init_checkpoint = workspace_path(str(config.init_checkpoint))
