@@ -14,7 +14,7 @@ Finish Experiment 15 by completing the existing 10M GRPO run, then running the 1
 - Evaluation splits: `test`, `number_length_ood`, `expression_length_ood`
 - 10M GRPO completed at update 10,000. Its final checkpoint is `runs/exp15_reasoning_v3_arithmetic_subtasks/10m/grpo/seed18/latest.pt`; existing W&B ID `c7a774b40fc8501c` is online, finished, and synced. The coordinator validated this result before proceeding.
 - 1M GRPO is complete at step 10,000. Preserve its existing checkpoint and report entries.
-- 100M GRPO is active in trainer PID 199566 (uv parent PID 199563) under new online W&B ID `43cede28d1b251d5`. At the last inspection (2026-10-20 15:23 UTC), metrics had reached update 130; the configured checkpoint cadence is every 500 updates, so no GRPO checkpoint had been written yet. Its coordinator (PID 178398) and finalizer (PID 192695) are alive. Do not restart these processes or launch a duplicate trainer. The coordinator admitted the run after verifying the Experiment 14 100M SFT `best.pt` referenced by the Experiment 15 preset, including its hash, 100,000-step provenance, data bundle, and tokenizer.
+- 100M GRPO is active in trainer PID 199566 (uv parent PID 199563) under new online W&B ID `43cede28d1b251d5`. At the last inspection (2026-10-20 16:01 UTC), metrics had reached update 503 and the durable `latest.pt` checkpoint at update 500 was verified with optimizer state, sampler v2 plus left padding, and the Experiment 14 100M SFT source path. Its coordinator (PID 178398) and finalizer (PID 192695) are alive. Do not restart these processes or launch a duplicate trainer. The coordinator admitted the run after verifying the SFT source checkpoint hash, 100,000-step provenance, data bundle, and tokenizer.
 
 ## Execution and reporting
 
