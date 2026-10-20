@@ -1,0 +1,37 @@
+# Reasoning v4 annotation: explicit arithmetic in linear-equation collection.
+name: exp16_reasoning_v4_explicit_linear_collect
+source_bundle: ${oc.env:WORKSPACE_ROOT,/workspace}/data/processed/d9f78d0665b3-main-seed18
+output_bundle: ${oc.env:WORKSPACE_ROOT,/workspace}/data/processed/exp16_reasoning_v4_explicit_linear_collect-seed18
+max_tokens: 512
+workers: 8
+seed: 18
+protocol: reasoning_v4
+experiment:
+  number: 16
+  name: exp16_reasoning_v4_explicit_linear_collect
+  title: "Experiment 16 — Explicit arithmetic in linear-equation collection"
+  phase: data-annotation
+  protocol: reasoning_v4
+  seed: 18
+  data_budget: 500000
+  annotation_rows: 550000
+  context_length: 512
+model:
+  name: annotation
+  context_length: 512
+tracking:
+  project: tinymath-rl
+  entity: ${oc.env:WANDB_ENTITY,andi-mueller-csem-sa}
+  group: exp16-reasoning-v4-explicit-linear-collect-seed18
+  name: exp16-reasoning-v4-explicit-linear-collect-data-annotation-seed18
+  mode: online
+  tags: [exp16_reasoning_v4, data-annotation, explicit-linear-collect]
+  resume: true
+runtime:
+  wandb_service_gomaxprocs: 2
+hydra:
+  run:
+    dir: ${oc.env:WORKSPACE_ROOT,/workspace}/outputs/${name}/annotation/seed${seed}
+  job:
+    chdir: false
+  output_subdir: hydra

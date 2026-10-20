@@ -248,7 +248,11 @@ def main(config: DictConfig) -> None:
         derived["token_counts_by_module_training_pools"] = dict(sorted(training_pool_counts.items()))
         derived["token_length_distribution_training_pools"] = distribution(training_pool_lengths)
         derived["tokenizer"] = {
-            "version": 3 if str(config.protocol) == "reasoning_v2" else 2,
+            "version": (
+                5 if str(config.protocol) == "reasoning_v4"
+                else 3 if str(config.protocol) == "reasoning_v2"
+                else 2
+            ),
             "protocol": str(config.protocol),
             "strict_single_unicode_codepoint": True,
             "special_tokens": list(tokenizer.special_tokens),

@@ -22,6 +22,8 @@ checked during annotation verification. V3 traces and their behavior remain
 unchanged. Other v3 reasoning traces retain their existing rendering in v4.
 
 The annotation API selects this trace format with
-`annotate_row(row, protocol="reasoning_v4")`. V4 uses the existing character
+`annotate_row(row, protocol="reasoning_v4")`. The separate annotation preset is
+`uv run python scripts/annotate_reasoning.py --config-name reasoning_v4`.
+It writes the v4 bundle to its own output path. V4 uses the existing character
 completion framing, tokenizer, call executor, scorer, and explanation
 transcriber interfaces.
