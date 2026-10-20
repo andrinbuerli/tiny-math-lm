@@ -11,7 +11,6 @@ from typing import Any
 
 import torch
 
-from tinymath.generation import RolloutConfig
 from tinymath.checkpoint import (
     capture_rng_state,
     compatibility_metadata,
@@ -23,6 +22,7 @@ from tinymath.checkpoint import (
 from tinymath.data.char_tokenizer import CharacterTokenizer
 from tinymath.data.prompts import format_completion, format_prompt
 from tinymath.eval.qualitative import build_qualitative_table
+from tinymath.generation import RolloutConfig
 from tinymath.model.gpt import GPTConfig, TinyMathGPT
 from tinymath.train.budgets import budget_rows
 from tinymath.train.metrics import elapsed_seconds_through_step, truncate_csv_after_step
@@ -48,7 +48,7 @@ def _examples(rows: list[dict[str, str]], *, protocol: str = "answer_only") -> l
             "prompt": format_prompt(row["question"], protocol=protocol),
             "completion": format_completion(row["answer"]),
             **({"scratchpad": row["scratchpad"]} if protocol in {
-                "reasoning_v1", "reasoning_v2", "reasoning_v3"
+                "reasoning_v1", "reasoning_v2", "reasoning_v3", "reasoning_v4"
             } else {}),
             "module": row["module"],
         }

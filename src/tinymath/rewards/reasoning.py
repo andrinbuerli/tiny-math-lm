@@ -38,8 +38,8 @@ def score_v3(
     format_weight: float = 0.1, success_weight: float = 0.9,
     max_calls: int = 32, max_scalar_chars: int = 128,
 ) -> V3Score:
-    if tokenizer.protocol != "reasoning_v3":
-        raise ValueError("V3 scoring requires a reasoning_v3 tokenizer")
+    if tokenizer.protocol not in {"reasoning_v3", "reasoning_v4"}:
+        raise ValueError("Call-based scoring requires a reasoning_v3 or reasoning_v4 tokenizer")
     if capped or failure:
         return V3Score(call_policy_valid=failure != "disallowed_call")
     try:
@@ -57,7 +57,7 @@ def score_v3(
         except CallError:
             pass
     try:
-        trace_valid = bool(transcribe_scratchpad(parsed.scratchpad, version="reasoning_v3"))
+        trace_valid = bool(transcribe_scratchpad(parsed.scratchpad, version=tokenizer.protocol))
     except ValueError:
         trace_valid = False
     trace_valid = trace_valid and correct_calls == len(calls) and len(calls) <= max_calls

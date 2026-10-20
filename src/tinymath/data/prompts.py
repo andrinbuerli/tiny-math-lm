@@ -7,7 +7,7 @@ ANSWER_PREFIX = "\nA: "
 def format_prompt(question: str, *, protocol: str = "answer_only") -> str:
     if protocol == "answer_only":
         return f"{QUESTION_PREFIX}{question}{ANSWER_PREFIX}"
-    if protocol in {"reasoning_v1", "reasoning_v2", "reasoning_v3"}:
+    if protocol in {"reasoning_v1", "reasoning_v2", "reasoning_v3", "reasoning_v4"}:
         return f"{QUESTION_PREFIX}{question}\n"
     raise ValueError(f"Unsupported completion protocol: {protocol}")
 

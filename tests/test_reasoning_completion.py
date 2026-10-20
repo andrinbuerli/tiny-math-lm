@@ -80,3 +80,21 @@ def test_reasoning_v3_encodes_markers_as_characters_and_parses_visible_call_resu
     assert restored.protocol == "reasoning_v3"
     assert restored.special_tokens == ("<PAD>", "<BOS>", "<EOS>", "<UNK>")
     assert restored.sha256 == tokenizer.sha256
+
+
+def test_reasoning_v4_completion_round_trip(workspace_tmpdir):
+    trace = "step:collect:2x+(3)=0x+(9)\ncall:subtract(2,0) -> 2"
+    tokenizer = CharacterTokenizer.from_texts(
+        [trace, "<scp>\n</scp>\nA: 3", "Q: Solve 2*x + 3 = 9 for x."],
+        protocol="reasoning_v4",
+    )
+    parsed = parse_reasoning_completion(
+        tokenizer.encode_completion("3", scratchpad=trace), tokenizer
+    )
+    assert parsed.scratchpad == trace
+    assert parsed.answer == "3"
+    path = workspace_tmpdir / "reasoning-v4-tokenizer.json"
+    tokenizer.save(path)
+    restored = CharacterTokenizer.load(path)
+    assert restored.protocol == "reasoning_v4"
+    assert restored.sha256 == tokenizer.sha256

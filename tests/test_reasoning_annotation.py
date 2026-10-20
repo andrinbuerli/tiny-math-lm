@@ -345,6 +345,24 @@ def test_reasoning_v3_algebra_delegates_final_division_and_verifier_rejects_edit
         verify_annotation(source, corrupted)
 
 
+def test_reasoning_v4_algebra_collects_with_explicit_arithmetic_calls():
+    source = row("Solve -21*o + 32 + 120 = -37 for o.", "9", "algebra__linear_1d")
+    annotation = annotate_row(source, protocol="reasoning_v4")
+    trace = str(annotation["scratchpad"])
+    assert annotation["trace_version"] == "reasoning_v4"
+    assert "call:add(32,120) -> 152" in trace
+    assert "step:collect:-21o+(152)=0o+(-37)" in trace
+    assert "call:subtract(-21,0) -> -21" in trace
+    assert "call:subtract(-37,152) -> -189" in trace
+    assert "move:-21o=-189" in trace
+    assert "call:divide(-189,-21) -> 9" in trace
+    verify_annotation(source, annotation)
+
+    corrupted = dict(annotation, scratchpad=trace.replace("call:subtract(-21,0) -> -21\n", ""))
+    with pytest.raises(ValueError, match="reasoning_v4 calls"):
+        verify_annotation(source, corrupted)
+
+
 def test_subtask_generator_rejects_a_forged_whole_task_call():
     source = row("Calculate 25 + 32.", "57", "arithmetic__add_or_sub")
     forged = {"trace_version": "reasoning_v3", "scratchpad": "step:x\ncall:add(25,32) -> 57"}

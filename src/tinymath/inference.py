@@ -406,8 +406,8 @@ def stream_inference_events(
     if unsupported:
         rendered = ", ".join(f"{char!r} (U+{ord(char):04X})" for char in unsupported)
         raise ValueError(f"Question contains characters outside this checkpoint tokenizer: {rendered}")
-    if tokenizer.protocol != "reasoning_v3":
-        raise ValueError("Interactive tool streaming currently requires a reasoning_v3 checkpoint")
+    if tokenizer.protocol not in {"reasoning_v3", "reasoning_v4"}:
+        raise ValueError("Interactive tool streaming requires a reasoning_v3 or reasoning_v4 checkpoint")
     events: queue.Queue = queue.Queue()
 
     def worker() -> None:

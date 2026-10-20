@@ -162,8 +162,8 @@ def generate_rollouts(
         raise ValueError("prompts must be nonempty [batch, unpadded_sequence]")
     if group_size < 1 or max_completion_tokens < 1 or temperature < 0:
         raise ValueError("Invalid group size, completion cap, or temperature")
-    if config.executor == "exact" and (tokenizer is None or tokenizer.protocol != "reasoning_v3"):
-        raise ValueError("Exact call execution requires a reasoning_v3 tokenizer")
+    if config.executor == "exact" and (tokenizer is None or tokenizer.protocol not in {"reasoning_v3", "reasoning_v4"}):
+        raise ValueError("Exact call execution requires a reasoning_v3 or reasoning_v4 tokenizer")
     batch, prompt_length = prompt_ids.shape
     if prompt_mask is None:
         prompt_lengths = [prompt_length] * batch
@@ -210,12 +210,12 @@ def generate_rollouts(
     policies = []
     for index in range(batch):
         allowed = False
-        if tokenizer is not None and tokenizer.protocol == "reasoning_v3":
+        if tokenizer is not None and tokenizer.protocol in {"reasoning_v3", "reasoning_v4"}:
             text = tokenizer.decode(prompt_ids[index].tolist())
             row = task_rows[index] if task_rows is not None else {
                 "question": text[3:-1] if text.startswith("Q: ") and text.endswith("\n") else "",
             }
-            if task_rows is not None and text != format_prompt(row["question"], protocol="reasoning_v3"):
+            if task_rows is not None and text != format_prompt(row["question"], protocol=tokenizer.protocol):
                 raise ValueError("Task metadata does not match the generation prompt")
             allowed = task_allows_calls(row)
         policies.extend([allowed] * group_size)
@@ -293,7 +293,7 @@ def generate_rollouts(
                 if token_id == eos_id:
                     ended_lanes.append(lane)
                     reasons[lane] = "eos"
-                elif tokenizer is not None and tokenizer.protocol == "reasoning_v3":
+                elif tokenizer is not None and tokenizer.protocol in {"reasoning_v3", "reasoning_v4"}:
                     try:
                         states[lane].observe(
                             tokenizer.decode([token_id]), tokenizer, config,

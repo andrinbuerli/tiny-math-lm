@@ -235,8 +235,8 @@ def evaluate_checkpoint(
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     training_arm, source_sft_checkpoint = _checkpoint_provenance(checkpoint_path, checkpoint)
     tokenizer = CharacterTokenizer.load(bundle_dir / "char_tokenizer.json")
-    if rollout_config.executor == "exact" and tokenizer.protocol != "reasoning_v3":
-        raise ValueError("Exact execution requires reasoning_v3")
+    if rollout_config.executor == "exact" and tokenizer.protocol not in {"reasoning_v3", "reasoning_v4"}:
+        raise ValueError("Exact execution requires reasoning_v3 or reasoning_v4")
     model_config = GPTConfig.from_mapping(checkpoint["model_config"])
     manifest_path = bundle_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
@@ -288,7 +288,7 @@ def evaluate_checkpoint(
             "max_new_tokens": max_new_tokens,
         },
     }
-    if tokenizer.protocol == "reasoning_v3":
+    if tokenizer.protocol in {"reasoning_v3", "reasoning_v4"}:
         identity["rollout"] = rollout_config.identity()
         identity["population"] = "parents_only"
         identity["decoding"]["batch_size"] = batch_size
@@ -298,7 +298,7 @@ def evaluate_checkpoint(
         if progress.get("identity") != identity:
             raise ValueError("Existing evaluation progress belongs to a different checkpoint, split, or protocol")
         scored: dict[str, list[dict[str, Any]]] = progress.get("scored", {})
-        if tokenizer.protocol == "reasoning_v3" and "torch_rng_state" in progress:
+        if tokenizer.protocol in {"reasoning_v3", "reasoning_v4"} and "torch_rng_state" in progress:
             torch.set_rng_state(torch.tensor(progress["torch_rng_state"], dtype=torch.uint8))
             if device.type == "cuda" and "cuda_rng_states" in progress:
                 torch.cuda.set_rng_state_all([torch.tensor(state, dtype=torch.uint8) for state in progress["cuda_rng_states"]])
@@ -330,7 +330,7 @@ def evaluate_checkpoint(
         },
     }
 
-    if tokenizer.protocol == "reasoning_v3":
+    if tokenizer.protocol in {"reasoning_v3", "reasoning_v4"}:
         summary_base["rollout"] = rollout_config.identity()
         summary_base["assisted"] = rollout_config.executor == "exact"
         summary_base["population"] = "parents_only"
@@ -346,7 +346,7 @@ def evaluate_checkpoint(
             "scored": scored,
             "splits": partial_splits,
         }
-        if tokenizer.protocol == "reasoning_v3":
+        if tokenizer.protocol in {"reasoning_v3", "reasoning_v4"}:
             payload["torch_rng_state"] = torch.get_rng_state().tolist()
             if device.type == "cuda":
                 payload["cuda_rng_states"] = [state.tolist() for state in torch.cuda.get_rng_state_all()]
@@ -390,7 +390,7 @@ def evaluate_checkpoint(
                 )
                 with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_bf16):
                     v3_rollouts = None
-                    if tokenizer.protocol == "reasoning_v3":
+                    if tokenizer.protocol in {"reasoning_v3", "reasoning_v4"}:
                         v3_rollouts = generate_rollouts(
                             model, prompts, max_completion_tokens=generation_cap,
                             temperature=0.0 if greedy else temperature,
@@ -417,7 +417,7 @@ def evaluate_checkpoint(
                     scratchpad = ""
                     trace_structure_valid: bool | None = None
                     trace_reference_exact_match: bool | None = None
-                    if tokenizer.protocol == "reasoning_v3":
+                    if tokenizer.protocol in {"reasoning_v3", "reasoning_v4"}:
                         reason = v3_rollouts.termination_reasons[batch_index]
                         capped = reason == "budget_exceeded"
                         score = score_v3(

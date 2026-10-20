@@ -609,11 +609,15 @@ class Linear:
 
 
 class _LinearParser(_ExpressionParser):
-    def __init__(self, text: str, variable: str, builder: _Builder) -> None:
+    def __init__(
+        self, text: str, variable: str, builder: _Builder,
+        arithmetic_calls: list[ArithmeticCall] | None = None,
+    ) -> None:
         tokens = re.findall(r"\d+(?:\.\d*)?|\.\d+|[a-z]|[()+*/-]", text)
         if "".join(tokens) != re.sub(r"\s+", "", text):
             raise ValueError("Unsupported linear expression syntax")
         self.tokens, self.i, self.builder, self.variable = tokens, 0, builder, variable
+        self.arithmetic_calls = arithmetic_calls
 
     def parse_linear(self) -> Linear:
         value = self._linear_sum()
@@ -626,6 +630,16 @@ class _LinearParser(_ExpressionParser):
         while self.i < len(self.tokens) and self.tokens[self.i] in ("+", "-"):
             op = self.tokens[self.i]; self.i += 1
             right = self._linear_product()
+            if self.arithmetic_calls is not None:
+                operation = "add" if op == "+" else "subtract"
+                for left_value, right_value in (
+                    (left.coefficient, right.coefficient), (left.constant, right.constant)
+                ):
+                    if left_value and right_value:
+                        result = left_value + right_value if op == "+" else left_value - right_value
+                        self.arithmetic_calls.append(
+                            ArithmeticCall(operation, left_value, right_value, result, op)
+                        )
             left = left + right if op == "+" else left - right
         return left
 
@@ -668,12 +682,16 @@ class _LinearParser(_ExpressionParser):
         return Linear(Fraction(0), _fraction(token))
 
 
-def _linear_trace(question: str, answer: str) -> tuple[str, list[Operation], Fraction]:
+def _linear_trace(
+    question: str, answer: str, *, record_arithmetic: bool = False
+) -> tuple[str, list[Operation], Fraction, list[ArithmeticCall]]:
     equation, variable = _source_expression(question, "algebra__linear_1d")
     lhs_text, rhs_text = equation.split("=", 1)
     builder = _Builder()
-    lhs = _LinearParser(lhs_text, variable, builder).parse_linear()
-    rhs = _LinearParser(rhs_text, variable, builder).parse_linear()
+    arithmetic_calls: list[ArithmeticCall] = []
+    call_sink = arithmetic_calls if record_arithmetic else None
+    lhs = _LinearParser(lhs_text, variable, builder, call_sink).parse_linear()
+    rhs = _LinearParser(rhs_text, variable, builder, call_sink).parse_linear()
     coeff, const = lhs.coefficient - rhs.coefficient, rhs.constant - lhs.constant
     if coeff == 0:
         raise ValueError("Equation does not determine a unique solution")
@@ -691,7 +709,10 @@ def _linear_trace(question: str, answer: str) -> tuple[str, list[Operation], Fra
     # collapsed before them, while this final verification stays visible.
     builder.op("algebra", "\n".join(lines), f"solve({equation})={variable}:{_scalar(result)}",
                essential=True)
-    return "\n".join(f"t{index}={op.detailed}" for index, op in enumerate(builder.operations)), builder.operations, result
+    return (
+        "\n".join(f"t{index}={op.detailed}" for index, op in enumerate(builder.operations)),
+        builder.operations, result, arithmetic_calls,
+    )
 
 
 def render_operations(operations: list[Operation]) -> str:
@@ -773,9 +794,9 @@ def annotate_row(
     protocol: str = "reasoning_v1",
 ) -> dict[str, str | int | dict[str, int]]:
     """Verify and annotate a source row without mutating it."""
-    if protocol not in {"reasoning_v1", "reasoning_v2", "reasoning_v3"}:
+    if protocol not in {"reasoning_v1", "reasoning_v2", "reasoning_v3", "reasoning_v4"}:
         raise ValueError(f"Unsupported trace protocol: {protocol}")
-    if protocol == "reasoning_v3" and length_fn is default_sequence_length:
+    if protocol in {"reasoning_v3", "reasoning_v4"} and length_fn is default_sequence_length:
         # V3 spells both delimiters as ordinary characters (11 tokens),
         # whereas the legacy default counts two reserved delimiter IDs.
         length_fn = lambda source, trace: default_sequence_length(source, trace) + 9
@@ -787,7 +808,9 @@ def annotate_row(
     atomic_call = _atomic_subtask_call(row)
     arithmetic_calls: list[ArithmeticCall] = []
     if module == "algebra__linear_1d":
-        _, operations, value = _linear_trace(row["question"], answer)
+        _, operations, value, arithmetic_calls = _linear_trace(
+            row["question"], answer, record_arithmetic=protocol == "reasoning_v4"
+        )
         if value != expected:
             raise ValueError("Linear result verification failed")
     else:
@@ -800,7 +823,7 @@ def annotate_row(
             expression, _ = _source_expression(row["question"], module)
             # Word templates normalize to operators; signed numbers remain exact.
             expression = re.sub(r"(?<=\d)\s+(?=[+-]?\d)", " ", expression)
-            literal_call = _atomic_expression_call(expression) if protocol == "reasoning_v3" else None
+            literal_call = _atomic_expression_call(expression) if protocol in {"reasoning_v3", "reasoning_v4"} else None
             trace = (builder.arithmetic(literal_call.symbol, literal_call.left, literal_call.right)
                      if literal_call else _ExpressionParser(expression, builder).parse())
         arithmetic_calls = list(builder.calls)
@@ -824,8 +847,10 @@ def annotate_row(
         full_text = _forward_trace(full_text, operations, value)
     elif protocol == "reasoning_v3":
         full_text = _reasoning_v3_trace(row, operations, arithmetic_calls, value)
+    elif protocol == "reasoning_v4":
+        full_text = _reasoning_v4_trace(row, operations, arithmetic_calls, value)
     full_length = length_fn(row, full_text)
-    if protocol == "reasoning_v3":
+    if protocol in {"reasoning_v3", "reasoning_v4"}:
         scratch, collapsed, retained_length = full_text, {}, full_length
     else:
         scratch, collapsed, retained_length = reduce_to_budget(
@@ -878,6 +903,24 @@ def annotate_row(
             chosen.collapsed_now = True
             collapsed[chosen.category] = collapsed.get(chosen.category, 0) + 1
             retained_length = length_fn(row, scratch)
+    elif protocol == "reasoning_v4":
+        while retained_length > max_tokens:
+            candidates = []
+            for op in operations:
+                if op.collapsed_now or op.essential:
+                    continue
+                op.collapsed_now = True
+                candidate = _reasoning_v4_trace(row, operations, arithmetic_calls, value)
+                saving = retained_length - length_fn(row, candidate)
+                op.collapsed_now = False
+                if saving > 0:
+                    candidates.append((saving, -op.order, op, candidate))
+            if not candidates:
+                raise ValueError(f"reasoning_v4 derivation exceeds {max_tokens} tokens: {retained_length}")
+            _, _, chosen, scratch = max(candidates, key=lambda item: (item[0], item[1]))
+            chosen.collapsed_now = True
+            collapsed[chosen.category] = collapsed.get(chosen.category, 0) + 1
+            retained_length = length_fn(row, scratch)
     if _fraction(answer) != value:
         raise AssertionError("Final scalar changed during annotation")
     annotated = dict(row)
@@ -891,12 +934,12 @@ def annotate_row(
         "collapsed_categories": collapsed,
         "collapsed_count": sum(collapsed.values()),
     })
-    if protocol in {"reasoning_v2", "reasoning_v3"}:
+    if protocol in {"reasoning_v2", "reasoning_v3", "reasoning_v4"}:
         annotated["trace_version"] = protocol
-    if protocol == "reasoning_v3":
+    if protocol in {"reasoning_v3", "reasoning_v4"}:
         annotated["delegation_policy"] = DELEGATION_POLICY
         annotated["tool_calls_allowed"] = task_allows_calls(row)
-    if protocol == "reasoning_v3" or (protocol == "reasoning_v2" and max_tokens != 512):
+    if protocol in {"reasoning_v3", "reasoning_v4"} or (protocol == "reasoning_v2" and max_tokens != 512):
         annotated["annotation_max_tokens"] = max_tokens
     return annotated
 
@@ -1215,6 +1258,48 @@ def _reasoning_v3_trace(
     return "\n".join(output)
 
 
+def _reasoning_v4_trace(
+    row: dict[str, str], operations: list[Operation], calls: list[ArithmeticCall], value: Fraction
+) -> str:
+    """Render v3 traces, spelling out both arithmetic operations in algebra collection."""
+    trace = _reasoning_v3_trace(row, operations, calls, value)
+    if row.get("module") != "algebra__linear_1d":
+        return trace
+
+    lines = trace.splitlines()
+    collect_index = next(
+        (index for index, line in enumerate(lines) if line.startswith("step:collect:")), None
+    )
+    move_index = next(
+        (index for index, line in enumerate(lines)
+         if line.startswith(("step:move:", "move:"))), None
+    )
+    if collect_index is None or move_index is None or move_index <= collect_index:
+        raise ValueError("Linear reasoning_v4 trace is missing collect or move")
+    equation = lines[collect_index].removeprefix("step:collect:")
+    match = re.fullmatch(
+        r"([+-]?(?:\d+/\d+|\d+))([a-z])\+\(([+-]?(?:\d+/\d+|\d+))\)="
+        r"([+-]?(?:\d+/\d+|\d+))\2\+\(([+-]?(?:\d+/\d+|\d+))\)",
+        equation,
+    )
+    if match is None:
+        raise ValueError("Linear reasoning_v4 collect equation has unsupported terms")
+    lhs_coefficient, _variable, lhs_constant, rhs_coefficient, rhs_constant = match.groups()
+    coefficient = _fraction(lhs_coefficient) - _fraction(rhs_coefficient)
+    constant = _fraction(rhs_constant) - _fraction(lhs_constant)
+    collection_calls = [
+        ArithmeticCall("subtract", _fraction(lhs_coefficient), _fraction(rhs_coefficient),
+                       coefficient, "-"),
+        ArithmeticCall("subtract", _fraction(rhs_constant), _fraction(lhs_constant),
+                       constant, "-"),
+    ]
+    lines[collect_index:collect_index] = [call.render() for call in calls]
+    collect_index += len(calls)
+    move_index += len(calls)
+    lines[collect_index + 1:move_index] = [call.render() for call in collection_calls]
+    return "\n".join(lines)
+
+
 def _verify_decimal_scale(a: Fraction, b: Fraction, result: Fraction, rows: list[str]) -> list[str]:
     scale = max(_scale(a), _scale(b))
     scale_lines = [line for line in rows if line.startswith("scale:")]
@@ -1324,15 +1409,16 @@ def verify_annotation(
         if isinstance(annotation, dict)
         else annotation
     )
-    if isinstance(annotation, dict) and annotation.get("trace_version") == "reasoning_v3":
+    if isinstance(annotation, dict) and annotation.get("trace_version") in {"reasoning_v3", "reasoning_v4"}:
+        protocol = str(annotation["trace_version"])
         expected = annotate_row(
             row,
             max_tokens=int(annotation.get("annotation_max_tokens", 512)),
             length_fn=length_fn,
-            protocol="reasoning_v3",
+            protocol=protocol,
         )
         if scratchpad != expected["scratchpad"]:
-            raise ValueError("reasoning_v3 calls are malformed, out of order, or inconsistent")
+            raise ValueError(f"{protocol} calls are malformed, out of order, or inconsistent")
         return
     if isinstance(annotation, dict) and annotation.get("trace_version") == "reasoning_v2":
         _verify_forward_annotation(
@@ -1345,7 +1431,7 @@ def verify_annotation(
     if atomic_call is not None:
         source_value = atomic_call.result
     elif module == "algebra__linear_1d":
-        _, _, source_value = _linear_trace(row["question"], row["answer"])
+        _, _, source_value, _ = _linear_trace(row["question"], row["answer"])
     else:
         source_expression, _ = _source_expression(row["question"], module)
         source_expression = re.sub(r"(?<=\d)\s+(?=[+-]?\d)", " ", source_expression)

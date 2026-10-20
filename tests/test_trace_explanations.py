@@ -115,6 +115,21 @@ call:multiply(57,2) -> 114"""
     assert any("This gives 114" in step for step in explanation)
 
 
+def test_transcriber_supports_reasoning_v4_explicit_collect_arithmetic():
+    trace = """step:collect:2x+(3)=0x+(9)
+call:subtract(2,0) -> 2
+call:subtract(9,3) -> 6
+step:move:2x=6
+call:divide(6,2) -> 3
+x=3"""
+    explanation = transcribe_scratchpad(trace, version="reasoning_v4")
+
+    assert "Subtract 0 from 2." in explanation
+    assert "This gives 2." in explanation
+    assert "Subtract 3 from 9." in explanation
+    assert "This gives 6." in explanation
+
+
 def test_transcriber_rejects_unknown_or_mismatched_trace_versions():
     try:
         transcribe_scratchpad("t0=+(1,2)=3", version="reasoning_v2")

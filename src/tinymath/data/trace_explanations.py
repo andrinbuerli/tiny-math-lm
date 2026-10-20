@@ -508,10 +508,10 @@ def _transcribe_v2(scratchpad: str) -> list[str]:
 
 
 def _transcribe_v3(scratchpad: str) -> list[str]:
-    """Transcribe v3 parent traces by rendering delegated calls as v2 derivations."""
+    """Transcribe v3/v4 traces by rendering delegated calls as v2 derivations."""
     lines = [line.strip() for line in scratchpad.splitlines() if line.strip()]
     if not lines or not lines[0].startswith("step:"):
-        raise ValueError("reasoning_v3 scratchpads must start with a derivation step")
+        raise ValueError("reasoning_v3/v4 scratchpads must start with a derivation step")
 
     symbols = {"add": "+", "subtract": "-", "multiply": "*", "divide": "/"}
     normalized: list[str] = []
@@ -527,16 +527,16 @@ def _transcribe_v3(scratchpad: str) -> list[str]:
         else:
             normalized.append(line)
     if not normalized:
-        raise ValueError("reasoning_v3 scratchpad contains no transcribable operations")
+        raise ValueError("reasoning_v3/v4 scratchpad contains no transcribable operations")
     if not normalized[0].startswith("step:"):
-        raise ValueError("reasoning_v3 scratchpad contains no derivation step")
+        raise ValueError("reasoning_v3/v4 scratchpad contains no derivation step")
     return _transcribe_v2("\n".join(normalized))
 
 
 def transcribe_scratchpad(
     scratchpad: str,
     *,
-    version: Literal["v1", "v2", "reasoning_v1", "reasoning_v2", "reasoning_v3"] | None = None,
+    version: Literal["v1", "v2", "reasoning_v1", "reasoning_v2", "reasoning_v3", "reasoning_v4"] | None = None,
 ) -> list[str]:
     """Transcribe a valid reasoning_v1 or reasoning_v2 scratchpad into plain language.
 
@@ -550,7 +550,7 @@ def transcribe_scratchpad(
         version = "v2" if text.startswith("step:") else "v1"
     if version in {"v2", "reasoning_v2"}:
         return _transcribe_v2(text)
-    if version == "reasoning_v3":
+    if version in {"reasoning_v3", "reasoning_v4"}:
         return _transcribe_v3(text)
     if version in {"v1", "reasoning_v1"}:
         if not re.match(r"^[tp]\d+=", text):

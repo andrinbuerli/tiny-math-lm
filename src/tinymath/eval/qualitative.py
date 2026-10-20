@@ -41,7 +41,7 @@ def _predicted_scratchpad(
     generated: Sequence[int], tokenizer: CharacterTokenizer
 ) -> str:
     """Return generated scratchpad text for inspection, even when parsing fails."""
-    if tokenizer.protocol == "reasoning_v3":
+    if tokenizer.protocol in {"reasoning_v3", "reasoning_v4"}:
         text = tokenizer.decode(generated)
         return text.removeprefix("<scp>\n").partition("\n</scp>")[0] if text.startswith("<scp>\n") else ""
     if tokenizer.protocol not in {"reasoning_v1", "reasoning_v2"}:
@@ -104,7 +104,7 @@ def build_qualitative_table(
                     raise ValueError(f"Qualitative {split} prompt leaves no room for an answer")
                 with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_bf16):
                     v3_rollouts = None
-                    if tokenizer.protocol == "reasoning_v3":
+                    if tokenizer.protocol in {"reasoning_v3", "reasoning_v4"}:
                         v3_rollouts = generate_rollouts(
                             model, prompt, max_completion_tokens=min(max_new_tokens, available),
                             temperature=0.0, eos_id=tokenizer.eos_id, pad_id=tokenizer.pad_id,
@@ -126,7 +126,7 @@ def build_qualitative_table(
                 transcribed_scratchpad = ""
                 trace_structure_valid: bool | None = None
                 extra = [None, None, None, None, None, None]
-                if tokenizer.protocol == "reasoning_v3":
+                if tokenizer.protocol in {"reasoning_v3", "reasoning_v4"}:
                     reason = v3_rollouts.termination_reasons[0]
                     score = score_v3(
                         generated, tokenizer, example, capped=reason == "budget_exceeded",
@@ -138,7 +138,7 @@ def build_qualitative_table(
                     correct, valid = score.answer_correct, score.format_valid
                     trace_structure_valid = score.trace_valid
                     if score.trace_valid:
-                        transcribed_scratchpad = "\n".join(transcribe_scratchpad(score.scratchpad, version="reasoning_v3"))
+                        transcribed_scratchpad = "\n".join(transcribe_scratchpad(score.scratchpad, version=tokenizer.protocol))
                     extra = [score.reward, score.full_success, rollout_config.executor == "exact",
                              reason, int(v3_rollouts.loss_mask.sum()),
                              int((v3_rollouts.completion_mask & ~v3_rollouts.loss_mask).sum())]
@@ -190,7 +190,7 @@ def build_qualitative_table(
                             len(generated) >= min(max_new_tokens, available)
                             and (not generated or generated[-1] != tokenizer.eos_id)
                         ),
-                        *(extra if tokenizer.protocol == "reasoning_v3" else []),
+                        *(extra if tokenizer.protocol in {"reasoning_v3", "reasoning_v4"} else []),
                     ]
                 )
     finally:
@@ -217,7 +217,7 @@ def build_qualitative_table(
             "output_tokens",
             "capped",
         ] + (["reward", "full_success", "assisted", "termination_reason", "policy_tokens", "executor_tokens"]
-             if tokenizer.protocol == "reasoning_v3" else []),
+             if tokenizer.protocol in {"reasoning_v3", "reasoning_v4"} else []),
         data=rows,
     )
     accuracy = {

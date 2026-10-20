@@ -84,7 +84,7 @@ def _score_completion(
     token_ids: list[int], tokenizer: CharacterTokenizer, row: dict[str, str]
 ) -> tuple[float, bool, str | None, bool | None, bool | None]:
     """Return reward, answer validity, trace, reference match, and trace validity."""
-    if tokenizer.protocol == "reasoning_v3":
+    if tokenizer.protocol in {"reasoning_v3", "reasoning_v4"}:
         score = score_v3(token_ids, tokenizer, row)
         return score.reward, score.format_valid, score.scratchpad, score.reference_match, score.trace_valid
     if tokenizer.protocol in {"reasoning_v1", "reasoning_v2"}:
@@ -119,9 +119,9 @@ def train_grpo(
     tokenizer = CharacterTokenizer.load(bundle_dir / "char_tokenizer.json")
     rollout_config = RolloutConfig.from_config(getattr(config, "rollout", None))
     rollout_identity = rollout_config.identity()
-    if rollout_config.executor == "exact" and tokenizer.protocol != "reasoning_v3":
-        raise ValueError("Exact call execution requires reasoning_v3")
-    if tokenizer.protocol == "reasoning_v3" and hasattr(run, "config"):
+    if rollout_config.executor == "exact" and tokenizer.protocol not in {"reasoning_v3", "reasoning_v4"}:
+        raise ValueError("Exact call execution requires reasoning_v3 or reasoning_v4")
+    if tokenizer.protocol in {"reasoning_v3", "reasoning_v4"} and hasattr(run, "config"):
         run.config.update({"rollout": rollout_identity}, allow_val_change=True)
     prompts = [row for row in _load_rows(bundle_dir / "rlvr.jsonl") if not row.get("is_sub_task", False)]
     experiment = getattr(config, "experiment", {})
@@ -200,7 +200,7 @@ def train_grpo(
                 compatibility,
                 allow_legacy_answer_only=(tokenizer.protocol == "answer_only"),
             )
-        if tokenizer.protocol == "reasoning_v3":
+        if tokenizer.protocol in {"reasoning_v3", "reasoning_v4"}:
             saved_rollout = resumed.get("rollout")
             if saved_rollout is None or _rollout_semantics_identity(saved_rollout) != \
                     _rollout_semantics_identity(rollout_identity):
@@ -399,7 +399,7 @@ def train_grpo(
                     for completion, length in zip(completion_values, completion_lengths, strict=True)
                 ]
                 v3_scores = []
-                if tokenizer.protocol == "reasoning_v3":
+                if tokenizer.protocol in {"reasoning_v3", "reasoning_v4"}:
                     reasons = rollouts.termination_reasons or tuple(
                         "eos" if ids and ids[-1] == tokenizer.eos_id else "budget_exceeded"
                         for ids in generated_ids
@@ -588,7 +588,7 @@ def train_grpo(
                         "tokens_seen": tokens_seen,
                         "policy_tokens_seen": policy_tokens_seen,
                         "executor_tokens_seen": executor_tokens_seen,
-                        **({"rollout": rollout_identity} if tokenizer.protocol == "reasoning_v3" else {}),
+                        **({"rollout": rollout_identity} if tokenizer.protocol in {"reasoning_v3", "reasoning_v4"} else {}),
                         "examples_drawn": examples_drawn,
                         "nonpadding_input_tokens": nonpadding_input_tokens,
                         "padded_compute_positions": padded_compute_positions,
@@ -607,7 +607,7 @@ def train_grpo(
                     {
                         "model": model.state_dict(),
                         "update": update,
-                        **({"rollout": rollout_identity} if tokenizer.protocol == "reasoning_v3" else {}),
+                        **({"rollout": rollout_identity} if tokenizer.protocol in {"reasoning_v3", "reasoning_v4"} else {}),
                         "tokenizer_sha256": tokenizer.sha256,
                         **({"compatibility": compatibility} if compatibility is not None else {}),
                         "model_config": model_config.__dict__,

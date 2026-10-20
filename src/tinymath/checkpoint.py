@@ -32,7 +32,7 @@ def compatibility_metadata(
     context_length: int,
 ) -> dict[str, Any]:
     """Build the immutable dataset/protocol identity stored in checkpoints."""
-    if protocol not in {"answer_only", "reasoning_v1", "reasoning_v2", "reasoning_v3"}:
+    if protocol not in {"answer_only", "reasoning_v1", "reasoning_v2", "reasoning_v3", "reasoning_v4"}:
         raise ValueError(f"Unsupported checkpoint protocol: {protocol}")
     if not tokenizer_sha256 or not bundle_sha256 or context_length < 1:
         raise ValueError("Checkpoint compatibility metadata is incomplete")

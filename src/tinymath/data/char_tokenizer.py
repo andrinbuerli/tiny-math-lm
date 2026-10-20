@@ -20,7 +20,7 @@ class CharacterTokenizer:
     """Map each ordinary Unicode code point to one stable token ID."""
 
     def __init__(self, characters: Iterable[str], *, protocol: str = "answer_only"):
-        if protocol not in {"answer_only", "reasoning_v1", "reasoning_v2", "reasoning_v3"}:
+        if protocol not in {"answer_only", "reasoning_v1", "reasoning_v2", "reasoning_v3", "reasoning_v4"}:
             raise ValueError(f"Unsupported tokenizer protocol: {protocol}")
         self.protocol = protocol
         self.special_tokens = (
@@ -101,7 +101,7 @@ class CharacterTokenizer:
             if scratchpad is not None:
                 raise ValueError("Legacy answer-only completions cannot contain scratchpads")
             return self.encode(answer, add_eos=True)
-        if self.protocol == "reasoning_v3":
+        if self.protocol in {"reasoning_v3", "reasoning_v4"}:
             if not answer.strip() or not scratchpad or not scratchpad.strip():
                 raise ValueError("Reasoning completions require a nonempty scratchpad and answer")
             return self.encode(
@@ -153,6 +153,9 @@ class CharacterTokenizer:
         destination.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "version": (
+                5
+                if self.protocol == "reasoning_v4"
+                else
                 4
                 if self.protocol == "reasoning_v3"
                 else
@@ -182,7 +185,7 @@ class CharacterTokenizer:
             if protocol in {"reasoning_v1", "reasoning_v2"}
             else LEGACY_SPECIAL_TOKENS
         )
-        if version not in (1, TOKENIZER_VERSION, 3, 4) or payload.get("special_tokens") != list(expected):
+        if version not in (1, TOKENIZER_VERSION, 3, 4, 5) or payload.get("special_tokens") != list(expected):
             raise ValueError("Unsupported tokenizer format")
         tokenizer = cls(payload["id_to_token"][len(expected) :], protocol=protocol)
         if tokenizer.id_to_token != payload["id_to_token"] or tokenizer.sha256 != payload["sha256"]:

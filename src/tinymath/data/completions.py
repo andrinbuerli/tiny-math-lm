@@ -22,7 +22,7 @@ def parse_reasoning_completion(
     The parser operates on reserved structural IDs before decoding ordinary text so
     question text that happens to spell a marker cannot affect completion structure.
     """
-    if tokenizer.protocol not in {"reasoning_v1", "reasoning_v2", "reasoning_v3"}:
+    if tokenizer.protocol not in {"reasoning_v1", "reasoning_v2", "reasoning_v3", "reasoning_v4"}:
         raise ValueError("Reasoning completions require a reasoning tokenizer")
     ids = list(token_ids)
     if not ids or ids[-1] != tokenizer.eos_id:
@@ -30,7 +30,7 @@ def parse_reasoning_completion(
     body = ids[:-1]
     if any(token in (tokenizer.pad_id, tokenizer.bos_id, tokenizer.unk_id) for token in body):
         raise ValueError("Reasoning completion contains a reserved token outside its protocol")
-    if tokenizer.protocol == "reasoning_v3":
+    if tokenizer.protocol in {"reasoning_v3", "reasoning_v4"}:
         if tokenizer.eos_id in body:
             raise ValueError("Reasoning completion contains an interior EOS")
         rendered = tokenizer.decode(body)
@@ -38,7 +38,7 @@ def parse_reasoning_completion(
         if (not separator or not prefix.startswith("<scp>\n")
                 or rendered.count("<scp>") != 1 or rendered.count("</scp>") != 1
                 or "A:" in prefix):
-            raise ValueError("reasoning_v3 completion needs one character-encoded scratchpad block")
+            raise ValueError(f"{tokenizer.protocol} completion needs one character-encoded scratchpad block")
         scratchpad = prefix[len("<scp>\n"):]
         answer = suffix
         if not scratchpad.strip() or not answer or answer != answer.strip() or "\n" in answer or "\r" in answer:
