@@ -1,7 +1,9 @@
 import json
 
 import pytest
+import torch
 
+from tinymath.data.hf_cached_dataset import HFTokenSplit
 from tinymath.data.hf_reasoning import (
     encode_completion,
     identity_hash,
@@ -114,3 +116,28 @@ def test_binary_cache_streams_parents_and_only_eligible_standalone_rows(tmp_path
         row["prompt_tokens"] + row["completion_tokens"] for row in cached_rows
     ) * 4
     assert result["fixed_question_identity_count"] == 2
+
+
+def test_cached_batch_masks_prompt_and_padding_but_keeps_terminal_eos(tmp_path):
+    source = tmp_path / "train.jsonl"
+    rows = [_row(), _row(question="Calculate 1 + 41.")]
+    source.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    split_metadata = _write_split(
+        split="train",
+        source_path=source,
+        destination=tmp_path,
+        tokenizer=FakeTokenizer(),
+        context_length=512,
+        completion_cap=512,
+    )
+    (tmp_path / "manifest.json").write_text(
+        json.dumps({"splits": {"train": split_metadata}}), encoding="utf-8"
+    )
+    split = HFTokenSplit(tmp_path, "train")
+    input_ids, attention_mask, labels = split.batch([0, 1], pad_id=2, device="cpu")
+    assert torch.all(labels[:, :split.prompt_lengths.min()] == -100)
+    for index in range(2):
+        end = int(split.offsets[index + 1] - split.offsets[index]) - 1
+        assert labels[index, end] == FakeTokenizer.eos_token_id
+    assert torch.all(labels[attention_mask == 0] == -100)
+    assert input_ids.shape == labels.shape
