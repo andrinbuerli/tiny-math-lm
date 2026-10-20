@@ -1929,6 +1929,12 @@ def make_exp13_report(
     run_namespaces: dict[str, dict[str, str]] | None = None,
 ) -> tuple[dict[str, Any], list[Path]]:
     """Build the Experiment 13 reasoning-v3 versus frozen-baseline table."""
+    experiment_number = (
+        experiment[3:].split("_", 1)[0]
+        if experiment.startswith("exp") and experiment[3:4].isdigit()
+        else "13"
+    )
+    report_title = f"Experiment {experiment_number} reasoning-v3 comparison"
     output_dir.mkdir(parents=True, exist_ok=True)
     snapshot = _json_file(baseline_snapshot) or {}
     baseline_name = str(
@@ -2218,7 +2224,7 @@ def make_exp13_report(
 
     markdown_path = output_dir / "intermediate_results.md"
     lines = [
-        "# Experiment 13 reasoning-v3 comparison", "", f"Seed: `{seed}`", "",
+        f"# {report_title}", "", f"Seed: `{seed}`", "",
         f"Rows: {len(rows)} / 27 (3 model sizes × 3 arms × 3 splits).",
         "Deltas are shown only for complete evaluations with identical question ID populations; row order is ignored.", "",
         "| Model | Arm | Split | Baseline accuracy (scored) | +Reasoning accuracy (scored) | Δ percentage points | Status |",
@@ -2304,6 +2310,6 @@ def make_exp13_report(
         axis.set_ylabel("Accuracy (%)")
         axis.grid(axis="y", alpha=0.25)
     axes[0].legend(fontsize=8)
-    fig.suptitle("Experiment 13 reasoning-v3 versus frozen baseline")
+    fig.suptitle(f"Experiment {experiment_number} reasoning-v3 versus frozen baseline")
     figures = _save(fig, output_dir, "accuracy_comparison")
     return report, [markdown_path, json_path, csv_path, *figures]

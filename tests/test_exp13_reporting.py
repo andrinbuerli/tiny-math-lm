@@ -57,6 +57,7 @@ def test_exp13_report_lists_all_rows_and_marks_missing_evaluations_not_run(works
     report, outputs = make_exp13_report(
         runs_dir=workspace_tmpdir / "runs",
         output_dir=output,
+        experiment="exp15_reasoning_v3_arithmetic_subtasks",
         baseline_snapshot=baseline,
         annotation_bundle_dir=bundle,
         run_namespaces={
@@ -81,6 +82,7 @@ def test_exp13_report_lists_all_rows_and_marks_missing_evaluations_not_run(works
     assert len(outputs) == 5
     assert all(path.exists() for path in outputs)
     markdown = (output / "intermediate_results.md").read_text(encoding="utf-8")
+    assert markdown.startswith("# Experiment 15 reasoning-v3 comparison")
     assert "| Model | Arm | Split | Baseline accuracy (scored) | +Reasoning accuracy (scored) | Δ percentage points | Status |" in markdown
     assert markdown.split("## Provenance", 1)[0].count("| 1m |") == 9
     assert "not-run" in markdown
