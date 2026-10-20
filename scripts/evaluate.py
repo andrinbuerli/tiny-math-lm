@@ -15,6 +15,7 @@ from tinymath.checkpoint import sha256_file
 from tinymath.config import workspace_path
 from tinymath.data.load import SELECTED_MODULES
 from tinymath.eval.evaluate import evaluate_checkpoint
+from tinymath.eval.hf_evaluate import evaluate_hf_checkpoint
 from tinymath.generation import RolloutConfig
 from tinymath.tracking.provenance import read_wandb_run_id
 from tinymath.tracking.wandb import finish_wandb, initialize_tracked_run
@@ -42,6 +43,79 @@ def _bundle_dir(config: DictConfig) -> Path:
 def main(config: DictConfig) -> None:
     if set(config.data.modules) != set(SELECTED_MODULES):
         raise ValueError(f"The experiment is restricted to exactly these modules: {SELECTED_MODULES}")
+    if str(config.model.get("backend", "tinymath")) == "huggingface":
+        checkpoint = workspace_path(str(config.checkpoint)) if config.checkpoint else None
+        if checkpoint is not None and not (checkpoint / "config.json").is_file():
+            raise FileNotFoundError(f"Hugging Face model checkpoint directory not found: {checkpoint}")
+        bundle_dir = _bundle_dir(config)
+        manifest = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
+        checkpoint_identity_path = checkpoint / "experiment_identity.json" if checkpoint else None
+        checkpoint_identity = (
+            json.loads(checkpoint_identity_path.read_text(encoding="utf-8"))
+            if checkpoint_identity_path and checkpoint_identity_path.is_file() else {}
+        )
+        arm = (
+            "base_zero_shot" if checkpoint is None
+            else str(checkpoint_identity.get("training_arm", checkpoint.parent.parent.name))
+        )
+        identity = "pristine" if checkpoint is None else checkpoint.name
+        run_dir = workspace_path(
+            "runs", str(config.experiment.name), str(config.model.name), "evaluation",
+            arm, identity, f"seed{int(config.seed)}",
+        )
+        checkpoint_sha256 = checkpoint_identity.get("checkpoint_sha256")
+        run = initialize_tracked_run(
+            config,
+            run_dir,
+            job_type="checkpoint-evaluation",
+            job_metadata={
+                "phase": str(config.experiment.phase),
+                "model": str(config.model.name),
+                "arm": arm,
+                "checkpoint": str(checkpoint) if checkpoint else "pinned_pristine_base",
+                "checkpoint_sha256": checkpoint_sha256,
+                "formats": ["ordinary_qa", "reasoning_executor"],
+            },
+        )
+        try:
+            run.config.update(
+                {
+                    "dataset_revision": manifest["dataset_revision"],
+                    "split_manifest_sha256": manifest["split_manifest_sha256"],
+                    "bundle_manifest_sha256": sha256_file(bundle_dir / "manifest.json"),
+                    "evaluated_checkpoint": str(checkpoint) if checkpoint else "pinned_pristine_base",
+                    "evaluated_checkpoint_sha256": checkpoint_sha256,
+                    "evaluation_splits": list(config.eval.splits),
+                    "source_training_wandb_run_id": (
+                        read_wandb_run_id(checkpoint.parent) if checkpoint else None
+                    ),
+                },
+                allow_val_change=True,
+            )
+            summary = evaluate_hf_checkpoint(
+                config=config,
+                bundle_dir=bundle_dir,
+                output_dir=run_dir,
+                checkpoint=checkpoint,
+                split_names=list(config.eval.splits),
+                max_examples_per_split=(
+                    int(config.eval.max_examples_per_split)
+                    if config.eval.max_examples_per_split is not None else None
+                ),
+                run=run,
+            )
+            run.summary.update(
+                {
+                    "evaluation/results_path": str(run_dir / "results.json"),
+                    "evaluation/checkpoint": str(checkpoint) if checkpoint else "pinned_pristine_base",
+                    "evaluation/checkpoint_sha256": checkpoint_sha256,
+                    "evaluation/split_manifest_sha256": manifest["split_manifest_sha256"],
+                }
+            )
+            LOGGER.info("Hugging Face evaluation finished: %s", summary["splits"])
+        finally:
+            finish_wandb(run, exit_code=1 if sys.exc_info()[0] else 0)
+        return
     if not config.checkpoint:
         raise ValueError("Set checkpoint= to the model checkpoint to evaluate")
     checkpoint = workspace_path(str(config.checkpoint))
