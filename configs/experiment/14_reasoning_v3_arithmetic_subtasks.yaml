@@ -1,5 +1,6 @@
 # @package _global_
 # Experiment 14 — fresh GRPO restart using copied reasoning-v3 SFT artifacts.
+# Origin: restart GRPO from the verified Experiment 13 reasoning-v3 SFT checkpoint.
 defaults:
   - override /rollout: v3_exact
 

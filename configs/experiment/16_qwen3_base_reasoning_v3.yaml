@@ -1,5 +1,7 @@
 # @package _global_
 # Experiment 16: native Qwen3 Base tokenization, supervised reasoning, and GRPO.
+# Experiment 16 — Qwen3-0.6B-Base reasoning-v3 with native thinking tokens.
+# Origin: extend the verified Experiment 15 reasoning-v3 bundle and fixed parent-only evaluations.
 defaults:
   - override /model: qwen3_0_6b_base
   - override /rollout: v3_exact

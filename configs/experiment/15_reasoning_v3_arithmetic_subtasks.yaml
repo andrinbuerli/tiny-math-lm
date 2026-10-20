@@ -1,5 +1,6 @@
 # @package _global_
 # Experiment 15 — shorter GRPO update budget with wider rollout batches.
+# Origin: compare shorter 100-update GRPO and 16x16 rollouts on the fixed reasoning-v3 populations.
 # SFT and continued-SFT comparison arms reuse their verified Experiment 14 artifacts.
 defaults:
   - override /rollout: v3_exact
