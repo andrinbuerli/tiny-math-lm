@@ -40,6 +40,7 @@ trainer:
   bf16: true
   gradient_checkpointing: true
   early_stopping_patience_epochs: 1
+  compute_budget_flops: null
 
 rlvr:
   name: grpo

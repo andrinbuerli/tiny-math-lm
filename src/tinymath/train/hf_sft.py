@@ -49,6 +49,45 @@ def _pilot_indices(split: HFTokenSplit, row_cap: int, seed: int) -> list[int]:
     return sorted([longest, *(int(index) for index in sampled)])
 
 
+def _plan_compute_matched_updates(
+    split: HFTokenSplit,
+    train_indices: list[int],
+    *,
+    seed: int,
+    parameters: int,
+    target_flops: int,
+    batch_size: int,
+    accumulation: int,
+) -> tuple[int, int, int]:
+    """Plan the first full optimizer boundary reaching the 6PN supervised-FLOP target."""
+    if min(parameters, target_flops, batch_size, accumulation) < 1 or not train_indices:
+        raise ValueError("Compute matching requires positive parameters, budget, and batches")
+    target_tokens = math.ceil(target_flops / (6 * parameters))
+    lengths = np.diff(split.offsets)
+    total_tokens = updates = epochs = 0
+    while total_tokens < target_tokens:
+        generator = torch.Generator(device="cpu").manual_seed(seed + epochs)
+        shuffled = torch.randperm(len(train_indices), generator=generator).tolist()
+        order = [train_indices[index] for index in shuffled]
+        accumulated_rows = accumulated_microbatches = 0
+        for start in range(0, len(order), batch_size):
+            batch = order[start : start + batch_size]
+            accumulated_rows += sum(int(lengths[index]) for index in batch)
+            accumulated_microbatches += 1
+            if accumulated_microbatches < accumulation and start + batch_size < len(order):
+                continue
+            updates += 1
+            total_tokens += accumulated_rows
+            accumulated_rows = accumulated_microbatches = 0
+            if total_tokens >= target_tokens:
+                epochs += 1
+                return updates, total_tokens, epochs
+        epochs += 1
+        if epochs > 10000:
+            raise RuntimeError("Compute-matched control schedule exceeds 10,000 data epochs")
+    return updates, total_tokens, epochs
+
+
 def _batch_loss(
     model: Any,
     split: HFTokenSplit,
@@ -95,10 +134,11 @@ def _evaluate_loss(
 
 
 def _cosine_lr(step: int, *, warmup_steps: int, total_steps: int, base_lr: float) -> float:
-    if warmup_steps and step < warmup_steps:
-        return base_lr * float(step + 1) / float(warmup_steps)
+    schedule_step = step + 1
+    if warmup_steps and schedule_step <= warmup_steps:
+        return base_lr * float(schedule_step) / float(warmup_steps)
     decay_steps = max(total_steps - warmup_steps, 1)
-    progress = min(max((step - warmup_steps) / decay_steps, 0.0), 1.0)
+    progress = min(max((schedule_step - warmup_steps) / decay_steps, 0.0), 1.0)
     return base_lr * 0.5 * (1.0 + math.cos(math.pi * progress))
 
 
@@ -204,8 +244,49 @@ def train_hf_sft(
     save_every = int(config.trainer.save_every)
     warmup_ratio = float(config.trainer.warmup_ratio)
     updates_per_epoch = math.ceil(len(train_indices) / (batch_size * accumulation))
-    total_updates = min(updates_per_epoch * max_epochs, max_steps)
+    target_flops_value = config.trainer.get("compute_budget_flops")
+    target_flops = int(target_flops_value) if target_flops_value is not None else None
+    planned_tokens = None
+    planned_epochs = None
+    trainer_name = str(config.trainer.get("name", "sft"))
+    if trainer_name == "continued_sft":
+        if target_flops is None:
+            raise ValueError("Continued SFT requires trainer.compute_budget_flops from completed GRPO")
+        total_updates, planned_tokens, planned_epochs = _plan_compute_matched_updates(
+            train_split,
+            train_indices,
+            seed=int(config.seed),
+            parameters=parameters,
+            target_flops=target_flops,
+            batch_size=batch_size,
+            accumulation=accumulation,
+        )
+        if total_updates > max_steps:
+            raise ValueError(
+                f"Continued-SFT target needs {total_updates} optimizer updates, above "
+                f"trainer.max_steps={max_steps}"
+            )
+        max_epochs = max(max_epochs, int(planned_epochs))
+    else:
+        total_updates = min(updates_per_epoch * max_epochs, max_steps)
     warmup_steps = math.ceil(total_updates * warmup_ratio)
+    if hasattr(run, "config"):
+        run.config.update(
+            {
+                "compute_match.target_flops": target_flops,
+                "compute_match.planned_optimizer_steps": (
+                    total_updates if target_flops is not None else None
+                ),
+                "compute_match.planned_input_tokens": planned_tokens,
+                "compute_match.planned_flops": (
+                    6 * parameters * planned_tokens if planned_tokens is not None else None
+                ),
+                "compute_match.planned_epochs": planned_epochs,
+                "compute_match.warmup_steps": warmup_steps,
+                "compute_match.estimator": "6*parameters*nonpadding_input_tokens",
+            },
+            allow_val_change=True,
+        )
     config_hash = hashlib.sha256(
         json.dumps(
             {
@@ -264,11 +345,19 @@ def train_hf_sft(
     running_tokens = 0
     optimizer.zero_grad(set_to_none=True)
     try:
-        while epoch < max_epochs and step < max_steps:
+        while (
+            epoch < max_epochs
+            and step < max_steps
+            and (target_flops is None or 6 * parameters * tokens_seen < target_flops)
+        ):
             generator = torch.Generator(device="cpu").manual_seed(int(config.seed) + epoch)
             shuffled = torch.randperm(len(train_indices), generator=generator).tolist()
             epoch_order = [train_indices[index] for index in shuffled]
-            while cursor < len(epoch_order) and step < max_steps:
+            while (
+                cursor < len(epoch_order)
+                and step < max_steps
+                and (target_flops is None or 6 * parameters * tokens_seen < target_flops)
+            ):
                 batch_indices = epoch_order[cursor : cursor + batch_size]
                 loss_sum, target_tokens, input_tokens = _batch_loss(
                     model,
@@ -349,6 +438,8 @@ def train_hf_sft(
                         tokenizer = load_tokenizer(config.model)
                         tokenizer.save_pretrained(best_dir)
                         identity = {
+                            "training_arm": trainer_name,
+                            "training_phase": experiment_phase,
                             "model_revision": str(config.model.revision),
                             "model_config_sha256": cache_manifest["model_config_sha256"],
                             "tokenizer_sha256": cache_manifest["tokenizer_sha256"],
@@ -357,6 +448,10 @@ def train_hf_sft(
                             "selected_step": step,
                             "validation_loss": validation_loss,
                             "source_checkpoint": str(init_checkpoint) if init_checkpoint else None,
+                            "source_sft_checkpoint": (
+                                str(init_checkpoint)
+                                if trainer_name == "continued_sft" and init_checkpoint else None
+                            ),
                         }
                         save_model_identity(best_dir / "experiment_identity.json", identity)
                     if run is not None:
@@ -381,6 +476,8 @@ def train_hf_sft(
                             config_sha256=config_hash,
                         ),
                     )
+                if target_flops is not None and 6 * parameters * tokens_seen >= target_flops:
+                    break
             if cursor >= len(epoch_order):
                 epoch += 1
                 cursor = 0
@@ -392,7 +489,10 @@ def train_hf_sft(
                 else:
                     no_improvement_epochs += 1
                 epoch_best_before = best_val
-                if no_improvement_epochs >= int(config.trainer.early_stopping_patience_epochs):
+                if (
+                    target_flops is None
+                    and no_improvement_epochs >= int(config.trainer.early_stopping_patience_epochs)
+                ):
                     break
                 save_checkpoint(
                     latest_path,
@@ -452,6 +552,41 @@ def train_hf_sft(
         checkpoint_digest.update(weight_hash.encode("ascii"))
     identity["checkpoint_sha256"] = checkpoint_digest.hexdigest()
     save_model_identity(identity_path, identity)
+    final_dir = run_dir / "final"
+    final_identity = {
+        **identity,
+        "training_arm": trainer_name,
+        "training_phase": experiment_phase,
+        "optimizer_steps": step,
+        "epochs_completed": epoch + (cursor / len(train_indices) if cursor else 0),
+        "tokens_seen": tokens_seen,
+        "estimated_additional_flops": 6 * parameters * tokens_seen,
+        "compute_budget_flops": target_flops,
+        "planned_optimizer_steps": total_updates,
+        "planned_input_tokens": planned_tokens,
+        "planned_flops": 6 * parameters * planned_tokens if planned_tokens is not None else None,
+        "source_sft_checkpoint": (
+            str(init_checkpoint)
+            if trainer_name == "continued_sft" and init_checkpoint else None
+        ),
+    }
+    model.save_pretrained(final_dir, safe_serialization=True)
+    load_tokenizer(config.model).save_pretrained(final_dir)
+    final_weights = sorted(final_dir.glob("model*.safetensors"))
+    if not final_weights:
+        final_weights = sorted(final_dir.glob("pytorch_model*.bin"))
+    if not final_weights:
+        raise RuntimeError("Final SFT model has no serialized weights")
+    final_digest = hashlib.sha256()
+    final_identity["model_weight_files"] = {}
+    for path in final_weights:
+        value = sha256_file(path)
+        final_identity["model_weight_files"][path.name] = value
+        final_digest.update(path.name.encode("utf-8"))
+        final_digest.update(value.encode("ascii"))
+    final_identity["checkpoint_sha256"] = final_digest.hexdigest()
+    save_model_identity(final_dir / "experiment_identity.json", final_identity)
+    selected_checkpoint = final_dir if trainer_name == "continued_sft" else best_dir
     return {
         "step": step,
         "epoch": epoch,
@@ -467,8 +602,23 @@ def train_hf_sft(
         ),
         "parameters": parameters,
         "best_validation_loss": best_val,
-        "checkpoint": str(best_dir),
-        "checkpoint_sha256": identity["checkpoint_sha256"],
+        "compute_budget_flops": target_flops,
+        "compute_overshoot_flops": (
+            max(0, 6 * parameters * tokens_seen - target_flops) if target_flops is not None else None
+        ),
+        "compute_matching_error": (
+            (6 * parameters * tokens_seen - target_flops) / target_flops
+            if target_flops is not None else None
+        ),
+        "planned_optimizer_steps": total_updates,
+        "planned_input_tokens": planned_tokens,
+        "checkpoint": str(selected_checkpoint),
+        "checkpoint_sha256": (
+            final_identity["checkpoint_sha256"]
+            if selected_checkpoint == final_dir else identity["checkpoint_sha256"]
+        ),
+        "best_checkpoint": str(best_dir),
+        "final_checkpoint": str(final_dir),
         "latest_checkpoint": str(latest_path),
         "additional_estimated_flops": 6 * parameters * tokens_seen,
         "cache_manifest_sha256": sha256_file(cache_dir / "manifest.json"),

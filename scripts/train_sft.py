@@ -56,14 +56,20 @@ def main(config: DictConfig) -> None:
         wait_for_gpu_capacity(config, str(config.model.name))
     bundle_dir = _bundle_dir(config)
     manifest = __import__("json").loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
-    run_dir = Path(
-        isolated_training_run_dir(
-            config,
-            model=str(config.model.name),
-            arm=str(config.trainer.name),
-            runs_root=str(workspace_path("runs")),
+    if str(config.model.get("backend", "tinymath")) == "huggingface":
+        run_dir = workspace_path(
+            "runs", str(config.experiment.name), str(config.model.name),
+            str(config.trainer.name), str(config.experiment.phase), f"seed{int(config.seed)}",
         )
-    )
+    else:
+        run_dir = Path(
+            isolated_training_run_dir(
+                config,
+                model=str(config.model.name),
+                arm=str(config.trainer.name),
+                runs_root=str(workspace_path("runs")),
+            )
+        )
     run = initialize_tracked_run(config, run_dir, job_type=str(config.trainer.name))
     try:
         init_checkpoint = (
@@ -96,6 +102,12 @@ def main(config: DictConfig) -> None:
                     "training/model_parameters": result["parameters"],
                     "training/checkpoint": result["checkpoint"],
                     "training/checkpoint_sha256": result["checkpoint_sha256"],
+                    "training/best_checkpoint": result["best_checkpoint"],
+                    "training/final_checkpoint": result["final_checkpoint"],
+                    "training/compute_budget_flops": result["compute_budget_flops"],
+                    "training/compute_overshoot_flops": result["compute_overshoot_flops"],
+                    "training/compute_matching_error": result["compute_matching_error"],
+                    "training/planned_optimizer_steps": result["planned_optimizer_steps"],
                     "training/latest_checkpoint": result["latest_checkpoint"],
                 }
             )

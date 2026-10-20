@@ -28,6 +28,32 @@ def test_pilot_subset_always_contains_longest_native_token_sequence():
     assert len(first) == 3
 
 
+def test_compute_match_plans_first_optimizer_boundary_at_or_over_flop_target():
+    import numpy as np
+
+    class Split:
+        offsets = np.array([0, 3, 7, 12, 18], dtype=np.uint64)
+
+    planned = hf_sft._plan_compute_matched_updates(
+        Split(), [0, 1, 2, 3], seed=18, parameters=10, target_flops=6 * 10 * 5,
+        batch_size=1, accumulation=2,
+    )
+    repeated = hf_sft._plan_compute_matched_updates(
+        Split(), [0, 1, 2, 3], seed=18, parameters=10, target_flops=6 * 10 * 5,
+        batch_size=1, accumulation=2,
+    )
+    updates, tokens, epochs = planned
+    assert planned == repeated
+    assert updates == 1
+    assert tokens >= 5
+    assert epochs == 1
+
+
+def test_cosine_schedule_reaches_zero_on_the_preplanned_final_update():
+    assert hf_sft._cosine_lr(0, warmup_steps=3, total_steps=10, base_lr=1.0) == 1 / 3
+    assert hf_sft._cosine_lr(9, warmup_steps=3, total_steps=10, base_lr=1.0) == 0.0
+
+
 class TinyLogitModel(torch.nn.Module):
     def __init__(self, vocab_size=7):
         super().__init__()
@@ -121,6 +147,7 @@ def test_cpu_fixture_resumes_deterministically_from_optimizer_boundary(monkeypat
             "experiment": {"phase": "pilot", "pilot_train_rows": 4, "pilot_validation_rows": 2},
             "model": {"revision": "revision", "context_length": 512, "gradient_checkpointing": True},
             "trainer": {
+                "name": "sft",
                 "learning_rate": 1e-3,
                 "weight_decay": 0.01,
                 "batch_size": 1,

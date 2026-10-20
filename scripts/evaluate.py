@@ -17,6 +17,7 @@ from tinymath.data.load import SELECTED_MODULES
 from tinymath.eval.evaluate import evaluate_checkpoint
 from tinymath.eval.hf_evaluate import evaluate_hf_checkpoint
 from tinymath.generation import RolloutConfig
+from tinymath.runtime_gpu import wait_for_gpu_capacity
 from tinymath.tracking.provenance import read_wandb_run_id
 from tinymath.tracking.wandb import finish_wandb, initialize_tracked_run
 
@@ -44,6 +45,7 @@ def main(config: DictConfig) -> None:
     if set(config.data.modules) != set(SELECTED_MODULES):
         raise ValueError(f"The experiment is restricted to exactly these modules: {SELECTED_MODULES}")
     if str(config.model.get("backend", "tinymath")) == "huggingface":
+        wait_for_gpu_capacity(config, str(config.model.name))
         checkpoint = workspace_path(str(config.checkpoint)) if config.checkpoint else None
         if checkpoint is not None and not (checkpoint / "config.json").is_file():
             raise FileNotFoundError(f"Hugging Face model checkpoint directory not found: {checkpoint}")
