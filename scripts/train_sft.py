@@ -14,9 +14,11 @@ from omegaconf import DictConfig
 from tinymath.config import workspace_path
 from tinymath.data.load import SELECTED_MODULES
 from tinymath.model.gpt import GPTConfig, TinyMathGPT
+from tinymath.runtime_gpu import wait_for_gpu_capacity
 from tinymath.tracking.provenance import read_wandb_run_id
 from tinymath.tracking.wandb import finish_wandb, initialize_tracked_run
 from tinymath.train.budgets import isolated_training_run_dir
+from tinymath.train.hf_sft import train_hf_sft
 from tinymath.train.runner import train_sft
 
 LOGGER = logging.getLogger(__name__)
@@ -50,6 +52,8 @@ def _bundle_dir(config: DictConfig) -> Path:
 def main(config: DictConfig) -> None:
     if set(config.data.modules) != set(SELECTED_MODULES):
         raise ValueError(f"The experiment is restricted to exactly these modules: {SELECTED_MODULES}")
+    if str(config.model.get("backend", "tinymath")) == "huggingface":
+        wait_for_gpu_capacity(config, str(config.model.name))
     bundle_dir = _bundle_dir(config)
     manifest = __import__("json").loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
     run_dir = Path(
@@ -65,6 +69,38 @@ def main(config: DictConfig) -> None:
         init_checkpoint = (
             workspace_path(str(config.init_checkpoint)) if config.init_checkpoint else None
         )
+        if str(config.model.get("backend", "tinymath")) == "huggingface":
+            if init_checkpoint is not None and not init_checkpoint.exists():
+                raise FileNotFoundError(f"Hugging Face initialization checkpoint not found: {init_checkpoint}")
+            result = train_hf_sft(
+                config=config,
+                run_dir=run_dir,
+                run=run,
+                init_checkpoint=init_checkpoint,
+            )
+            run.summary.update(
+                {
+                    "training/optimizer_steps": result["step"],
+                    "training/epochs_completed": result["epoch"],
+                    "training/examples_used": result["training_examples"],
+                    "training/examples_seen": result["examples_seen"],
+                    "training/tokens_seen": result["tokens_seen"],
+                    "training/supervised_tokens_seen": result["supervised_tokens_seen"],
+                    "training/tokens_per_second": result["tokens_per_second"],
+                    "training/wall_seconds": result["wall_seconds"],
+                    "training/peak_gpu_memory_bytes": result["peak_gpu_memory_bytes"],
+                    "training/additional_estimated_flops": result[
+                        "additional_estimated_flops"
+                    ],
+                    "training/best_validation_loss": result["best_validation_loss"],
+                    "training/model_parameters": result["parameters"],
+                    "training/checkpoint": result["checkpoint"],
+                    "training/checkpoint_sha256": result["checkpoint_sha256"],
+                    "training/latest_checkpoint": result["latest_checkpoint"],
+                }
+            )
+            LOGGER.info("Hugging Face SFT finished: %s", result)
+            return
         model_values = dict(config.model)
         model_values["vocab_size"] = int(manifest["tokenizer"]["vocab_size"])
         parameter_model = TinyMathGPT(GPTConfig.from_mapping(model_values))

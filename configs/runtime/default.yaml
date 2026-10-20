@@ -6,5 +6,6 @@ parallel_model_vram_gb:
   1m: 1
   10m: 3
   100m: 8
+  qwen3_0_6b_base: 10
 parallel_gpu_poll_seconds: 10
 parallel_gpu_launch_settle_seconds: 15
