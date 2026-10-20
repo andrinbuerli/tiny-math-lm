@@ -41,8 +41,12 @@ def main(config: DictConfig) -> None:
         config.tracking.name = identity["name"]
         config.tracking.group = identity["group"]
         config.tracking.tags = identity["tags"]
+        report_revision = (
+            "comparison-report-with-historical"
+            if config.reporting.get("historical_reference") else "comparison-report-resumed"
+        )
         run_dir = workspace_path(
-            "runs", str(experiment.name), "comparison-report-resumed", f"seed{int(config.seed)}"
+            "runs", str(experiment.name), report_revision, f"seed{int(config.seed)}"
         )
     output_dir = workspace_path(str(config.reporting.output_dir))
     run = initialize_wandb(config, run_dir, job_type="comparison")
@@ -57,6 +61,9 @@ def main(config: DictConfig) -> None:
                 annotation_bundle_dir=workspace_path(str(config.reporting.annotation_bundle_dir)),
                 run_namespaces=OmegaConf.to_container(
                     config.reporting.get("run_namespaces", {}), resolve=True
+                ),
+                historical_reference=OmegaConf.to_container(
+                    config.reporting.get("historical_reference", {}), resolve=True
                 ),
                 launch_blocker=(
                     str(experiment.launch_blocker)

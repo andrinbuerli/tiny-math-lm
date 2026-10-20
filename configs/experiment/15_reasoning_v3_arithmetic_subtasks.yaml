@@ -106,6 +106,10 @@ checkpoint_provenance:
 reporting:
   output_dir: ${paths.root}/reports/exp15_reasoning_v3_arithmetic_subtasks/seed18
   annotation_bundle_dir: ${paths.root}/data/processed/exp13_reasoning_v3_arithmetic_subtasks-seed18
+  historical_reference:
+    experiment: exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k
+    figure: ${paths.root}/docs/assets/exp13-accuracy-comparison.svg
+    source_bundle_manifest_sha256: 5d493a0f4c961b84b873036ea1bc93ebb6d01b6f022d7ed81997b094da3a018f
   run_namespaces:
     1m:
       sft: exp14_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f

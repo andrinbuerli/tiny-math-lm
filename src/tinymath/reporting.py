@@ -6,6 +6,7 @@ import csv
 import hashlib
 import json
 import math
+import shutil
 import statistics
 from pathlib import Path
 from typing import Any
@@ -1927,6 +1928,7 @@ def make_exp13_report(
     launch_blocker: str | None = None,
     launch_blockers: dict[str, dict[str, str]] | None = None,
     run_namespaces: dict[str, dict[str, str]] | None = None,
+    historical_reference: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[Path]]:
     """Build the Experiment 13 reasoning-v3 versus frozen-baseline table."""
     experiment_number = (
@@ -1950,7 +1952,98 @@ def make_exp13_report(
     reported_bundle_digest = _sha256_file(annotation_bundle_dir / "manifest.json")
     launch_blockers = launch_blockers or {}
     run_namespaces = run_namespaces or {}
+    historical_reference = historical_reference or {}
     rows: list[dict[str, Any]] = []
+
+    historical_rows: list[dict[str, Any]] = []
+    historical_outputs: list[Path] = []
+    report_historical: dict[str, Any] | None = None
+    if historical_reference:
+        historical_experiment = str(historical_reference["experiment"])
+        expected_bundle_digest = str(historical_reference["source_bundle_manifest_sha256"])
+        source_figure = Path(str(historical_reference["figure"]))
+        if not source_figure.is_absolute():
+            source_figure = Path.cwd() / source_figure
+        for model in MODELS:
+            for arm in ("sft", "continued_sft"):
+                training_dir = runs_dir / historical_experiment / model / arm / f"seed{seed}"
+                checkpoint = training_dir / "best.pt"
+                result_path = _exp11_result_path(
+                    runs_dir, historical_experiment, model, arm, seed, "best",
+                    expected_checkpoint=checkpoint,
+                )
+                result = _json_file(result_path) if result_path else None
+                evaluation_dir = result_path.parent if result_path else (
+                    runs_dir / historical_experiment / model / "evaluation" / arm / "best" / f"seed{seed}"
+                )
+                checkpoint_digest = _sha256_file(checkpoint) if checkpoint.is_file() else None
+                result_bundle = (result or {}).get("bundle_sha256")
+                checkpoint_matches = bool(
+                    result and checkpoint_digest
+                    and (result or {}).get("checkpoint_sha256") == checkpoint_digest
+                )
+                bundle_matches = result_bundle == expected_bundle_digest
+                for split in SPLITS:
+                    split_result = ((result or {}).get("splits") or {}).get(split) or {}
+                    baseline = baseline_records.get((model, arm, split)) or {}
+                    expected_identity, expected_count = _question_identity_set(
+                        runs_dir / baseline_name / model / "evaluation" / arm
+                        / str(_exp11_selector(snapshot, model, arm, baseline_name) or "")
+                        / f"seed{seed}" / f"{split}_predictions.csv"
+                    )
+                    historical_identity, historical_count = _question_identity_set(
+                        evaluation_dir / f"{split}_predictions.csv"
+                    )
+                    identity_matches = bool(
+                        expected_identity and historical_identity == expected_identity
+                        and expected_count == historical_count
+                    )
+                    examples = int(split_result.get("examples") or 0)
+                    complete = bool(
+                        result and examples > 0 and checkpoint_matches and bundle_matches
+                        and identity_matches
+                    )
+                    historical_rows.append({
+                        "model": model,
+                        "arm": arm,
+                        "split": split,
+                        "accuracy": split_result.get("accuracy"),
+                        "examples": examples or None,
+                        "delta_percentage_points": (
+                            100.0 * (float(split_result["accuracy"]) - float(baseline["accuracy"]))
+                            if complete and split_result.get("accuracy") is not None
+                            and baseline.get("accuracy") is not None else None
+                        ),
+                        "status": "verified" if complete else "unverified",
+                        "checkpoint": str(checkpoint) if checkpoint.is_file() else None,
+                        "checkpoint_sha256": checkpoint_digest,
+                        "checkpoint_matches_evaluation": checkpoint_matches,
+                        "training_wandb": _wandb_provenance(training_dir),
+                        "evaluation_wandb": _wandb_provenance(evaluation_dir),
+                        "bundle_manifest_sha256": result_bundle,
+                        "bundle_matches_expected": bundle_matches,
+                        "same_baseline_question_population": identity_matches,
+                    })
+        report_historical = {
+            "experiment": historical_experiment,
+            "source_bundle_manifest_sha256": expected_bundle_digest,
+            "source_figure": str(source_figure),
+            "rows": historical_rows,
+        }
+        report_historical_path = output_dir / "historical_reference.csv"
+        hist_fields = list(historical_rows[0]) if historical_rows else []
+        with report_historical_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=hist_fields)
+            writer.writeheader()
+            writer.writerows(historical_rows)
+        historical_outputs.append(report_historical_path)
+        if source_figure.is_file():
+            figure_copy = output_dir / source_figure.name
+            shutil.copy2(source_figure, figure_copy)
+            report_historical["copied_figure"] = str(figure_copy)
+            historical_outputs.append(figure_copy)
+        else:
+            report_historical["figure_missing"] = True
 
     for model in MODELS:
         for arm in ARMS:
@@ -2176,6 +2269,8 @@ def make_exp13_report(
             "The comparison covers one seed; no between-seed uncertainty estimate is available.",
         ],
     }
+    if report_historical is not None:
+        report["historical_reference"] = report_historical
     bundle_validation_path = output_dir / "bundle_validation.json"
     bundle_validation = _json_file(bundle_validation_path)
     if bundle_validation is not None:
@@ -2255,6 +2350,27 @@ def make_exp13_report(
         f"- Reasoning-v3 bundle: `{annotation_bundle_dir}` (protocol `{manifest.get('annotation', {}).get('protocol')}`, manifest SHA256 `{report['reasoning_v3_provenance']['manifest_sha256']}`).",
         "- Evaluation population: parent rows only; the bundle’s added standalone subtask rows are excluded so the question IDs match the frozen baseline.",
     ])
+    if historical_rows:
+        historical = report.get("historical_reference", {})
+        figure_name = Path(str(historical.get("copied_figure") or historical.get("source_figure"))).name
+        lines.extend([
+            "", "## Historical SFT and continued-SFT results (Experiment 13)", "",
+            f"These completed reasoning-v3 evaluations are included as historical comparison arms; they are separate from the current Experiment {experiment_number} rows. Values are verified against their checkpoint hashes, source bundle manifest, and identical frozen-baseline question populations. Source run: `{historical.get('experiment')}`; source figure: `{figure_name}`.", "",
+            "| Model | Arm | Split | Accuracy (scored) | Δ vs frozen baseline (pp) | Verification | Checkpoint SHA256 | Training W&B | Evaluation W&B |",
+            "|---|---|---|---:|---:|---|---|---|---|",
+        ])
+        for item in historical_rows:
+            value = accuracy(item["accuracy"])
+            value = f"{value} ({item['examples'] or '—'})"
+            delta = f"{item['delta_percentage_points']:+.2f}" if item["delta_percentage_points"] is not None else "—"
+            lines.append(
+                f"| {item['model']} | {item['arm']} | {item['split']} | {value} | {delta} | {item['status']} | `{item['checkpoint_sha256'] or '—'}` | `{item['training_wandb'].get('run_id') or '—'}` | `{item['evaluation_wandb'].get('run_id') or '—'}` |"
+            )
+        lines.append("")
+        if historical.get("copied_figure"):
+            lines.append(f"![Experiment 13 baseline versus reasoning-v3 accuracy]({figure_name})")
+        else:
+            lines.append(f"Original chart is missing at `{historical.get('source_figure')}`.")
     if "bundle_validation" in report:
         validation = report["bundle_validation"]
         lines.extend([
@@ -2293,23 +2409,46 @@ def make_exp13_report(
     markdown_path.write_text("\n".join(lines), encoding="utf-8")
 
     fig, axes = plt.subplots(1, 3, figsize=(16, 5), sharey=True)
+    historical_lookup = {
+        (row["model"], row["arm"], row["split"]): row
+        for row in historical_rows
+    }
     for axis, split in zip(axes, SPLITS):
         selected = [row for row in rows if row["split"] == split]
         x = list(range(len(selected)))
-        width = 0.38
+        width = 0.25
         base_values = [100 * row["baseline_accuracy"] if row["baseline_accuracy"] is not None else 0 for row in selected]
-        axis.bar([i - width / 2 for i in x], base_values, width, label="Baseline")
-        measured = [
-            (i + width / 2, 100 * row["reasoning_accuracy"])
+        axis.bar([i - width for i in x], base_values, width, label="Frozen baseline")
+        historical = [historical_lookup.get((row["model"], row["arm"], split)) for row in selected]
+        historical_measured = [
+            (i, 100 * old["accuracy"])
+            for i, old in enumerate(historical)
+            if old is not None and old.get("accuracy") is not None
+        ]
+        if historical_measured:
+            axis.bar(
+                [item[0] for item in historical_measured],
+                [item[1] for item in historical_measured], width,
+                label="Exp13 historical SFT / continued-SFT", color="#8c6bb1",
+            )
+        current_measured = [
+            (i + width, 100 * row["reasoning_accuracy"])
             for i, row in enumerate(selected) if row["reasoning_accuracy"] is not None
         ]
-        if measured:
-            axis.bar([item[0] for item in measured], [item[1] for item in measured], width, label="Reasoning-v3")
+        if current_measured:
+            axis.bar(
+                [item[0] for item in current_measured],
+                [item[1] for item in current_measured], width,
+                label=f"Experiment {experiment_number}", color="#3182bd",
+            )
         axis.set_title(split)
         axis.set_xticks(x, [f"{r['model']}\n{r['arm']}" for r in selected], rotation=45, ha="right")
         axis.set_ylabel("Accuracy (%)")
         axis.grid(axis="y", alpha=0.25)
-    axes[0].legend(fontsize=8)
-    fig.suptitle(f"Experiment {experiment_number} reasoning-v3 versus frozen baseline")
+    axes[0].legend(fontsize=7)
+    fig.suptitle(
+        f"Experiment {experiment_number} reasoning-v3 vs frozen baseline "
+        "(Exp13 SFT history shown where available)"
+    )
     figures = _save(fig, output_dir, "accuracy_comparison")
-    return report, [markdown_path, json_path, csv_path, *figures]
+    return report, [markdown_path, json_path, csv_path, *figures, *historical_outputs]

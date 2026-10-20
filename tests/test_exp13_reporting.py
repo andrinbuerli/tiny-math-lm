@@ -88,6 +88,59 @@ def test_exp13_report_lists_all_rows_and_marks_missing_evaluations_not_run(works
     assert "not-run" in markdown
 
 
+def test_exp15_historical_reference_includes_verified_results_and_svg(workspace_tmpdir):
+    baseline = _baseline_snapshot(workspace_tmpdir / "baseline.json")
+    bundle = workspace_tmpdir / "bundle"
+    bundle.mkdir()
+    (bundle / "manifest.json").write_text(json.dumps({
+        "annotation": {"protocol": "reasoning_v3"}, "tokenizer": {}, "splits": {},
+    }), encoding="utf-8")
+    runs = workspace_tmpdir / "runs"
+    training_experiment = "exp13-history"
+    checkpoint = runs / training_experiment / "1m" / "sft" / "seed18" / "best.pt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_bytes(b"verified checkpoint")
+    checkpoint_digest = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+    evaluation = runs / training_experiment / "1m" / "evaluation" / "sft" / "best" / "seed18"
+    _write_predictions(evaluation / "test_predictions.csv", [("mod", "question", "answer")])
+    (evaluation / "results.json").write_text(json.dumps({
+        "checkpoint": str(checkpoint),
+        "checkpoint_sha256": checkpoint_digest,
+        "bundle_sha256": "expected-source-bundle",
+        "splits": {"test": {"accuracy": 0.75, "examples": 1}},
+    }), encoding="utf-8")
+    baseline_eval = runs / "frozen-baseline" / "1m" / "evaluation" / "sft" / "best" / "seed18"
+    _write_predictions(baseline_eval / "test_predictions.csv", [("mod", "question", "answer")])
+    figure = workspace_tmpdir / "exp13.svg"
+    figure.write_text("<svg/>", encoding="utf-8")
+
+    output = workspace_tmpdir / "reports"
+    report, outputs = make_exp13_report(
+        runs_dir=runs,
+        output_dir=output,
+        experiment="exp15_reasoning_v3_arithmetic_subtasks",
+        baseline_snapshot=baseline,
+        annotation_bundle_dir=bundle,
+        historical_reference={
+            "experiment": training_experiment,
+            "source_bundle_manifest_sha256": "expected-source-bundle",
+            "figure": str(figure),
+        },
+    )
+
+    row = next(
+        item for item in report["historical_reference"]["rows"]
+        if item["model"] == "1m" and item["arm"] == "sft" and item["split"] == "test"
+    )
+    assert row["status"] == "verified"
+    assert row["accuracy"] == 0.75
+    assert (output / "exp13.svg").read_text(encoding="utf-8") == "<svg/>"
+    assert output / "historical_reference.csv" in outputs
+    assert "Historical SFT and continued-SFT results" in (
+        output / "intermediate_results.md"
+    ).read_text(encoding="utf-8")
+
+
 def test_exp13_report_records_a_launch_blocker(workspace_tmpdir):
     baseline = _baseline_snapshot(workspace_tmpdir / "baseline.json")
     bundle = workspace_tmpdir / "bundle"
