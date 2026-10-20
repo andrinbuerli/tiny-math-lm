@@ -35,6 +35,20 @@ def _find_cache(config: Any) -> tuple[Path, dict[str, Any]]:
     return manifest_path.parent, manifest
 
 
+def _pilot_indices(split: HFTokenSplit, row_cap: int, seed: int) -> list[int]:
+    """Choose a deterministic pilot subset that always contains the longest row."""
+    if row_cap < 1:
+        raise ValueError("pilot_train_rows must be positive")
+    if row_cap >= len(split):
+        return list(range(len(split)))
+    lengths = np.diff(split.offsets)
+    longest = int(np.argmax(lengths))
+    candidates = np.concatenate((np.arange(longest), np.arange(longest + 1, len(split))))
+    rng = np.random.default_rng(seed)
+    sampled = rng.choice(candidates, size=row_cap - 1, replace=False).tolist()
+    return sorted([longest, *(int(index) for index in sampled)])
+
+
 def _batch_loss(
     model: Any,
     split: HFTokenSplit,
@@ -143,15 +157,7 @@ def train_hf_sft(
     experiment_phase = str(config.experiment.phase)
     if experiment_phase in {"pilot", "smoke"}:
         row_cap = int(config.experiment.get("pilot_train_rows", 64))
-        if row_cap < 1:
-            raise ValueError("pilot_train_rows must be positive")
-        if row_cap < len(train_split):
-            rng = np.random.default_rng(int(config.seed))
-            selected = rng.permutation(len(train_split))[:row_cap]
-            # Reuse the original memory-mapped split by limiting epoch permutations.
-            train_indices = np.sort(selected).tolist()
-        else:
-            train_indices = list(range(len(train_split)))
+        train_indices = _pilot_indices(train_split, row_cap, int(config.seed))
         validation_cap = int(config.experiment.get("pilot_validation_rows", 64))
     else:
         train_indices = list(range(len(train_split)))

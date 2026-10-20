@@ -12,6 +12,22 @@ from tinymath.train.hf_generation import NativeRollout, generate_native_rollout
 from tinymath.train.hf_grpo import PromptRollouts, chunked_grpo_backward, native_policy_statistics
 
 
+def test_pilot_subset_always_contains_longest_native_token_sequence():
+    import numpy as np
+
+    class Split:
+        offsets = np.array([0, 2, 8, 12, 30, 34], dtype=np.uint64)
+
+        def __len__(self):
+            return 5
+
+    first = hf_sft._pilot_indices(Split(), row_cap=3, seed=18)
+    second = hf_sft._pilot_indices(Split(), row_cap=3, seed=18)
+    assert first == second
+    assert 3 in first
+    assert len(first) == 3
+
+
 class TinyLogitModel(torch.nn.Module):
     def __init__(self, vocab_size=7):
         super().__init__()
