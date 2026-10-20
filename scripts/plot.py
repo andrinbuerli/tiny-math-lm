@@ -63,9 +63,10 @@ def main(config: DictConfig) -> None:
                     config.reporting.get("run_namespaces", {}), resolve=True
                 ),
                 historical_reference=OmegaConf.to_container(
-                    OmegaConf.create(config.reporting.get("historical_reference", {})),
-                    resolve=True,
-                ),
+                    config.reporting.get("historical_reference"), resolve=True
+                )
+                if OmegaConf.is_config(config.reporting.get("historical_reference"))
+                else dict(config.reporting.get("historical_reference") or {}),
                 launch_blocker=(
                     str(experiment.launch_blocker)
                     if experiment.get("launch_blocker") else None
