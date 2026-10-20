@@ -1,5 +1,5 @@
 project: tinymath-rl
-entity: ${oc.env:WANDB_ENTITY,andi-mueller-csem-sa}
+entity: ${oc.env:WANDB_ENTITY,""}
 group: ${experiment.name}
 name: ${experiment.name}-${model.name}-seed${seed}
 mode: online

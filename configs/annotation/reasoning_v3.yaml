@@ -23,7 +23,7 @@ model:
   context_length: 512
 tracking:
   project: tinymath-rl
-  entity: ${oc.env:WANDB_ENTITY,andi-mueller-csem-sa}
+  entity: ${oc.env:WANDB_ENTITY,""}
   group: exp13-reasoning-v3-arithmetic-subtasks-seed18
   name: exp13-reasoning-v3-proper-subexpressions-v1-data-annotation-seed18
   mode: online

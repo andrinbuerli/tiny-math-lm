@@ -21,7 +21,7 @@ model:
   context_length: 512
 tracking:
   project: tinymath-rl
-  entity: ${oc.env:WANDB_ENTITY,andi-mueller-csem-sa}
+  entity: ${oc.env:WANDB_ENTITY,""}
   group: exp16-reasoning-v4-explicit-linear-collect-seed18
   name: exp16-reasoning-v4-explicit-linear-collect-data-annotation-seed18
   mode: online

@@ -217,6 +217,9 @@ def initialize_wandb(
         )
     config_path = persist_resolved_config(config, run_path)
     run_id = state.get("id") or secrets.token_hex(8)
+    entity_value = tracking.get("entity")
+    entity = str(entity_value).strip() if entity_value is not None else ""
+    entity = entity or None
     from tinymath.tracking.naming import build_run_naming
 
     job_metadata = dict(job_metadata or {})
@@ -265,7 +268,7 @@ def initialize_wandb(
     try:
         run = wandb.init(
             project=str(naming["project"]),
-            entity=tracking.get("entity"),
+            entity=entity,
             group=str(naming["group"]),
             name=str(naming["name"]),
             tags=list(tracking.get("tags", [])),
@@ -279,7 +282,7 @@ def initialize_wandb(
         )
         _ACTIVE_STATE_PATHS[str(getattr(run, "id", run_id))] = state_path
         state["url"] = getattr(run, "url", None)
-        state["entity"] = tracking.get("entity")
+        state["entity"] = entity
         state["project"] = str(naming["project"])
         _write_tracking_state(state_path, state)
         # runtime_info probes CUDA. Collect it after W&B has started its service

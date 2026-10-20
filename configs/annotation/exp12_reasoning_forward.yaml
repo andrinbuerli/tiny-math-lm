@@ -20,7 +20,7 @@ model:
   context_length: 512
 tracking:
   project: tinymath-rl
-  entity: ${oc.env:WANDB_ENTITY,andi-mueller-csem-sa}
+  entity: ${oc.env:WANDB_ENTITY,""}
   group: exp12-reasoning-forward-fullsteps-seed18
   name: exp12-reasoning-forward-fullsteps-data-annotation-607000-rows-seed18
   mode: online

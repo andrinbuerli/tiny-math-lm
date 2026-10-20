@@ -156,14 +156,22 @@ def test_resume_allows_only_reasoning_v3_sampler_strategy_change():
     assert not tracking._compatible_with_runtime_extension(saved, changed_bundle)
 
 
-def test_wandb_entity_defaults_to_configured_team(monkeypatch):
+def test_wandb_entity_uses_authenticated_account_unless_configured(monkeypatch):
     monkeypatch.delenv("WANDB_ENTITY", raising=False)
     with initialize_config_dir(version_base="1.3", config_dir=str(Path(__file__).resolve().parents[1] / "configs")):
         config = compose(
             config_name="config",
             overrides=["experiment=11_reasoning_500k_100k", "model=1m"],
         )
-    assert config.tracking.entity == "andi-mueller-csem-sa"
+    assert config.tracking.entity in (None, "")
+
+    monkeypatch.setenv("WANDB_ENTITY", "example-team")
+    with initialize_config_dir(version_base="1.3", config_dir=str(Path(__file__).resolve().parents[1] / "configs")):
+        configured = compose(
+            config_name="config",
+            overrides=["experiment=11_reasoning_500k_100k", "model=1m"],
+        )
+    assert configured.tracking.entity == "example-team"
 
 
 def test_continued_sft_config_approximately_matches_grpo_compute():
@@ -268,6 +276,7 @@ def test_read_wandb_run_id_from_local_run_metadata(workspace_tmpdir):
 
 
 def test_wandb_offline_initialization_reuses_id(workspace_tmpdir, monkeypatch):
+    monkeypatch.delenv("WANDB_ENTITY", raising=False)
     captured = []
 
     class FakeRun:
@@ -293,6 +302,7 @@ def test_wandb_offline_initialization_reuses_id(workspace_tmpdir, monkeypatch):
         config = compose(config_name="config", overrides=["tracking.mode=offline"])
     tracking.initialize_wandb(config, workspace_tmpdir, job_type="unit")
     first_id = captured[0]["id"]
+    assert captured[0]["entity"] is None
     state = json.loads((workspace_tmpdir / "wandb_run.json").read_text())
     assert state["sync_status"] == "unsynced"
     second_run = tracking.initialize_wandb(config, workspace_tmpdir, job_type="unit")
