@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from tinymath.data.hf_reasoning import (
@@ -8,6 +10,7 @@ from tinymath.data.hf_reasoning import (
     select_parent_rows,
     select_training_rows,
 )
+from tinymath.data.hf_token_cache import _write_split
 
 
 class FakeTokenizer:
@@ -68,7 +71,7 @@ def test_completion_labels_include_native_eos_but_mask_prompt():
 
 
 def test_true_eos_is_not_confused_with_padding_and_over_context_rows_are_rejected():
-    ids, labels, _ = encode_completion(FakeTokenizer(), _row())
+    _ids, labels, _ = encode_completion(FakeTokenizer(), _row())
     padded_labels = labels + [-100, -100]
     assert padded_labels[-3] == FakeTokenizer.eos_token_id
     with pytest.raises(ValueError, match="refusing to truncate or drop"):
@@ -80,3 +83,34 @@ def test_identity_hash_ignores_input_order_but_tracks_module_question_target():
     second = _row(question="Calculate 2 + 2.")
     assert identity_hash([first, second]) == identity_hash([second, first])
     assert identity_hash([first])[0] != identity_hash([second])[0]
+
+
+def test_binary_cache_streams_parents_and_only_eligible_standalone_rows(tmp_path):
+    source = tmp_path / "train.jsonl"
+    rows = [
+        _row(),
+        _row(is_sub_task=True, training_eligible=True, overlapping_splits=[]),
+        _row(is_sub_task=True, training_eligible=False, overlapping_splits=["test"]),
+    ]
+    source.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    result = _write_split(
+        split="train",
+        source_path=source,
+        destination=tmp_path,
+        tokenizer=FakeTokenizer(),
+        context_length=512,
+        completion_cap=512,
+    )
+    cached_rows = [
+        json.loads(line)
+        for line in (tmp_path / "train.rows.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert result["rows"] == 2
+    assert len(cached_rows) == 2
+    assert [row["prompt_tokens"] for row in cached_rows] == [
+        len(FakeTokenizer().encode(render_prompt(row["question"]))) for row in rows[:2]
+    ]
+    assert (tmp_path / "train.ids.u32le").stat().st_size == sum(
+        row["prompt_tokens"] + row["completion_tokens"] for row in cached_rows
+    ) * 4
+    assert result["fixed_question_identity_count"] == 2

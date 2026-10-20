@@ -67,7 +67,7 @@ def select_training_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]
                 selected.append(row)
         else:
             selected.append(row)
-    if any(set(row.get("module", "") for row in selected) - set(SELECTED_MODULES)):
+    if {row.get("module", "") for row in selected} - set(SELECTED_MODULES):
         raise ValueError("SFT rows contain a module outside the required five-module scope")
     return selected
 
