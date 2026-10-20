@@ -110,6 +110,30 @@ def test_checkpoint_validation_checks_revision_tokenizer_and_weight_hashes(tmp_p
         _validate_checkpoint_identity(tmp_path, provenance | {"model_revision": "another"})
 
 
+def test_evaluation_progress_discards_only_a_torn_final_append(tmp_path):
+    progress = tmp_path / "progress.jsonl"
+    identity = {"split": "test", "checkpoint": "base"}
+    expected = {"row_index": 0, "question": "2 * 3"}
+    hf_evaluate._progress_identity(progress, identity)
+    hf_evaluate._append_progress(progress, expected)
+    with progress.open("ab") as handle:
+        handle.write(b'{"row_index": 1')
+
+    recovered = hf_evaluate._progress_identity(progress, identity)
+    assert recovered == [expected]
+    assert progress.read_bytes().endswith(b"\n")
+    hf_evaluate._append_progress(progress, {"row_index": 1, "question": "3 * 4"})
+    assert len(hf_evaluate._progress_identity(progress, identity)) == 2
+
+
+def test_evaluation_progress_rejects_corrupt_complete_rows(tmp_path):
+    progress = tmp_path / "progress.jsonl"
+    hf_evaluate._progress_identity(progress, {"split": "test"})
+    progress.write_text("not json\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="Corrupt evaluation progress row 1"):
+        hf_evaluate._progress_identity(progress, {"split": "test"})
+
+
 def test_hf_evaluation_writes_both_formats_with_cpu_fixture(monkeypatch, tmp_path):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     row = {

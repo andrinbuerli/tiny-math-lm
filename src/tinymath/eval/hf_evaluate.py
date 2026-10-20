@@ -5,6 +5,8 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
+import tempfile
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -157,6 +159,70 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows({field: row.get(field, "") for field in fields} for row in rows)
 
 
+def _progress_identity(path: Path, identity: dict[str, Any]) -> list[dict[str, Any]]:
+    identity_path = path.with_suffix(path.suffix + ".identity.json")
+    if path.exists() and not identity_path.is_file():
+        raise ValueError(f"Evaluation progress is missing its identity file: {path}")
+    if identity_path.is_file():
+        saved = json.loads(identity_path.read_text(encoding="utf-8"))
+        if saved != identity:
+            raise ValueError(f"Evaluation progress identity changed: {path}")
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=f".{identity_path.name}.", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(identity, handle, sort_keys=True, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, identity_path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+    if not path.is_file():
+        return []
+    content = path.read_bytes()
+    complete_content = content
+    if content and not content.endswith(b"\n"):
+        last_newline = content.rfind(b"\n")
+        complete_content = content[: last_newline + 1] if last_newline >= 0 else b""
+        # Discard a single torn append so the next resumed row starts cleanly.
+        with path.open("r+b") as handle:
+            handle.truncate(len(complete_content))
+    records = []
+    for line_number, raw_line in enumerate(complete_content.splitlines(), start=1):
+        if not raw_line.strip():
+            continue
+        try:
+            records.append(json.loads(raw_line))
+        except json.JSONDecodeError:
+            raise ValueError(f"Corrupt evaluation progress row {line_number}: {path}") from None
+    return records
+
+
+def _append_progress(path: Path, record: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _validate_progress_rows(records: list[dict[str, Any]], rows: list[dict[str, Any]]) -> None:
+    if len(records) > len(rows):
+        raise ValueError("Evaluation progress contains more predictions than fixed questions")
+    for index, record in enumerate(records):
+        row = rows[index]
+        if (
+            int(record.get("row_index", -1)) != index
+            or record.get("module") != row.get("module")
+            or record.get("question") != row.get("question")
+            or record.get("target") != row.get("answer")
+        ):
+            raise ValueError(f"Evaluation progress question identity changed at row {index}")
+
+
 def evaluate_hf_checkpoint(
     *, config: Any, bundle_dir: Path, output_dir: Path, checkpoint: Path | None,
     split_names: list[str], max_examples_per_split: int | None = None,
@@ -199,8 +265,24 @@ def evaluate_hf_checkpoint(
             raise ValueError(f"Fixed {split_name} question identities changed")
         rows = all_rows[:count]
         for mode in ("ordinary_qa", "reasoning_executor"):
-            records: list[dict[str, Any]] = []
+            progress_path = output_dir / "progress" / f"{split_name}_{mode}.jsonl"
+            progress_identity = {
+                "schema": "exp16_hf_eval_progress_v1",
+                "checkpoint_sha256": checkpoint_identity.get("checkpoint_sha256"),
+                "base_model_revision": str(config.model.revision) if checkpoint is None else None,
+                "token_cache_manifest_sha256": sha256_file(cache_dir / "manifest.json"),
+                "split": split_name,
+                "split_identity_sha256": expected["fixed_question_identity_sha256"],
+                "format": mode,
+                "rows": count,
+                "completion_cap": int(config.eval.max_new_tokens),
+                "rollout": dict(config.rollout),
+            }
+            records = _progress_identity(progress_path, progress_identity)
+            _validate_progress_rows(records, rows)
             for index, row in enumerate(rows):
+                if index < len(records):
+                    continue
                 digit_width, operator_count = question_features(str(row["question"]))
                 base = {
                     "row_index": index,
@@ -222,11 +304,11 @@ def evaluate_hf_checkpoint(
                         context=int(config.model.context_length), cap=int(config.eval.max_new_tokens),
                     )
                     correct, valid = verify_answer(prediction, str(row["answer"]), question=str(row["question"]))
-                    records.append(base | {
+                    record = base | {
                         "prediction": prediction, "correct": bool(correct and valid), "format_valid": valid,
                         "capped": capped, "output_tokens": token_count, "policy_tokens": token_count,
                         "termination_reason": "budget_exceeded" if capped else "newline_or_eos",
-                    })
+                    }
                 else:
                     prompt_ids = tokenizer.encode(f"Q: {row['question']}\n", add_special_tokens=False)
                     rollout = generate_native_rollout(
@@ -248,7 +330,7 @@ def evaluate_hf_checkpoint(
                         max_calls=int(config.rollout.max_calls),
                         max_scalar_chars=int(config.rollout.max_scalar_chars),
                     )
-                    records.append(base | {
+                    record = base | {
                         "prediction": text, "correct": scored.answer_correct, "format_valid": scored.format_valid,
                         "trace_valid": scored.trace_valid, "full_success": scored.full_success,
                         "capped": rollout.termination_reason == "budget_exceeded",
@@ -256,7 +338,9 @@ def evaluate_hf_checkpoint(
                         "executor_failure": rollout.termination_reason not in {"eos", "budget_exceeded"},
                         "policy_tokens": rollout.policy_tokens, "executor_tokens": rollout.executor_tokens,
                         "termination_reason": rollout.termination_reason,
-                    })
+                    }
+                records.append(record)
+                _append_progress(progress_path, record)
             summary = _summarize(records)
             key = f"{split_name}/{mode}"
             all_results[key] = summary
