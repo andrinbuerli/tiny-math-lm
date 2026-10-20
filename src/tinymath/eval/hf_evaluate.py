@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 from collections import defaultdict
 from pathlib import Path
@@ -17,6 +18,8 @@ from tinymath.data.splits import question_features
 from tinymath.model.hf_qwen import load_model, load_tokenizer, model_provenance
 from tinymath.rewards.verify import verify_answer
 from tinymath.train.hf_generation import _mask_non_token_logits, generate_native_rollout
+
+FIXED_SPLIT_COUNTS = {"test": 50_000, "number_length_ood": 5_000, "expression_length_ood": 2_000}
 
 
 def _cache_dir(config: Any) -> Path:
@@ -75,6 +78,40 @@ def _ratio(numerator: int, denominator: int) -> float | None:
     return numerator / denominator if denominator else None
 
 
+def _validate_checkpoint_identity(checkpoint: Path, provenance: dict[str, Any]) -> dict[str, Any]:
+    identity_path = checkpoint / "experiment_identity.json"
+    if not identity_path.is_file():
+        raise FileNotFoundError(f"Checkpoint provenance is missing: {identity_path}")
+    identity = json.loads(identity_path.read_text(encoding="utf-8"))
+    for key, actual in (
+        ("model_revision", provenance["model_revision"]),
+        ("model_config_sha256", provenance["model_config_sha256"]),
+        ("tokenizer_sha256", provenance["tokenizer_sha256"]),
+        ("parameters", provenance["model_parameters"]),
+    ):
+        if identity.get(key) != actual:
+            raise ValueError(f"Checkpoint {key} does not match the pinned evaluation model")
+    local_config = checkpoint / "config.json"
+    if (
+        not local_config.is_file()
+        or sha256_file(local_config) != identity.get("checkpoint_config_sha256")
+    ):
+        raise ValueError("Checkpoint serialized config hash does not match its identity")
+    weights = identity.get("model_weight_files", {})
+    if not weights:
+        raise ValueError("Checkpoint identity has no weight-file hashes")
+    digest = hashlib.sha256()
+    for filename, expected_hash in sorted(weights.items()):
+        path = checkpoint / filename
+        if not path.is_file() or sha256_file(path) != expected_hash:
+            raise ValueError(f"Checkpoint weight file hash mismatch: {filename}")
+        digest.update(filename.encode("utf-8"))
+        digest.update(expected_hash.encode("ascii"))
+    if digest.hexdigest() != identity.get("checkpoint_sha256"):
+        raise ValueError("Checkpoint aggregate weight hash does not match its identity")
+    return identity
+
+
 def _summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     digits: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -128,19 +165,32 @@ def evaluate_hf_checkpoint(
     """Evaluate ordinary Q/A and reasoning/executor formats on the same fixed rows."""
     cache_dir = _cache_dir(config)
     cache_manifest = json.loads((cache_dir / "manifest.json").read_text(encoding="utf-8"))
-    if cache_manifest["source_bundle_manifest_sha256"] != config.checkpoint_provenance.data_bundle_manifest_sha256:
+    expected_bundle = str(config.checkpoint_provenance.data_bundle_manifest_sha256)
+    if sha256_file(bundle_dir / "manifest.json") != expected_bundle:
+        raise ValueError("Evaluation source bundle manifest does not match Experiment 15 provenance")
+    if cache_manifest["source_bundle_manifest_sha256"] != expected_bundle:
         raise ValueError("Evaluation token cache belongs to a different source bundle")
     tokenizer = load_tokenizer(config.model)
     model = load_model(config.model, checkpoint=checkpoint, training=False)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device).eval()
     provenance = model_provenance(config.model, tokenizer, model)
+    checkpoint_identity = (
+        _validate_checkpoint_identity(checkpoint, provenance) if checkpoint is not None else {}
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     all_results: dict[str, Any] = {}
     for split_name in split_names:
         split = HFTokenSplit(cache_dir, split_name)
         expected = cache_manifest["splits"][split_name]
-        if len(split) != int(expected["fixed_question_identity_count"]):
+        expected_count = FIXED_SPLIT_COUNTS[split_name]
+        declared_identities = config.checkpoint_provenance.fixed_evaluation_question_identity_sha256
+        if expected["fixed_question_identity_sha256"] != declared_identities[split_name]:
+            raise ValueError(f"Fixed {split_name} population differs from Experiment 15 provenance")
+        if (
+            int(expected["fixed_question_identity_count"]) != expected_count
+            or len(split) != expected_count
+        ):
             raise ValueError(f"Fixed {split_name} population count changed")
         count = len(split) if max_examples_per_split is None else min(len(split), max_examples_per_split)
         all_rows = list(split.rows())
@@ -185,7 +235,10 @@ def evaluate_hf_checkpoint(
                         max_completion_tokens=int(config.eval.max_new_tokens),
                         temperature=0.0, rollout=config.rollout, greedy=True,
                     )
-                    text = tokenizer.decode(rollout.token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
+                    completion_ids = rollout.token_ids
+                    if completion_ids and completion_ids[-1] == tokenizer.eos_token_id:
+                        completion_ids = completion_ids[:-1]
+                    text = tokenizer.decode(completion_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
                     scored = score_native_reasoning(
                         text, row,
                         capped=rollout.termination_reason == "budget_exceeded",
@@ -212,10 +265,6 @@ def evaluate_hf_checkpoint(
                 run.log({f"eval/{key}/{metric}": value for metric, value in summary.items() if isinstance(value, (int, float)) and value is not None})
                 for module, metrics in summary["by_module"].items():
                     run.log({f"eval/{key}/module/{module}/{metric}": value for metric, value in metrics.items() if isinstance(value, (int, float)) and value is not None})
-    checkpoint_identity = {}
-    if checkpoint is not None:
-        identity_path = checkpoint / "experiment_identity.json"
-        checkpoint_identity = json.loads(identity_path.read_text(encoding="utf-8"))
     result = {
         "experiment": str(config.experiment.name),
         "checkpoint": str(checkpoint) if checkpoint else "pinned_pristine_base",

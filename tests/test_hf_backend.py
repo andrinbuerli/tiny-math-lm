@@ -132,6 +132,7 @@ class TinyTrainModel(torch.nn.Module):
         del safe_serialization
         path.mkdir(parents=True, exist_ok=True)
         (path / "tiny-model.json").write_text("{}", encoding="utf-8")
+        (path / "config.json").write_text("{}", encoding="utf-8")
         (path / "model.safetensors").write_bytes(b"tiny fixture weights")
 
 

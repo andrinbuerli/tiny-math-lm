@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import hashlib
+import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
 
+import pytest
 import torch
+from omegaconf import OmegaConf
 
-from tinymath.eval.hf_evaluate import _generate_qa, _summarize
+from tinymath.data.hf_reasoning import identity_hash
+from tinymath.eval import hf_evaluate
+from tinymath.eval.hf_evaluate import _generate_qa, _summarize, _validate_checkpoint_identity
+from tinymath.train.hf_generation import NativeRollout
 
 
 class _Tokenizer:
@@ -70,3 +78,144 @@ def test_hf_evaluation_summary_keeps_protocol_and_length_metrics():
     assert result["capped_completions"] == 1
     assert result["policy_tokens"] == 7
     assert result["executor_tokens"] == 1
+
+
+def test_checkpoint_validation_checks_revision_tokenizer_and_weight_hashes(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}", encoding="utf-8")
+    weight_path = tmp_path / "model.safetensors"
+    weight_path.write_bytes(b"fixture weights")
+    weight_hash = hashlib.sha256(weight_path.read_bytes()).hexdigest()
+    digest = hashlib.sha256()
+    digest.update(b"model.safetensors")
+    digest.update(weight_hash.encode("ascii"))
+    identity = {
+        "model_revision": "revision",
+        "model_config_sha256": "config",
+        "tokenizer_sha256": "tokenizer",
+        "parameters": 123,
+        "checkpoint_config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
+        "model_weight_files": {"model.safetensors": weight_hash},
+        "checkpoint_sha256": digest.hexdigest(),
+    }
+    (tmp_path / "experiment_identity.json").write_text(json.dumps(identity), encoding="utf-8")
+    provenance = {
+        "model_revision": "revision",
+        "model_config_sha256": "config",
+        "tokenizer_sha256": "tokenizer",
+        "model_parameters": 123,
+    }
+    assert _validate_checkpoint_identity(tmp_path, provenance)["checkpoint_sha256"] == digest.hexdigest()
+    with pytest.raises(ValueError, match="model_revision"):
+        _validate_checkpoint_identity(tmp_path, provenance | {"model_revision": "another"})
+
+
+def test_hf_evaluation_writes_both_formats_with_cpu_fixture(monkeypatch, tmp_path):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    row = {
+        "module": "arithmetic__mul",
+        "question": "2 * 3",
+        "answer": "6",
+        "scratchpad": "step:multiply:2*3=6",
+        "tool_calls_allowed": False,
+        "is_sub_task": False,
+    }
+    identity, count = identity_hash([row])
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "manifest.json").write_text("bundle manifest", encoding="utf-8")
+    bundle_digest = hashlib.sha256((bundle / "manifest.json").read_bytes()).hexdigest()
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "manifest.json").write_text(
+        json.dumps(
+            {
+                "source_bundle_manifest_sha256": bundle_digest,
+                "splits": {
+                    "test": {
+                        "rows": count,
+                        "fixed_question_identity_count": count,
+                        "fixed_question_identity_sha256": identity,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class Split:
+        def __init__(self, _cache_dir, _split):
+            pass
+
+        def __len__(self):
+            return 1
+
+        def rows(self):
+            return iter([row])
+
+    class Tokenizer(_Tokenizer):
+        def encode(self, value, add_special_tokens=False):
+            return [9]
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.anchor = torch.nn.Parameter(torch.zeros(()))
+
+        def forward(self, input_ids, **kwargs):
+            logits = torch.full((1, input_ids.shape[1], 10), -10.0)
+            logits[:, -1, 0] = 10.0
+            return SimpleNamespace(logits=logits, past_key_values=object())
+
+    monkeypatch.setattr(hf_evaluate, "FIXED_SPLIT_COUNTS", {"test": 1})
+    monkeypatch.setattr(hf_evaluate, "_cache_dir", lambda _config: cache)
+    monkeypatch.setattr(hf_evaluate, "HFTokenSplit", Split)
+    monkeypatch.setattr(hf_evaluate, "load_tokenizer", lambda _config: Tokenizer())
+    monkeypatch.setattr(hf_evaluate, "load_model", lambda *_args, **_kwargs: Model())
+    monkeypatch.setattr(
+        hf_evaluate,
+        "model_provenance",
+        lambda *_args: {
+            "model_revision": "revision",
+            "model_config_sha256": "config",
+            "tokenizer_sha256": "tokenizer",
+            "model_parameters": 1,
+        },
+    )
+    monkeypatch.setattr(
+        hf_evaluate,
+        "generate_native_rollout",
+        lambda *_args, **_kwargs: NativeRollout(
+            token_ids=[1, 0],
+            policy_mask=[True, True],
+            old_log_probs=[0.0, 0.0],
+            entropy=[0.0, 0.0],
+            termination_reason="eos",
+            call_events=(),
+        ),
+    )
+    config = OmegaConf.create(
+        {
+            "model": {"revision": "revision", "context_length": 512},
+            "checkpoint_provenance": {
+                "data_bundle_manifest_sha256": bundle_digest,
+                "fixed_evaluation_question_identity_sha256": {"test": identity},
+            },
+            "eval": {"max_new_tokens": 8},
+            "rollout": {"executor": "exact", "max_calls": 32, "max_scalar_chars": 128},
+            "rlvr": {"reward_format_weight": 0.1, "reward_success_weight": 0.9},
+            "experiment": {"name": "exp16_qwen3_base_reasoning_v3"},
+        }
+    )
+    output = tmp_path / "eval"
+    result = hf_evaluate.evaluate_hf_checkpoint(
+        config=config,
+        bundle_dir=bundle,
+        output_dir=output,
+        checkpoint=None,
+        split_names=["test"],
+    )
+    assert set(result["splits"]) == {"test/ordinary_qa", "test/reasoning_executor"}
+    assert (output / "test_ordinary_qa.csv").is_file()
+    assert (output / "test_reasoning_executor.csv").is_file()
+    assert Path(output / "results.json").is_file()

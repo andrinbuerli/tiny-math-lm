@@ -448,6 +448,7 @@ def train_hf_sft(
                             "training_phase": experiment_phase,
                             "model_revision": str(config.model.revision),
                             "model_config_sha256": cache_manifest["model_config_sha256"],
+                            "checkpoint_config_sha256": sha256_file(best_dir / "config.json"),
                             "tokenizer_sha256": cache_manifest["tokenizer_sha256"],
                             "token_cache_manifest_sha256": sha256_file(cache_dir / "manifest.json"),
                             "parameters": parameters,
@@ -581,6 +582,7 @@ def train_hf_sft(
     }
     model.save_pretrained(final_dir, safe_serialization=True)
     load_tokenizer(config.model).save_pretrained(final_dir)
+    final_identity["checkpoint_config_sha256"] = sha256_file(final_dir / "config.json")
     final_weights = sorted(final_dir.glob("model*.safetensors"))
     if not final_weights:
         final_weights = sorted(final_dir.glob("pytorch_model*.bin"))

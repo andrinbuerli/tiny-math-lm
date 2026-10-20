@@ -48,6 +48,7 @@ def _finalize_model(
         digest.update(path.name.encode("utf-8"))
         digest.update(value.encode("ascii"))
     identity["checkpoint_sha256"] = digest.hexdigest()
+    identity["checkpoint_config_sha256"] = sha256_file(destination / "config.json")
     save_model_identity(destination / "experiment_identity.json", identity)
     return digest.hexdigest()
 
