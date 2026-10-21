@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import os
@@ -54,7 +55,14 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 def _summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     count = len(rows)
     summary: dict[str, Any] = {"rows": count}
-    for field in ("correct", "format_valid", "full_success", "trace_valid", "capped", "executor_failure"):
+    for field in (
+        "correct",
+        "format_valid",
+        "full_success",
+        "trace_valid",
+        "capped",
+        "executor_failure",
+    ):
         summary[field] = sum(row.get(field) is True for row in rows) / count if count else None
     summary["mean_output_tokens"] = (
         sum(float(row.get("output_tokens", 0) or 0) for row in rows) / count if count else None
@@ -69,6 +77,7 @@ def _summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         modules[str(row.get("module", "unknown"))].append(row)
         digits[str(row.get("digit_width", "unknown"))].append(row)
         operators[str(row.get("operator_count", "unknown"))].append(row)
+
     def grouped_accuracy(groups: dict[str, list[dict[str, Any]]]) -> dict[str, dict[str, Any]]:
         def category_key(value: str) -> tuple[int, float | str]:
             try:
@@ -83,6 +92,7 @@ def _summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
             }
             for key, values in sorted(groups.items(), key=lambda item: category_key(item[0]))
         }
+
     summary["modules"] = {
         name: {
             "rows": len(values),
@@ -101,7 +111,54 @@ def _format(value: Any, *, percent: bool = False) -> str:
     return f"{value:.2%}" if percent else f"{value:.3f}"
 
 
-def _render_markdown(summaries: dict[str, dict[str, Any]], updated: str) -> str:
+def _pilot_results(runs_root: Path, seed: int) -> list[dict[str, Any]]:
+    root = runs_root / EXPERIMENT_DIR / MODEL_DIR
+    results: list[dict[str, Any]] = []
+    for arm in ("sft", "grpo"):
+        arm_root = root / arm
+        if not arm_root.is_dir():
+            continue
+        for phase_root in sorted(arm_root.iterdir()):
+            if phase_root.name not in {"pilot", "smoke", "optimization_pilot"}:
+                continue
+            run_dir = phase_root / f"seed{seed}"
+            if not run_dir.is_dir():
+                continue
+            rows: list[dict[str, str]] = []
+            metrics_path = run_dir / "metrics.csv"
+            if metrics_path.is_file():
+                with metrics_path.open(newline="", encoding="utf-8") as handle:
+                    rows = list(csv.DictReader(handle))
+            tracking_path = run_dir / "wandb_run.json"
+            tracking = (
+                json.loads(tracking_path.read_text(encoding="utf-8"))
+                if tracking_path.is_file()
+                else {}
+            )
+            latest = rows[-1] if rows else {}
+            results.append(
+                {
+                    "arm": arm.upper(),
+                    "phase": phase_root.name,
+                    "status": str(tracking.get("run_status", "unknown")),
+                    "sync_status": str(tracking.get("sync_status", "unknown")),
+                    "updates": latest.get("update", latest.get("optimizer_step")),
+                    "wall_seconds": latest.get("wall_seconds"),
+                    "tokens_per_second": latest.get("tokens_per_second"),
+                    "peak_gpu_memory_bytes": latest.get("peak_gpu_memory_bytes"),
+                    "wandb_id": tracking.get("id"),
+                    "wandb_url": tracking.get("url"),
+                    "has_metrics": bool(rows),
+                }
+            )
+    return results
+
+
+def _render_markdown(
+    summaries: dict[str, dict[str, Any]],
+    updated: str,
+    pilot_results: list[dict[str, Any]] | None = None,
+) -> str:
     lines = [
         "# Experiment 16 intermediate results",
         "",
@@ -136,9 +193,19 @@ def _render_markdown(summaries: dict[str, dict[str, Any]], updated: str) -> str:
             f"{summary['policy_tokens']} | {summary['executor_tokens']} |"
         )
         if summary["modules"]:
-            lines.extend(["", f"### {label} · {split} · {format_name}", "", "| Module | Rows | Accuracy |", "| --- | ---: | ---: |"])
+            lines.extend(
+                [
+                    "",
+                    f"### {label} · {split} · {format_name}",
+                    "",
+                    "| Module | Rows | Accuracy |",
+                    "| --- | ---: | ---: |",
+                ]
+            )
             for module, metrics in summary["modules"].items():
-                lines.append(f"| {module} | {metrics['rows']} | {_format(metrics['accuracy'], percent=True)} |")
+                lines.append(
+                    f"| {module} | {metrics['rows']} | {_format(metrics['accuracy'], percent=True)} |"
+                )
             lines.append("")
         for field, heading in (
             ("by_digit_width", "Digit width"),
@@ -146,7 +213,14 @@ def _render_markdown(summaries: dict[str, dict[str, Any]], updated: str) -> str:
         ):
             groups = summary.get(field, {})
             if groups:
-                lines.extend([f"### {label} · {split} · {format_name} · {heading.lower()}", "", f"| {heading} | Rows | Accuracy |", "| ---: | ---: | ---: |"])
+                lines.extend(
+                    [
+                        f"### {label} · {split} · {format_name} · {heading.lower()}",
+                        "",
+                        f"| {heading} | Rows | Accuracy |",
+                        "| ---: | ---: | ---: |",
+                    ]
+                )
                 lines.extend(
                     f"| {category} | {metrics['rows']} | {_format(metrics['accuracy'], percent=True)} |"
                     for category, metrics in groups.items()
@@ -154,19 +228,53 @@ def _render_markdown(summaries: dict[str, dict[str, Any]], updated: str) -> str:
                 lines.append("")
     if not summaries:
         lines.extend(["", "No evaluation progress JSONL files are available yet."])
-    lines.extend([
-        "",
-        "## Existing pilot training results",
-        "",
-        "See the pilot `metrics.csv` files under the `runs/exp16_qwen3_base_reasoning_v3/qwen3_0_6b_base/` namespace. These are optimization pilots, not the main training arms.",
-        "",
-        "## Limitations",
-        "",
-        "Only completed rows are summarized. The fixed evaluation population sizes are test 50,000, number-length OOD 5,000, and expression-length OOD 2,000. This is one seed; these interim rates do not estimate between-seed uncertainty. Pretrained-data contamination cannot be excluded, and historical TinyMath comparisons differ in tokenizer, architecture, model size, and pretraining.",
-        "",
-        "Plots: `intermediate_accuracy.svg` and `intermediate_progress.svg` (PNG versions are also provided).",
-        "",
-    ])
+    lines.extend(["", "## Tracked pilot results", ""])
+    pilot_results = pilot_results or []
+    if pilot_results:
+        lines.extend(
+            [
+                "| Arm | Phase | Status | Updates/steps | Wall seconds | Tokens/s | Peak GPU GB | W&B | Sync |",
+                "| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |",
+            ]
+        )
+        for result in pilot_results:
+            link = (
+                f"[{result['wandb_id']}]({result['wandb_url']})"
+                if result.get("wandb_id") and result.get("wandb_url")
+                else "—"
+            )
+            peak_bytes = result.get("peak_gpu_memory_bytes")
+            try:
+                peak_gb = f"{float(peak_bytes) / 1_000_000_000:.2f}"
+            except (TypeError, ValueError):
+                peak_gb = "—"
+            lines.append(
+                f"| {result['arm']} | {result['phase']} | {result['status']} | "
+                f"{result.get('updates') or '—'} | {result.get('wall_seconds') or '—'} | "
+                f"{result.get('tokens_per_second') or '—'} | {peak_gb} | {link} | "
+                f"{result['sync_status']} |"
+            )
+        incomplete = [result for result in pilot_results if not result.get("has_metrics")]
+        if incomplete:
+            lines.extend(
+                [
+                    "",
+                    "Failed or interrupted pilots without a completed optimizer update have no metrics row; inspect their linked W&B logs for the failure details.",
+                ]
+            )
+    else:
+        lines.append("No pilot metrics are available yet.")
+    lines.extend(
+        [
+            "",
+            "## Limitations",
+            "",
+            "Only completed rows are summarized. The fixed evaluation population sizes are test 50,000, number-length OOD 5,000, and expression-length OOD 2,000. This is one seed; these interim rates do not estimate between-seed uncertainty. Pretrained-data contamination cannot be excluded, and historical TinyMath comparisons differ in tokenizer, architecture, model size, and pretraining.",
+            "",
+            "Plots: `intermediate_accuracy.svg` and `intermediate_progress.svg` (PNG versions are also provided).",
+            "",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -187,10 +295,10 @@ def _write_figures(output: Path, series: dict[str, list[dict[str, Any]]]) -> Non
         x, y = [], []
         for index in range(window, len(correct) + 1, window):
             x.append(index)
-            y.append(sum(correct[index - window:index]) / window)
+            y.append(sum(correct[index - window : index]) / window)
         if len(correct) % window:
             x.append(len(correct))
-            y.append(sum(correct[len(correct) - len(correct) % window:]) / (len(correct) % window))
+            y.append(sum(correct[len(correct) - len(correct) % window :]) / (len(correct) % window))
         axis.plot(x, y, label=name)
         plotted = True
     axis.set_xlabel("Evaluated rows")
@@ -209,7 +317,13 @@ def _write_figures(output: Path, series: dict[str, list[dict[str, Any]]]) -> Non
     values = [len(series[name]) for name in names]
     bars = axis.bar(names or ["waiting"], values or [0])
     for bar, count in zip(bars, values, strict=False):
-        axis.text(bar.get_x() + bar.get_width() / 2, bar.get_height(), str(count), ha="center", va="bottom")
+        axis.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height(),
+            str(count),
+            ha="center",
+            va="bottom",
+        )
     axis.set_ylabel("Durably written rows")
     axis.set_title("Evaluation progress")
     axis.tick_params(axis="x", rotation=25)
@@ -272,7 +386,11 @@ def refresh(*, runs_root: Path, output_dir: Path, seed: int) -> int:
         series[relative.replace("/progress/", "/").removesuffix(".jsonl")] = rows
     _write_figures(output_dir, series)
     updated = datetime.now(UTC).isoformat(timespec="seconds")
-    _atomic_text(output_dir / "intermediate_results.md", _render_markdown(summaries, updated))
+    pilot_results = _pilot_results(runs_root, seed)
+    _atomic_text(
+        output_dir / "intermediate_results.md",
+        _render_markdown(summaries, updated, pilot_results),
+    )
     return sum(summary["rows"] for summary in summaries.values())
 
 

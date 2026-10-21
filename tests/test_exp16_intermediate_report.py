@@ -94,3 +94,45 @@ def test_markdown_labels_partial_results_and_decodes_split_format() -> None:
 
     assert "| base_zero_shot/pristine | number_length_ood | ordinary_qa | 2 | 5000 |" in report
     assert "Live, incomplete results" in report
+
+
+def test_markdown_includes_tracked_pilot_metrics_and_incomplete_status() -> None:
+    report = _render_markdown(
+        {},
+        "2026-10-21T13:00:00+00:00",
+        [
+            {
+                "arm": "GRPO",
+                "phase": "optimization_pilot",
+                "status": "finished",
+                "sync_status": "synced",
+                "updates": "1",
+                "wall_seconds": "129.37",
+                "tokens_per_second": "538.38",
+                "peak_gpu_memory_bytes": "12289678848",
+                "wandb_id": "pilot123",
+                "wandb_url": "https://wandb.ai/example/pilot123",
+                "has_metrics": True,
+            },
+            {
+                "arm": "GRPO",
+                "phase": "smoke",
+                "status": "failed",
+                "sync_status": "synced",
+                "updates": None,
+                "wall_seconds": None,
+                "tokens_per_second": None,
+                "peak_gpu_memory_bytes": None,
+                "wandb_id": "failed123",
+                "wandb_url": "https://wandb.ai/example/failed123",
+                "has_metrics": False,
+            },
+        ],
+    )
+
+    assert "| GRPO | optimization_pilot | finished | 1 | 129.37 | 538.38 | 12.29 |" in report
+    assert "[pilot123](https://wandb.ai/example/pilot123)" in report
+    assert (
+        "Failed or interrupted pilots without a completed optimizer update have no metrics row"
+        in report
+    )
