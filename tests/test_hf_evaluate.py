@@ -12,7 +12,12 @@ from omegaconf import OmegaConf
 
 from tinymath.data.hf_reasoning import identity_hash
 from tinymath.eval import hf_evaluate
-from tinymath.eval.hf_evaluate import _generate_qa, _summarize, _validate_checkpoint_identity
+from tinymath.eval.hf_evaluate import (
+    _generate_qa,
+    _generate_qa_batch,
+    _summarize,
+    _validate_checkpoint_identity,
+)
 from tinymath.train.hf_generation import NativeRollout
 
 
@@ -59,6 +64,27 @@ def test_ordinary_qa_does_not_search_prose_for_a_matching_scalar():
         _Model([4, 0]), _Tokenizer(), "question", context=10, cap=8
     )
     assert answer == "wrong"
+
+
+def test_batched_ordinary_qa_keeps_independent_eos_and_newline_stops():
+    class BatchModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.anchor = torch.nn.Parameter(torch.zeros(()))
+            self.steps = iter([[1, 4], [2, 0], [3, 0]])
+
+        def forward(self, input_ids, **kwargs):
+            token_ids = next(self.steps)
+            logits = torch.full((input_ids.shape[0], input_ids.shape[1], 10), -10.0)
+            for index, token_id in enumerate(token_ids):
+                logits[index, -1, token_id] = 10.0
+            return SimpleNamespace(logits=logits, past_key_values=object())
+
+    results = _generate_qa_batch(
+        BatchModel(), _Tokenizer(), ["first question", "second question"], context=10, cap=8
+    )
+
+    assert results == [("42", 3, False), ("wrong", 1, False)]
 
 
 def test_hf_evaluation_summary_keeps_protocol_and_length_metrics():

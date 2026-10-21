@@ -34,46 +34,104 @@ def _cache_dir(config: Any) -> Path:
 
 
 @torch.no_grad()
-def _generate_qa(model: Any, tokenizer: Any, question: str, *, context: int, cap: int) -> tuple[str, int, bool]:
-    prompt_ids = tokenizer.encode(format_prompt(question), add_special_tokens=False)
-    room = min(cap, context - len(prompt_ids))
-    if room < 1:
-        return "", 0, True
+def _generate_qa_batch(
+    model: Any, tokenizer: Any, questions: list[str], *, context: int, cap: int,
+) -> list[tuple[str, int, bool]]:
+    if not questions:
+        return []
+    prompt_ids = [tokenizer.encode(format_prompt(question), add_special_tokens=False) for question in questions]
+    rooms = [min(cap, context - len(ids)) for ids in prompt_ids]
+    results: list[tuple[str, int, bool] | None] = [None] * len(questions)
+    for index, room in enumerate(rooms):
+        if room < 1:
+            results[index] = ("", 0, True)
+    active_indices = [index for index, room in enumerate(rooms) if room > 0]
+    if not active_indices:
+        return [result for result in results if result is not None]
+    active_count = len(active_indices)
+    prompt_ids = [prompt_ids[index] for index in active_indices]
+    rooms = [rooms[index] for index in active_indices]
+    active = [True] * len(active_indices)
     device = next(model.parameters()).device
-    input_ids = torch.tensor([prompt_ids], dtype=torch.long, device=device)
-    output = model(input_ids=input_ids, attention_mask=torch.ones_like(input_ids), use_cache=True)
+    pad_id = getattr(tokenizer, "pad_token_id", None)
+    pad_id = tokenizer.eos_token_id if pad_id is None else pad_id
+    width = max(len(ids) for ids in prompt_ids)
+    input_ids = torch.full((active_count, width), pad_id, dtype=torch.long, device=device)
+    attention_mask = torch.zeros_like(input_ids)
+    for index, ids in enumerate(prompt_ids):
+        input_ids[index, width - len(ids):] = torch.tensor(ids, dtype=torch.long, device=device)
+        attention_mask[index, width - len(ids):] = 1
+    position_ids = attention_mask.cumsum(dim=-1).sub(1).clamp_min(0)
+    output = model(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        position_ids=position_ids,
+        use_cache=True,
+    )
     past = output.past_key_values
     logits = _mask_non_token_logits(output.logits[:, -1, :].float(), tokenizer)
-    generated: list[int] = []
-    generated_token_count = 0
-    stopped = False
-    for offset in range(room):
-        token_id = int(logits.argmax(dim=-1).item())
-        if token_id == tokenizer.eos_token_id:
-            stopped = True
+    generated: list[list[int]] = [[] for _ in active_indices]
+    counts = [0] * active_count
+    stopped = [not state for state in active]
+    for offset in range(max(rooms, default=0)):
+        token_ids = logits.argmax(dim=-1).tolist()
+        next_input = []
+        next_active = []
+        for index, token_id in enumerate(token_ids):
+            if not active[index]:
+                next_input.append(tokenizer.eos_token_id)
+                next_active.append(False)
+                continue
+            if token_id == tokenizer.eos_token_id:
+                active[index] = False
+                stopped[index] = True
+                next_input.append(tokenizer.eos_token_id)
+                next_active.append(False)
+                continue
+            generated[index].append(int(token_id))
+            counts[index] += 1
+            piece = tokenizer.decode(
+                generated[index], skip_special_tokens=False, clean_up_tokenization_spaces=False
+            )
+            if "\n" in piece or "\r" in piece:
+                active[index] = False
+                stopped[index] = True
+                next_input.append(tokenizer.eos_token_id)
+                next_active.append(False)
+                continue
+            if offset + 1 >= rooms[index]:
+                active[index] = False
+                next_input.append(tokenizer.eos_token_id)
+                next_active.append(False)
+                continue
+            next_input.append(int(token_id))
+            next_active.append(True)
+        if not any(active):
             break
-        generated.append(token_id)
-        generated_token_count += 1
-        piece = tokenizer.decode(generated, skip_special_tokens=False, clean_up_tokenization_spaces=False)
-        if "\n" in piece or "\r" in piece:
-            generated = tokenizer.encode(piece.splitlines()[0], add_special_tokens=False)
-            stopped = True
-            break
-        if offset + 1 == room:
-            break
-        new_length = len(prompt_ids) + offset + 1
-        token = torch.tensor([[token_id]], dtype=torch.long, device=device)
+        attention_mask = torch.cat(
+            [attention_mask, torch.tensor(next_active, dtype=attention_mask.dtype, device=device).unsqueeze(1)],
+            dim=1,
+        )
+        token = torch.tensor(next_input, dtype=torch.long, device=device).unsqueeze(1)
+        position_ids = attention_mask.cumsum(dim=-1)[:, -1:].sub(1).clamp_min(0)
         output = model(
             input_ids=token,
-            attention_mask=torch.ones((1, new_length), dtype=torch.long, device=device),
+            attention_mask=attention_mask,
+            position_ids=position_ids,
             past_key_values=past,
             use_cache=True,
         )
         past = output.past_key_values
         logits = _mask_non_token_logits(output.logits[:, -1, :].float(), tokenizer)
-    text = tokenizer.decode(generated, skip_special_tokens=False, clean_up_tokenization_spaces=False)
-    answer = text.splitlines()[0] if text else ""
-    return answer, generated_token_count, not stopped
+    for index, ids in enumerate(generated):
+        text = tokenizer.decode(ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
+        answer = text.splitlines()[0] if text else ""
+        results[active_indices[index]] = (answer, counts[index], not stopped[index])
+    return [result for result in results if result is not None]
+
+
+def _generate_qa(model: Any, tokenizer: Any, question: str, *, context: int, cap: int) -> tuple[str, int, bool]:
+    return _generate_qa_batch(model, tokenizer, [question], context=context, cap=cap)[0]
 
 
 def _ratio(numerator: int, denominator: int) -> float | None:
@@ -280,36 +338,54 @@ def evaluate_hf_checkpoint(
             }
             records = _progress_identity(progress_path, progress_identity)
             _validate_progress_rows(records, rows)
-            for index, row in enumerate(rows):
-                if index < len(records):
-                    continue
-                digit_width, operator_count = question_features(str(row["question"]))
-                base = {
-                    "row_index": index,
-                    "module": row["module"],
-                    "question": row["question"],
-                    "target": row["answer"],
-                    "digit_width": digit_width,
-                    "operator_count": operator_count,
-                    "policy_tokens": 0,
-                    "executor_tokens": 0,
-                    "call_count": 0,
-                    "executor_failure": False,
-                    "trace_valid": False,
-                    "full_success": False,
-                }
-                if mode == "ordinary_qa":
-                    prediction, token_count, capped = _generate_qa(
-                        model, tokenizer, str(row["question"]),
+            start_index = len(records)
+            if mode == "ordinary_qa":
+                batch_size = max(1, int(config.eval.get("batch_size", 1)))
+                for batch_start in range(start_index, len(rows), batch_size):
+                    batch_rows = rows[batch_start:batch_start + batch_size]
+                    predictions = _generate_qa_batch(
+                        model, tokenizer, [str(row["question"]) for row in batch_rows],
                         context=int(config.model.context_length), cap=int(config.eval.max_new_tokens),
                     )
-                    correct, valid = verify_answer(prediction, str(row["answer"]), question=str(row["question"]))
-                    record = base | {
-                        "prediction": prediction, "correct": bool(correct and valid), "format_valid": valid,
-                        "capped": capped, "output_tokens": token_count, "policy_tokens": token_count,
-                        "termination_reason": "budget_exceeded" if capped else "newline_or_eos",
+                    for offset, (row, prediction_result) in enumerate(zip(batch_rows, predictions, strict=True)):
+                        index = batch_start + offset
+                        prediction, token_count, capped = prediction_result
+                        digit_width, operator_count = question_features(str(row["question"]))
+                        base = {
+                            "row_index": index, "module": row["module"], "question": row["question"],
+                            "target": row["answer"], "digit_width": digit_width,
+                            "operator_count": operator_count, "policy_tokens": 0, "executor_tokens": 0,
+                            "call_count": 0, "executor_failure": False, "trace_valid": False,
+                            "full_success": False,
+                        }
+                        correct, valid = verify_answer(
+                            prediction, str(row["answer"]), question=str(row["question"])
+                        )
+                        record = base | {
+                            "prediction": prediction, "correct": bool(correct and valid),
+                            "format_valid": valid, "capped": capped, "output_tokens": token_count,
+                            "policy_tokens": token_count,
+                            "termination_reason": "budget_exceeded" if capped else "newline_or_eos",
+                        }
+                        records.append(record)
+                        _append_progress(progress_path, record)
+            else:
+                for index, row in enumerate(rows[start_index:], start=start_index):
+                    digit_width, operator_count = question_features(str(row["question"]))
+                    base = {
+                        "row_index": index,
+                        "module": row["module"],
+                        "question": row["question"],
+                        "target": row["answer"],
+                        "digit_width": digit_width,
+                        "operator_count": operator_count,
+                        "policy_tokens": 0,
+                        "executor_tokens": 0,
+                        "call_count": 0,
+                        "executor_failure": False,
+                        "trace_valid": False,
+                        "full_success": False,
                     }
-                else:
                     prompt_ids = tokenizer.encode(f"Q: {row['question']}\n", add_special_tokens=False)
                     rollout = generate_native_rollout(
                         model, tokenizer, prompt_ids, row,
@@ -339,8 +415,8 @@ def evaluate_hf_checkpoint(
                         "policy_tokens": rollout.policy_tokens, "executor_tokens": rollout.executor_tokens,
                         "termination_reason": rollout.termination_reason,
                     }
-                records.append(record)
-                _append_progress(progress_path, record)
+                    records.append(record)
+                    _append_progress(progress_path, record)
             summary = _summarize(records)
             key = f"{split_name}/{mode}"
             all_results[key] = summary
