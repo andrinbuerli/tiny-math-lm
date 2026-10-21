@@ -63,7 +63,7 @@ rlvr:
 eval:
   splits: [test, number_length_ood, expression_length_ood]
   max_new_tokens: 512
-  batch_size: 16
+  batch_size: 64
   greedy: true
   temperature: 0.0
   max_examples_per_split: null
