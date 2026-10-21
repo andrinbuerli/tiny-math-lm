@@ -33,6 +33,19 @@ def _cache_dir(config: Any) -> Path:
     return candidates[0].parent
 
 
+def _select_cache_rows(cache: Any, indices: torch.Tensor) -> Any:
+    select = getattr(cache, "batch_select_indices", None)
+    if callable(select):
+        select(indices)
+        return cache
+    if isinstance(cache, tuple):
+        return tuple(
+            tuple(value.index_select(0, indices) if isinstance(value, torch.Tensor) else value for value in layer)
+            for layer in cache
+        )
+    raise TypeError("Batched Q/A generation requires a cache that supports batch row selection")
+
+
 @torch.no_grad()
 def _generate_qa_batch(
     model: Any, tokenizer: Any, questions: list[str], *, context: int, cap: int,
@@ -51,7 +64,7 @@ def _generate_qa_batch(
     active_count = len(active_indices)
     prompt_ids = [prompt_ids[index] for index in active_indices]
     rooms = [rooms[index] for index in active_indices]
-    active = [True] * len(active_indices)
+    active_batch_indices = list(active_indices)
     device = next(model.parameters()).device
     pad_id = getattr(tokenizer, "pad_token_id", None)
     pad_id = tokenizer.eos_token_id if pad_id is None else pad_id
@@ -70,23 +83,19 @@ def _generate_qa_batch(
     )
     past = output.past_key_values
     logits = _mask_non_token_logits(output.logits[:, -1, :].float(), tokenizer)
-    generated: list[list[int]] = [[] for _ in active_indices]
-    counts = [0] * active_count
-    stopped = [not state for state in active]
+    generated: list[list[int]] = [[] for _ in questions]
+    counts = [0] * len(questions)
+    stopped = [True] * len(questions)
+    for index in active_indices:
+        stopped[index] = False
     for offset in range(max(rooms, default=0)):
         token_ids = logits.argmax(dim=-1).tolist()
+        keep_local_indices = []
         next_input = []
-        next_active = []
-        for index, token_id in enumerate(token_ids):
-            if not active[index]:
-                next_input.append(tokenizer.eos_token_id)
-                next_active.append(False)
-                continue
+        for local_index, token_id in enumerate(token_ids):
+            index = active_batch_indices[local_index]
             if token_id == tokenizer.eos_token_id:
-                active[index] = False
                 stopped[index] = True
-                next_input.append(tokenizer.eos_token_id)
-                next_active.append(False)
                 continue
             generated[index].append(int(token_id))
             counts[index] += 1
@@ -94,25 +103,25 @@ def _generate_qa_batch(
                 generated[index], skip_special_tokens=False, clean_up_tokenization_spaces=False
             )
             if "\n" in piece or "\r" in piece:
-                active[index] = False
                 stopped[index] = True
-                next_input.append(tokenizer.eos_token_id)
-                next_active.append(False)
                 continue
-            if offset + 1 >= rooms[index]:
-                active[index] = False
-                next_input.append(tokenizer.eos_token_id)
-                next_active.append(False)
+            if offset + 1 >= rooms[local_index]:
                 continue
+            keep_local_indices.append(local_index)
             next_input.append(int(token_id))
-            next_active.append(True)
-        if not any(active):
+        if not keep_local_indices:
             break
+        if len(keep_local_indices) < len(active_batch_indices):
+            cache_indices = torch.tensor(keep_local_indices, dtype=torch.long, device=device)
+            past = _select_cache_rows(past, cache_indices)
+            attention_mask = attention_mask.index_select(0, cache_indices)
+            rooms = [rooms[index] for index in keep_local_indices]
+        active_batch_indices = [active_batch_indices[index] for index in keep_local_indices]
+        token = torch.tensor(next_input, dtype=torch.long, device=device).unsqueeze(1)
         attention_mask = torch.cat(
-            [attention_mask, torch.tensor(next_active, dtype=attention_mask.dtype, device=device).unsqueeze(1)],
+            [attention_mask, torch.ones((len(next_input), 1), dtype=attention_mask.dtype, device=device)],
             dim=1,
         )
-        token = torch.tensor(next_input, dtype=torch.long, device=device).unsqueeze(1)
         position_ids = attention_mask.cumsum(dim=-1)[:, -1:].sub(1).clamp_min(0)
         output = model(
             input_ids=token,
@@ -123,10 +132,12 @@ def _generate_qa_batch(
         )
         past = output.past_key_values
         logits = _mask_non_token_logits(output.logits[:, -1, :].float(), tokenizer)
-    for index, ids in enumerate(generated):
-        text = tokenizer.decode(ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
+    for index in active_indices:
+        text = tokenizer.decode(
+            generated[index], skip_special_tokens=False, clean_up_tokenization_spaces=False
+        )
         answer = text.splitlines()[0] if text else ""
-        results[active_indices[index]] = (answer, counts[index], not stopped[index])
+        results[index] = (answer, counts[index], not stopped[index])
     return [result for result in results if result is not None]
 
 

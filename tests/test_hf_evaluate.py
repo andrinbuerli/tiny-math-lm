@@ -50,6 +50,11 @@ class _Model(torch.nn.Module):
         return SimpleNamespace(logits=logits, past_key_values=object())
 
 
+class _BatchCache:
+    def batch_select_indices(self, indices):
+        return None
+
+
 def test_ordinary_qa_stops_at_first_line_even_when_token_crosses_boundary():
     answer, generated_tokens, capped = _generate_qa(
         _Model([1, 2, 3]), _Tokenizer(), "42 question", context=10, cap=8
@@ -74,11 +79,11 @@ def test_batched_ordinary_qa_keeps_independent_eos_and_newline_stops():
             self.steps = iter([[1, 4], [2, 0], [3, 0]])
 
         def forward(self, input_ids, **kwargs):
-            token_ids = next(self.steps)
+            token_ids = next(self.steps)[:input_ids.shape[0]]
             logits = torch.full((input_ids.shape[0], input_ids.shape[1], 10), -10.0)
             for index, token_id in enumerate(token_ids):
                 logits[index, -1, token_id] = 10.0
-            return SimpleNamespace(logits=logits, past_key_values=object())
+            return SimpleNamespace(logits=logits, past_key_values=_BatchCache())
 
     results = _generate_qa_batch(
         BatchModel(), _Tokenizer(), ["first question", "second question"], context=10, cap=8
@@ -107,7 +112,7 @@ def test_batched_ordinary_qa_uses_left_padding_and_per_row_positions():
             logits = torch.full((input_ids.shape[0], input_ids.shape[1], 10), -10.0)
             for index, token_id in enumerate(token_ids):
                 logits[index, -1, token_id] = 10.0
-            return SimpleNamespace(logits=logits, past_key_values=object())
+            return SimpleNamespace(logits=logits, past_key_values=_BatchCache())
 
     model = BatchModel()
     results = _generate_qa_batch(
@@ -118,6 +123,28 @@ def test_batched_ordinary_qa_uses_left_padding_and_per_row_positions():
     assert model.masks[0] == [[0, 1], [1, 1]]
     assert model.positions[0] == [[0, 0], [0, 1]]
     assert model.positions[1] == [[1], [2]]
+
+
+def test_batched_ordinary_qa_preserves_results_when_some_prompts_exceed_context():
+    class VaryingTokenizer(_Tokenizer):
+        def encode(self, value, add_special_tokens=False):
+            return [9] if "short" in value else [8, 9]
+
+    class EosModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.anchor = torch.nn.Parameter(torch.zeros(()))
+
+        def forward(self, input_ids, **kwargs):
+            logits = torch.full((input_ids.shape[0], input_ids.shape[1], 10), -10.0)
+            logits[:, -1, 0] = 10.0
+            return SimpleNamespace(logits=logits, past_key_values=_BatchCache())
+
+    results = _generate_qa_batch(
+        EosModel(), VaryingTokenizer(), ["too long", "short"], context=2, cap=1
+    )
+
+    assert results == [("", 0, True), ("", 0, False)]
 
 
 def test_hf_evaluation_summary_keeps_protocol_and_length_metrics():
