@@ -87,6 +87,39 @@ def test_batched_ordinary_qa_keeps_independent_eos_and_newline_stops():
     assert results == [("42", 3, False), ("wrong", 1, False)]
 
 
+def test_batched_ordinary_qa_uses_left_padding_and_per_row_positions():
+    class VaryingTokenizer(_Tokenizer):
+        def encode(self, value, add_special_tokens=False):
+            return [9] if "short" in value else [8, 9]
+
+    class BatchModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.anchor = torch.nn.Parameter(torch.zeros(()))
+            self.steps = iter([[1, 4], [3, 0]])
+            self.masks = []
+            self.positions = []
+
+        def forward(self, input_ids, attention_mask, position_ids, **kwargs):
+            self.masks.append(attention_mask.tolist())
+            self.positions.append(position_ids.tolist())
+            token_ids = next(self.steps)
+            logits = torch.full((input_ids.shape[0], input_ids.shape[1], 10), -10.0)
+            for index, token_id in enumerate(token_ids):
+                logits[index, -1, token_id] = 10.0
+            return SimpleNamespace(logits=logits, past_key_values=object())
+
+    model = BatchModel()
+    results = _generate_qa_batch(
+        model, VaryingTokenizer(), ["short question", "longer question"], context=10, cap=8
+    )
+
+    assert results == [("4", 2, False), ("wrong", 1, False)]
+    assert model.masks[0] == [[0, 1], [1, 1]]
+    assert model.positions[0] == [[0, 0], [0, 1]]
+    assert model.positions[1] == [[1], [2]]
+
+
 def test_hf_evaluation_summary_keeps_protocol_and_length_metrics():
     records = [
         {"module": "arithmetic__mul", "digit_width": 2, "operator_count": 1,
