@@ -154,10 +154,55 @@ def _pilot_results(runs_root: Path, seed: int) -> list[dict[str, Any]]:
     return results
 
 
+def _training_results(runs_root: Path, seed: int) -> list[dict[str, Any]]:
+    """Read durable metrics from main and control training runs, tolerating a live CSV tail."""
+    root = runs_root / EXPERIMENT_DIR / MODEL_DIR
+    results: list[dict[str, Any]] = []
+    for arm_root in sorted(root.iterdir() if root.is_dir() else []):
+        if not arm_root.is_dir() or arm_root.name not in {"sft", "grpo", "continued_sft"}:
+            continue
+        for phase_root in sorted(arm_root.iterdir()):
+            if not phase_root.is_dir() or phase_root.name in {"pilot", "smoke", "optimization_pilot"}:
+                continue
+            run_dir = phase_root / f"seed{seed}"
+            metrics_path = run_dir / "metrics.csv"
+            if not metrics_path.is_file():
+                continue
+            rows: list[dict[str, str]] = []
+            try:
+                with metrics_path.open(newline="", encoding="utf-8") as handle:
+                    for row in csv.DictReader(handle):
+                        if row.get("optimizer_step") or row.get("update"):
+                            rows.append(row)
+            except (OSError, csv.Error):
+                LOGGER.exception("Could not read live training metrics at %s", metrics_path)
+            if not rows:
+                continue
+            tracking_path = run_dir / "wandb_run.json"
+            try:
+                tracking = json.loads(tracking_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                tracking = {}
+            results.append(
+                {
+                    "arm": arm_root.name.upper(),
+                    "phase": phase_root.name,
+                    "status": str(tracking.get("run_status", "running")),
+                    "sync_status": str(tracking.get("sync_status", "unknown")),
+                    "metrics": rows,
+                    "latest": rows[-1],
+                    "wandb_id": tracking.get("id"),
+                    "wandb_url": tracking.get("url"),
+                }
+            )
+    return results
+
+
 def _render_markdown(
     summaries: dict[str, dict[str, Any]],
     updated: str,
     pilot_results: list[dict[str, Any]] | None = None,
+    training_results: list[dict[str, Any]] | None = None,
 ) -> str:
     lines = [
         "# Experiment 16 intermediate results",
@@ -264,6 +309,39 @@ def _render_markdown(
             )
     else:
         lines.append("No pilot metrics are available yet.")
+    lines.extend(["", "## Main training progress", ""])
+    training_results = training_results or []
+    if training_results:
+        lines.extend(
+            [
+                "| Arm | Phase | Status | Updates | Epoch | Completion loss | Validation loss | Tokens seen | Tokens/s | Wall seconds | Peak GPU GB | W&B | Sync |",
+                "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+            ]
+        )
+        for result in training_results:
+            latest = result["latest"]
+            link = (
+                f"[{result['wandb_id']}]({result['wandb_url']})"
+                if result.get("wandb_id") and result.get("wandb_url")
+                else "—"
+            )
+            try:
+                peak_gb = f"{float(latest.get('peak_gpu_memory_bytes', '')) / 1_000_000_000:.2f}"
+            except (TypeError, ValueError):
+                peak_gb = "—"
+            lines.append(
+                f"| {result['arm']} | {result['phase']} | {result['status']} | "
+                f"{latest.get('optimizer_step', latest.get('update', '—'))} | "
+                f"{_format(_as_float(latest.get('epoch')))} | "
+                f"{_format(_as_float(latest.get('train/completion_loss')))} | "
+                f"{_format(_as_float(latest.get('validation/completion_loss')))} | "
+                f"{latest.get('tokens_seen', '—')} | "
+                f"{_format(_as_float(latest.get('tokens_per_second')))} | "
+                f"{_format(_as_float(latest.get('wall_seconds')))} | {peak_gb} | {link} | "
+                f"{result['sync_status']} |"
+            )
+    else:
+        lines.append("No main-arm training metrics are available yet.")
     lines.extend(
         [
             "",
@@ -276,6 +354,13 @@ def _render_markdown(
         ]
     )
     return "\n".join(lines)
+
+
+def _as_float(value: Any) -> float | None:
+    try:
+        return float(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _write_figures(output: Path, series: dict[str, list[dict[str, Any]]]) -> None:
@@ -374,6 +459,53 @@ def _write_figures(output: Path, series: dict[str, list[dict[str, Any]]]) -> Non
         plt.close(fig)
 
 
+def _write_training_figure(output: Path, training_results: list[dict[str, Any]]) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, axis = plt.subplots(figsize=(9, 5))
+    plotted = False
+    for result in training_results:
+        rows = result["metrics"]
+        steps: list[int] = []
+        train_losses: list[float] = []
+        validation_steps: list[int] = []
+        validation_losses: list[float] = []
+        for row in rows:
+            step = _as_float(row.get("optimizer_step", row.get("update")))
+            train_loss = _as_float(row.get("train/completion_loss", row.get("loss")))
+            validation_loss = _as_float(row.get("validation/completion_loss"))
+            if step is None:
+                continue
+            if train_loss is not None:
+                steps.append(int(step))
+                train_losses.append(train_loss)
+            if validation_loss is not None:
+                validation_steps.append(int(step))
+                validation_losses.append(validation_loss)
+        label = f"{result['arm']} {result['phase']}"
+        if steps:
+            axis.plot(steps, train_losses, label=f"{label} train")
+            plotted = True
+        if validation_steps:
+            axis.plot(validation_steps, validation_losses, marker="o", label=f"{label} validation")
+            plotted = True
+    axis.set_xlabel("Optimizer updates")
+    axis.set_ylabel("Completion loss")
+    axis.set_title("Training progress")
+    axis.grid(alpha=0.25)
+    if plotted:
+        axis.legend(fontsize="small")
+    else:
+        axis.text(0.5, 0.5, "Waiting for training metrics", ha="center", va="center", transform=axis.transAxes)
+    fig.tight_layout()
+    for ext in ("png", "svg"):
+        fig.savefig(output / f"intermediate_training_loss.{ext}", dpi=160)
+    plt.close(fig)
+
+
 def refresh(*, runs_root: Path, output_dir: Path, seed: int) -> int:
     root = runs_root / EXPERIMENT_DIR / MODEL_DIR
     progress_files = sorted(root.glob(f"evaluation/*/*/seed{seed}/progress/*.jsonl"))
@@ -387,9 +519,11 @@ def refresh(*, runs_root: Path, output_dir: Path, seed: int) -> int:
     _write_figures(output_dir, series)
     updated = datetime.now(UTC).isoformat(timespec="seconds")
     pilot_results = _pilot_results(runs_root, seed)
+    training_results = _training_results(runs_root, seed)
+    _write_training_figure(output_dir, training_results)
     _atomic_text(
         output_dir / "intermediate_results.md",
-        _render_markdown(summaries, updated, pilot_results),
+        _render_markdown(summaries, updated, pilot_results, training_results),
     )
     return sum(summary["rows"] for summary in summaries.values())
 

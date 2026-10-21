@@ -12,6 +12,7 @@ SPEC.loader.exec_module(REPORTER)
 _read_jsonl = REPORTER._read_jsonl
 _render_markdown = REPORTER._render_markdown
 _summarize = REPORTER._summarize
+_training_results = REPORTER._training_results
 
 
 def test_summary_reports_rates_and_diagnostics() -> None:
@@ -136,3 +137,67 @@ def test_markdown_includes_tracked_pilot_metrics_and_incomplete_status() -> None
         "Failed or interrupted pilots without a completed optimizer update have no metrics row"
         in report
     )
+
+
+def test_training_results_read_latest_main_metrics_and_mark_run_live(tmp_path: Path) -> None:
+    run_dir = (
+        tmp_path
+        / REPORTER.EXPERIMENT_DIR
+        / REPORTER.MODEL_DIR
+        / "sft"
+        / "main"
+        / "seed18"
+    )
+    run_dir.mkdir(parents=True)
+    (run_dir / "metrics.csv").write_text(
+        "optimizer_step,epoch,train/completion_loss,validation/completion_loss,tokens_seen,"
+        "tokens_per_second,wall_seconds,peak_gpu_memory_bytes\n"
+        "1,0.1,2.5,,1024,900,1.2,5000000000\n"
+        "2,0.2,2.1,2.3,2048,1000,2.4,6000000000\n",
+        encoding="utf-8",
+    )
+
+    results = _training_results(tmp_path, 18)
+    assert len(results) == 1
+    assert results[0]["status"] == "running"
+    assert results[0]["latest"]["optimizer_step"] == "2"
+    assert len(results[0]["metrics"]) == 2
+
+    report = _render_markdown({}, "now", training_results=results)
+    assert "## Main training progress" in report
+    assert "| SFT | main | running | 2 | 0.200 | 2.100 | 2.300 | 2048 |" in report
+
+
+def test_refresh_updates_training_report_and_all_plot_formats(tmp_path: Path) -> None:
+    run_root = tmp_path / "runs"
+    output_dir = tmp_path / "reports"
+    model_root = run_root / REPORTER.EXPERIMENT_DIR / REPORTER.MODEL_DIR
+    metrics_dir = model_root / "sft" / "main" / "seed18"
+    metrics_dir.mkdir(parents=True)
+    (metrics_dir / "metrics.csv").write_text(
+        "optimizer_step,epoch,train/completion_loss,validation/completion_loss,"
+        "tokens_seen,tokens_per_second,wall_seconds,peak_gpu_memory_bytes\n"
+        "1,0.1,2.5,2.4,1024,900,1.2,5000000000\n",
+        encoding="utf-8",
+    )
+    progress_dir = model_root / "evaluation" / "base_zero_shot" / "pristine" / "seed18" / "progress"
+    progress_dir.mkdir(parents=True)
+    (progress_dir / "test_ordinary_qa.jsonl").write_text(
+        '{"correct": true, "digit_width": 1, "operator_count": 1}\n',
+        encoding="utf-8",
+    )
+
+    REPORTER.refresh(runs_root=run_root, output_dir=output_dir, seed=18)
+
+    report = (output_dir / "intermediate_results.md").read_text(encoding="utf-8")
+    assert "| SFT | main | running | 1 |" in report
+    assert "base_zero_shot/pristine" in report
+    for stem in (
+        "intermediate_accuracy",
+        "intermediate_progress",
+        "intermediate_by_digit_width",
+        "intermediate_by_operator_count",
+        "intermediate_training_loss",
+    ):
+        assert (output_dir / f"{stem}.png").is_file()
+        assert (output_dir / f"{stem}.svg").is_file()
