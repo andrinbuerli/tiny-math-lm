@@ -25,9 +25,19 @@ def test_exp16_child_command_uses_hydra_group_not_run_identity(monkeypatch):
         {"experiment": {"config_group": "16_qwen3_base_reasoning_v3", "name": "exp16_qwen3_base_reasoning_v3"}}
     )
 
-    run_exp16._run(config, "train_sft", "experiment.phase=pilot")
+    run_exp16._run(
+        config,
+        "train_rlvr",
+        "experiment.phase=main",
+        "+rlvr.rollout_generation_batch_size=64",
+        "rlvr.rollout_chunk_size=4",
+    )
 
     assert observed["command"][5] == "experiment=16_qwen3_base_reasoning_v3"
-    assert observed["command"][6] == "experiment.phase=pilot"
+    assert observed["command"][6:] == [
+        "experiment.phase=main",
+        "+rlvr.rollout_generation_batch_size=64",
+        "rlvr.rollout_chunk_size=4",
+    ]
     assert observed["cwd"] == "/workspace"
     assert observed["check"] is True

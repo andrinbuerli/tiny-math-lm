@@ -83,6 +83,8 @@ def main(config: DictConfig) -> None:
         "train_rlvr",
         "experiment.phase=main",
         f"init_checkpoint={selected_sft.relative_to('/workspace')}",
+        "+rlvr.rollout_generation_batch_size=64",
+        "rlvr.rollout_chunk_size=4",
     )
     _require_checkpoint(final_grpo, "Final GRPO")
     _run(
