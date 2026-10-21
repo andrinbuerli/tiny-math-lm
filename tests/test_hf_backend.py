@@ -1,3 +1,4 @@
+import csv
 import json
 import math
 from typing import ClassVar
@@ -180,7 +181,7 @@ def test_cpu_fixture_resumes_deterministically_from_optimizer_boundary(monkeypat
                 "gradient_accumulation": 2,
                 "max_epochs": 1,
                 "max_steps": 2,
-                "eval_every": 100,
+                "eval_every": 1,
                 "save_every": 1,
                 "warmup_ratio": 0.0,
                 "grad_clip": 1.0,
@@ -220,6 +221,7 @@ def test_cpu_fixture_resumes_deterministically_from_optimizer_boundary(monkeypat
     interrupted = torch.load(checkpoint_dir / "latest.pt", map_location="cpu", weights_only=False)
     assert interrupted["step"] == 1
     assert interrupted["cursor"] == 2
+    assert interrupted["pending_validation_metrics"]["optimizer_step"] == 1
 
     def save_checkpoint(path, payload):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -242,6 +244,10 @@ def test_cpu_fixture_resumes_deterministically_from_optimizer_boundary(monkeypat
     completed = torch.load(checkpoint_dir / "latest.pt", map_location="cpu", weights_only=False)
     assert completed["step"] == 2
     assert completed["epoch"] == 1
+    with (checkpoint_dir / "metrics.csv").open(newline="", encoding="utf-8") as handle:
+        metric_rows = list(csv.DictReader(handle))
+    assert metric_rows[0]["optimizer_step"] == "1"
+    assert metric_rows[0]["validation/completion_loss"]
 
 
 def test_continued_sft_stops_at_planned_compute_boundary_and_selects_final(

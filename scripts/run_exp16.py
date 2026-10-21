@@ -69,7 +69,13 @@ def main(config: DictConfig) -> None:
     )
     _run(config, "evaluate", "experiment.phase=base_zero_shot", "checkpoint=null")
 
-    _run(config, "train_sft", "experiment.phase=main", "trainer.name=sft")
+    _run(
+        config,
+        "train_sft",
+        "experiment.phase=main",
+        "trainer.name=sft",
+        "eval.batch_size=8",
+    )
     _require_checkpoint(selected_sft, "Selected SFT")
     _run(
         config,

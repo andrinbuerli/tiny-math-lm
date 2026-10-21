@@ -158,6 +158,7 @@ def _checkpoint_payload(
     peak_gpu_memory_bytes: int,
     wall_seconds: float,
     config_sha256: str,
+    pending_validation_metrics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "format": "exp16_hf_sft_v1",
@@ -175,6 +176,7 @@ def _checkpoint_payload(
         "peak_gpu_memory_bytes": peak_gpu_memory_bytes,
         "wall_seconds": wall_seconds,
         "config_sha256": config_sha256,
+        "pending_validation_metrics": pending_validation_metrics,
         "rng_state": capture_rng_state(),
     }
 
@@ -182,6 +184,61 @@ def _checkpoint_payload(
 def _write_metric(writer: csv.DictWriter, handle: Any, values: dict[str, Any]) -> None:
     writer.writerow(values)
     handle.flush()
+
+
+def _validate_and_select_best(
+    *,
+    model: Any,
+    validation_split: HFTokenSplit,
+    config: Any,
+    device: torch.device,
+    pad_id: int,
+    validation_cap: int | None,
+    values: dict[str, Any],
+    best_val: float,
+    best_dir: Path,
+    cache_manifest: dict[str, Any],
+    cache_dir: Path,
+    init_checkpoint: Path | None,
+    trainer_name: str,
+    parameters: int,
+    run: Any,
+    wandb_step: int,
+) -> tuple[float, float]:
+    validation_loss = _evaluate_loss(
+        model,
+        validation_split,
+        pad_id=pad_id,
+        device=device,
+        batch_size=int(config.eval.batch_size),
+        max_examples=validation_cap,
+    )
+    values["validation/completion_loss"] = validation_loss
+    if validation_loss < best_val:
+        best_val = validation_loss
+        model.save_pretrained(best_dir, safe_serialization=True)
+        load_tokenizer(config.model).save_pretrained(best_dir)
+        identity = {
+            "training_arm": trainer_name,
+            "training_phase": str(config.experiment.phase),
+            "model_revision": str(config.model.revision),
+            "model_config_sha256": cache_manifest["model_config_sha256"],
+            "checkpoint_config_sha256": sha256_file(best_dir / "config.json"),
+            "tokenizer_sha256": cache_manifest["tokenizer_sha256"],
+            "token_cache_manifest_sha256": sha256_file(cache_dir / "manifest.json"),
+            "parameters": parameters,
+            "selected_step": int(values["optimizer_step"]),
+            "validation_loss": validation_loss,
+            "source_checkpoint": str(init_checkpoint) if init_checkpoint else None,
+            "source_sft_checkpoint": (
+                str(init_checkpoint)
+                if trainer_name == "continued_sft" and init_checkpoint else None
+            ),
+        }
+        save_model_identity(best_dir / "experiment_identity.json", identity)
+    if run is not None:
+        run.log({"validation/completion_loss": validation_loss}, step=wandb_step)
+    return validation_loss, best_val
 
 
 def train_hf_sft(
@@ -244,6 +301,7 @@ def train_hf_sft(
     max_steps = int(config.trainer.max_steps)
     eval_every = int(config.trainer.eval_every)
     save_every = int(config.trainer.save_every)
+    checkpoint_interval = max(1, min(save_every, eval_every // 10 or 1))
     warmup_ratio = float(config.trainer.warmup_ratio)
     updates_per_epoch = math.ceil(len(train_indices) / (batch_size * accumulation))
     target_flops_value = config.trainer.get("compute_budget_flops")
@@ -314,6 +372,7 @@ def train_hf_sft(
     tokens_seen = supervised_tokens_seen = examples_seen = 0
     wall_seconds_before = 0.0
     peak_memory_seen = 0
+    pending_validation_metrics: dict[str, Any] | None = None
     if latest_path.is_file():
         state = torch.load(latest_path, map_location="cpu", weights_only=False)
         if state.get("format") != "exp16_hf_sft_v1" or state.get("config_sha256") != config_hash:
@@ -329,6 +388,7 @@ def train_hf_sft(
         examples_seen = int(state["examples_seen"])
         peak_memory_seen = int(state.get("peak_gpu_memory_bytes", 0))
         wall_seconds_before = float(state.get("wall_seconds", 0.0))
+        pending_validation_metrics = state.get("pending_validation_metrics")
         restore_rng_state(state["rng_state"])
     fields = [
         "optimizer_step", "epoch", "train/completion_loss", "validation/completion_loss",
@@ -336,11 +396,37 @@ def train_hf_sft(
         "supervised_tokens_seen", "estimated_flops", "wall_seconds", "peak_gpu_memory_bytes",
     ]
     metrics_path = run_dir / "metrics.csv"
+    previous_logged_step = int(getattr(run, "step", 0)) if run is not None else 0
+    if metrics_path.is_file():
+        try:
+            with metrics_path.open(newline="", encoding="utf-8") as metrics_handle:
+                previous_rows = list(csv.DictReader(metrics_handle))
+            if previous_rows:
+                previous_logged_step = max(
+                    previous_logged_step,
+                    int(previous_rows[-1].get("optimizer_step") or 0),
+                )
+        except (OSError, ValueError, csv.Error):
+            pass
+    if step == 0 and previous_logged_step > 0 and metrics_path.exists():
+        attempt = 1
+        while (run_dir / f"metrics.attempt_{attempt}.csv").exists():
+            attempt += 1
+        metrics_path.replace(run_dir / f"metrics.attempt_{attempt}.csv")
+        if run is not None and hasattr(run, "summary"):
+            run.summary.update(
+                {
+                    "training/restarted_from_scratch_after_missing_checkpoint": True,
+                    "training/previous_attempt_last_step": previous_logged_step,
+                }
+            )
+    wandb_step_offset = max(0, previous_logged_step - step)
     mode = "a" if metrics_path.exists() and step else "w"
     handle = metrics_path.open(mode, newline="", encoding="utf-8")
     writer = csv.DictWriter(handle, fieldnames=fields)
     if mode == "w":
         writer.writeheader()
+    best_dir = run_dir / "best"
     epoch_order: list[int] = []
     start_time = time.monotonic()
     elapsed = wall_seconds_before
@@ -349,6 +435,47 @@ def train_hf_sft(
     running_tokens = 0
     optimizer.zero_grad(set_to_none=True)
     try:
+        if pending_validation_metrics is not None:
+            validation_loss, best_val = _validate_and_select_best(
+                model=model,
+                validation_split=validation_split,
+                config=config,
+                device=device,
+                pad_id=pad_id,
+                validation_cap=validation_cap,
+                values=pending_validation_metrics,
+                best_val=best_val,
+                best_dir=best_dir,
+                cache_manifest=cache_manifest,
+                cache_dir=cache_dir,
+                init_checkpoint=init_checkpoint,
+                trainer_name=trainer_name,
+                parameters=parameters,
+                run=run,
+                wandb_step=step + wandb_step_offset,
+            )
+            pending_validation_metrics["validation/completion_loss"] = validation_loss
+            _write_metric(writer, handle, pending_validation_metrics)
+            pending_validation_metrics = None
+            save_checkpoint(
+                latest_path,
+                _checkpoint_payload(
+                    model=model,
+                    optimizer=optimizer,
+                    step=step,
+                    epoch=epoch,
+                    cursor=cursor,
+                    best_val=best_val,
+                    epoch_best_before=epoch_best_before,
+                    no_improvement_epochs=no_improvement_epochs,
+                    tokens_seen=tokens_seen,
+                    examples_seen=examples_seen,
+                    supervised_tokens_seen=supervised_tokens_seen,
+                    peak_gpu_memory_bytes=peak_memory_seen,
+                    wall_seconds=wall_seconds_before,
+                    config_sha256=config_hash,
+                ),
+            )
         while (
             epoch < max_epochs
             and step < max_steps
@@ -426,46 +553,60 @@ def train_hf_sft(
                     "peak_gpu_memory_bytes": peak_memory_seen,
                 }
                 if run is not None:
-                    run.log({key: value for key, value in values.items() if value != ""}, step=step)
+                    run.log(
+                        {key: value for key, value in values.items() if value != ""},
+                        step=step + wandb_step_offset,
+                    )
                 target_reached = target_flops is not None and 6 * parameters * tokens_seen >= target_flops
-                if step % eval_every == 0 or cursor == len(epoch_order) or target_reached:
-                    validation_loss = _evaluate_loss(
-                        model,
-                        validation_split,
-                        pad_id=pad_id,
+                should_validate = (
+                    step % eval_every == 0 or cursor == len(epoch_order) or target_reached
+                )
+                should_checkpoint = step % checkpoint_interval == 0 or should_validate
+                if should_checkpoint:
+                    save_checkpoint(
+                        latest_path,
+                        _checkpoint_payload(
+                            model=model,
+                            optimizer=optimizer,
+                            step=step,
+                            epoch=epoch,
+                            cursor=cursor,
+                            best_val=best_val,
+                            epoch_best_before=epoch_best_before,
+                            no_improvement_epochs=no_improvement_epochs,
+                            tokens_seen=tokens_seen,
+                            examples_seen=examples_seen,
+                            supervised_tokens_seen=supervised_tokens_seen,
+                            peak_gpu_memory_bytes=peak_memory_seen,
+                            wall_seconds=elapsed,
+                            config_sha256=config_hash,
+                            pending_validation_metrics=values if should_validate else None,
+                        ),
+                    )
+                if should_validate:
+                    pending_validation_metrics = values
+                    validation_loss, best_val = _validate_and_select_best(
+                        model=model,
+                        validation_split=validation_split,
+                        config=config,
                         device=device,
-                        batch_size=int(config.eval.batch_size),
-                        max_examples=validation_cap,
+                        pad_id=pad_id,
+                        validation_cap=validation_cap,
+                        values=values,
+                        best_val=best_val,
+                        best_dir=best_dir,
+                        cache_manifest=cache_manifest,
+                        cache_dir=cache_dir,
+                        init_checkpoint=init_checkpoint,
+                        trainer_name=trainer_name,
+                        parameters=parameters,
+                        run=run,
+                        wandb_step=step + wandb_step_offset,
                     )
                     values["validation/completion_loss"] = validation_loss
-                    if validation_loss < best_val:
-                        best_val = validation_loss
-                        best_dir = run_dir / "best"
-                        model.save_pretrained(best_dir, safe_serialization=True)
-                        tokenizer = load_tokenizer(config.model)
-                        tokenizer.save_pretrained(best_dir)
-                        identity = {
-                            "training_arm": trainer_name,
-                            "training_phase": experiment_phase,
-                            "model_revision": str(config.model.revision),
-                            "model_config_sha256": cache_manifest["model_config_sha256"],
-                            "checkpoint_config_sha256": sha256_file(best_dir / "config.json"),
-                            "tokenizer_sha256": cache_manifest["tokenizer_sha256"],
-                            "token_cache_manifest_sha256": sha256_file(cache_dir / "manifest.json"),
-                            "parameters": parameters,
-                            "selected_step": step,
-                            "validation_loss": validation_loss,
-                            "source_checkpoint": str(init_checkpoint) if init_checkpoint else None,
-                            "source_sft_checkpoint": (
-                                str(init_checkpoint)
-                                if trainer_name == "continued_sft" and init_checkpoint else None
-                            ),
-                        }
-                        save_model_identity(best_dir / "experiment_identity.json", identity)
-                    if run is not None:
-                        run.log({"validation/completion_loss": validation_loss}, step=step)
+                    pending_validation_metrics = None
                 _write_metric(writer, handle, values)
-                if step % save_every == 0:
+                if should_checkpoint:
                     save_checkpoint(
                         latest_path,
                         _checkpoint_payload(
@@ -539,6 +680,7 @@ def train_hf_sft(
                 peak_gpu_memory_bytes=peak_memory_seen,
                 wall_seconds=elapsed,
                 config_sha256=config_hash,
+                pending_validation_metrics=pending_validation_metrics,
             ),
         )
     finally:
