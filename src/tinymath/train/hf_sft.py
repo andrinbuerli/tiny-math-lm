@@ -623,6 +623,7 @@ def train_hf_sft(
         ),
         "planned_optimizer_steps": total_updates,
         "planned_input_tokens": planned_tokens,
+        "planned_epochs": planned_epochs,
         "checkpoint": str(selected_checkpoint),
         "checkpoint_sha256": (
             final_identity["checkpoint_sha256"]

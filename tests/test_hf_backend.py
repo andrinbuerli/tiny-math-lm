@@ -215,6 +215,7 @@ def test_cpu_fixture_resumes_deterministically_from_optimizer_boundary(monkeypat
     assert result["step"] == 2
     assert result["examples_seen"] == 4
     assert result["tokens_seen"] > 0
+    assert result["planned_epochs"] is None
     assert (checkpoint_dir / "best" / "experiment_identity.json").is_file()
     assert (checkpoint_dir / "training_summary.json").is_file()
     assert (checkpoint_dir / "final" / "experiment_identity.json").is_file()
