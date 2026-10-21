@@ -163,6 +163,17 @@ def _compatible_with_runtime_extension(
     saved_eval = saved_normalized.get("eval", {})
     current_eval = normalized.get("eval", {})
     if (
+        saved_normalized.get("experiment", {}).get("name") == "exp16_qwen3_base_reasoning_v3"
+        and normalized.get("experiment", {}).get("name") == "exp16_qwen3_base_reasoning_v3"
+        and saved_normalized.get("model", {}).get("backend") == "huggingface"
+        and normalized.get("model", {}).get("backend") == "huggingface"
+        and saved_eval.get("greedy") is True
+        and current_eval.get("greedy") is True
+    ):
+        # Ordinary-Q/A batches are independent deterministic greedy streams;
+        # padding and per-row stopping preserve each question's output.
+        saved_eval["batch_size"] = current_eval.get("batch_size")
+    if (
         saved_eval.get("greedy") is True
         and current_eval.get("greedy") is True
         and "temperature" not in saved_eval

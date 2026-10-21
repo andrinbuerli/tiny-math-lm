@@ -123,6 +123,23 @@ def test_resume_allows_reasoning_generation_ceiling_to_match_context():
     assert not tracking._compatible_with_runtime_extension(saved, changed_context)
 
 
+def test_exp16_greedy_eval_batch_size_can_change_on_resume():
+    saved = {
+        "experiment": {"name": "exp16_qwen3_base_reasoning_v3"},
+        "model": {"backend": "huggingface"},
+        "eval": {"greedy": True, "batch_size": 1, "max_new_tokens": 512},
+    }
+    current = {
+        "experiment": {"name": "exp16_qwen3_base_reasoning_v3"},
+        "model": {"backend": "huggingface"},
+        "eval": {"greedy": True, "batch_size": 16, "max_new_tokens": 512},
+    }
+    assert tracking._compatible_with_runtime_extension(saved, current)
+
+    sampled = {**current, "eval": {**current["eval"], "greedy": False}}
+    assert not tracking._compatible_with_runtime_extension(saved, sampled)
+
+
 def test_resume_allows_only_reasoning_v3_sampler_strategy_change():
     saved = {
         "experiment": {"protocol": "reasoning_v3"},
