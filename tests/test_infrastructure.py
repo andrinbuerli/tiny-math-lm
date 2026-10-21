@@ -128,11 +128,17 @@ def test_exp16_greedy_eval_batch_size_can_change_on_resume():
         "experiment": {"name": "exp16_qwen3_base_reasoning_v3"},
         "model": {"backend": "huggingface"},
         "eval": {"greedy": True, "batch_size": 1, "max_new_tokens": 512},
+        "reporting": {"output_dir": "/workspace/reports/exp16"},
     }
     current = {
         "experiment": {"name": "exp16_qwen3_base_reasoning_v3"},
         "model": {"backend": "huggingface"},
         "eval": {"greedy": True, "batch_size": 16, "max_new_tokens": 512},
+        "reporting": {
+            "output_dir": "/workspace/reports/exp16",
+            "intermediate_refresh_seconds": 60,
+            "intermediate_orchestrator_pid": None,
+        },
     }
     assert tracking._compatible_with_runtime_extension(saved, current)
 

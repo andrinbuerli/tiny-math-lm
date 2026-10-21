@@ -165,6 +165,15 @@ def _compatible_with_runtime_extension(
     if (
         saved_normalized.get("experiment", {}).get("name") == "exp16_qwen3_base_reasoning_v3"
         and normalized.get("experiment", {}).get("name") == "exp16_qwen3_base_reasoning_v3"
+    ):
+        for config in (saved_normalized, normalized):
+            reporting = config.get("reporting")
+            if isinstance(reporting, dict):
+                reporting.pop("intermediate_refresh_seconds", None)
+                reporting.pop("intermediate_orchestrator_pid", None)
+    if (
+        saved_normalized.get("experiment", {}).get("name") == "exp16_qwen3_base_reasoning_v3"
+        and normalized.get("experiment", {}).get("name") == "exp16_qwen3_base_reasoning_v3"
         and saved_normalized.get("model", {}).get("backend") == "huggingface"
         and normalized.get("model", {}).get("backend") == "huggingface"
         and saved_eval.get("greedy") is True
