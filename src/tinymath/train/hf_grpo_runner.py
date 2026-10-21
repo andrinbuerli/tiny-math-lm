@@ -20,7 +20,7 @@ from tinymath.data.hf_reasoning import score_native_reasoning, sha256_file
 from tinymath.generation import RolloutConfig
 from tinymath.model.hf_qwen import load_model, load_tokenizer, save_model_identity
 from tinymath.train.grpo import group_outcome_rates, group_relative_advantages
-from tinymath.train.hf_generation import NativeRollout, generate_native_rollout
+from tinymath.train.hf_generation import NativeRollout, generate_native_rollout_group
 from tinymath.train.hf_grpo import PromptRollouts, chunked_grpo_backward
 from tinymath.train.hf_sft import _find_cache
 
@@ -237,19 +237,20 @@ def train_hf_grpo(
                 )
                 if len(prompt_ids) >= int(config.model.context_length):
                     raise ValueError("Prepared GRPO prompt leaves no native-token context")
+                rollouts = generate_native_rollout_group(
+                    model,
+                    tokenizer,
+                    prompt_ids,
+                    row,
+                    group_size=group_size,
+                    context_length=int(config.model.context_length),
+                    max_completion_tokens=cap,
+                    temperature=temperature,
+                    rollout=rollout_config,
+                )
                 completions = []
                 scores = []
-                for _completion_index in range(group_size):
-                    rollout = generate_native_rollout(
-                        model,
-                        tokenizer,
-                        prompt_ids,
-                        row,
-                        context_length=int(config.model.context_length),
-                        max_completion_tokens=cap,
-                        temperature=temperature,
-                        rollout=rollout_config,
-                    )
+                for rollout in rollouts:
                     text = _completion_text(tokenizer, rollout)
                     capped = rollout.termination_reason == "budget_exceeded"
                     failure = (

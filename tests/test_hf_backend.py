@@ -12,7 +12,11 @@ from tinymath.model.hf_qwen import completion_loss
 from tinymath.runtime_gpu import gpu_capacity_available
 from tinymath.train import hf_sft
 from tinymath.train.grpo import group_relative_advantages, grpo_objective
-from tinymath.train.hf_generation import NativeRollout, generate_native_rollout
+from tinymath.train.hf_generation import (
+    NativeRollout,
+    generate_native_rollout,
+    generate_native_rollout_group,
+)
 from tinymath.train.hf_grpo import PromptRollouts, chunked_grpo_backward, native_policy_statistics
 
 
@@ -352,6 +356,98 @@ def test_native_rollout_handles_multichar_tokens_and_masks_executor_observations
     assert score_native_reasoning(text, {**row, "scratchpad": text.split("\n", 1)[1]}).format_valid
 
 
+class BatchRolloutTokenizer:
+    eos_token_id = 0
+    pad_token_id = 0
+
+    def __init__(self, pieces=None):
+        self.pieces = pieces or {1: "x", 2: "y", 3: "z"}
+
+    def __len__(self):
+        return 4
+
+    def decode(self, token_ids, **_kwargs):
+        return "".join(self.pieces.get(int(token), "") for token in token_ids)
+
+
+class ScriptedBatchGenerator(torch.nn.Module):
+    def __init__(self, sequences, scores):
+        super().__init__()
+        self.anchor = torch.nn.Parameter(torch.zeros(()))
+        self.sequences = sequences
+        self.scores = scores
+
+    def generate(self, input_ids, **_kwargs):
+        torch.rand(())
+        return type(
+            "GenerationOutput",
+            (),
+            {
+                "sequences": torch.cat((input_ids, self.sequences.to(input_ids.device)), dim=1),
+                "scores": tuple(score.to(input_ids.device) for score in self.scores),
+            },
+        )()
+
+
+def test_native_rollout_group_batches_no_call_sampling_and_keeps_scores_aligned():
+    model = ScriptedBatchGenerator(
+        torch.tensor([[1, 0], [2, 3]]),
+        (
+            torch.tensor([[0.0, 2.0, 0.0, -1.0], [0.0, 0.0, 2.0, -1.0]]),
+            torch.tensor([[2.0, 0.0, 0.0, -1.0], [0.0, 0.0, 0.0, 2.0]]),
+        ),
+    )
+    model.train()
+    rollouts = generate_native_rollout_group(
+        model,
+        BatchRolloutTokenizer(),
+        [3],
+        {"question": "1 + 1", "answer": "2"},
+        group_size=2,
+        context_length=8,
+        max_completion_tokens=2,
+        temperature=1.0,
+    )
+    assert model.training
+    assert [rollout.token_ids for rollout in rollouts] == [[1, 0], [2, 3]]
+    assert [rollout.termination_reason for rollout in rollouts] == ["eos", "budget_exceeded"]
+    assert [rollout.policy_tokens for rollout in rollouts] == [2, 2]
+    assert rollouts[0].old_log_probs[0] == pytest.approx(
+        torch.log_softmax(model.scores[0][0], dim=-1)[1].item()
+    )
+    assert all(math.isfinite(value) for rollout in rollouts for value in rollout.entropy)
+
+
+def test_native_rollout_group_replays_executor_groups_from_saved_rng(monkeypatch):
+    from tinymath.train import hf_generation
+
+    model = ScriptedBatchGenerator(
+        torch.tensor([[1], [1]]),
+        (torch.zeros((2, 4)),),
+    )
+    tokenizer = BatchRolloutTokenizer({1: "<think>\ncall:add(1,2) -> ", 0: ""})
+    expected_state = torch.get_rng_state().clone()
+    observed_states = []
+
+    def replay(*_args, **_kwargs):
+        observed_states.append(torch.equal(torch.get_rng_state(), expected_state))
+        return NativeRollout([1], [True], [-0.1], [0.5], "eos", ())
+
+    monkeypatch.setattr(hf_generation, "generate_native_rollout", replay)
+    rollouts = generate_native_rollout_group(
+        model,
+        tokenizer,
+        [3],
+        {"question": "(1+2)+0", "answer": "3"},
+        group_size=2,
+        context_length=8,
+        max_completion_tokens=1,
+        temperature=1.0,
+    )
+    assert len(rollouts) == 2
+    assert observed_states == [True, True]
+
+
 def test_native_rollout_fails_closed_when_call_boundary_is_ambiguous_or_disallowed():
     ambiguous = MultiTokenTokenizer(
         "<think>\ncall:add(1,2) -> 3\n"
@@ -388,14 +484,14 @@ class TinyCausalTable(torch.nn.Module):
 
 
 def test_chunked_grpo_gradients_match_full_batch_with_executor_observation_masks():
-    prompts = ([1, 2], [2, 3])
+    prompts = ([1, 2], [2, 3, 4])
     group_rollouts = [
         (
             NativeRollout([4, 5, 6], [True, False, True], [-0.4, 0.0, -0.6], [0.8, 0.0, 0.7], "eos", ()),
-            NativeRollout([5, 6, 7], [True, True, True], [-0.3, -0.5, -0.4], [0.9, 0.8, 0.7], "eos", ()),
+            NativeRollout([5, 6], [True, True], [-0.3, -0.5], [0.9, 0.8], "eos", ()),
         ),
         (
-            NativeRollout([3, 4, 5], [True, True, False], [-0.2, -0.3, 0.0], [0.8, 0.9, 0.0], "eos", ()),
+            NativeRollout([3, 4, 5, 6], [True, True, False, True], [-0.2, -0.3, 0.0, -0.4], [0.8, 0.9, 0.0, 0.6], "eos", ()),
             NativeRollout([4, 5, 6], [True, True, True], [-0.5, -0.4, -0.2], [0.7, 0.8, 0.9], "eos", ()),
         ),
     ]
@@ -405,25 +501,24 @@ def test_chunked_grpo_gradients_match_full_batch_with_executor_observation_masks
     model = TinyCausalTable()
     current_rows, old_rows, entropy_rows, masks = [], [], [], []
     for prompt, rollouts in zip(prompts, group_rollouts):
-        current_group, old_group, entropy_group, mask_group = [], [], [], []
         for rollout in rollouts:
             current, old, entropy, mask = native_policy_statistics(
                 model, prompt, rollout, temperature=1.0
             )
-            current_group.append(current)
-            old_group.append(old)
-            entropy_group.append(entropy)
-            mask_group.append(mask)
-        current_rows.append(torch.stack(current_group))
-        old_rows.append(torch.stack(old_group))
-        entropy_rows.append(torch.stack(entropy_group))
-        masks.append(torch.stack(mask_group))
+            current_rows.append(current)
+            old_rows.append(old)
+            entropy_rows.append(entropy)
+            masks.append(mask)
+    max_tokens = max(len(row) for row in current_rows)
+    pad = lambda values, fill: torch.stack(
+        [torch.nn.functional.pad(row, (0, max_tokens - len(row)), value=fill) for row in values]
+    )
     baseline = grpo_objective(
-        torch.stack(current_rows),
-        torch.stack(old_rows),
-        advantages,
-        torch.stack(masks),
-        entropy=torch.stack(entropy_rows),
+        pad(current_rows, 0).unsqueeze(1),
+        pad(old_rows, 0).unsqueeze(1),
+        advantages.reshape(-1, 1),
+        pad(masks, False).unsqueeze(1),
+        entropy=pad(entropy_rows, 0).unsqueeze(1),
     )
     baseline.loss.backward()
     expected_grad = model.table.grad.detach().clone()
@@ -435,7 +530,17 @@ def test_chunked_grpo_gradients_match_full_batch_with_executor_observation_masks
         advantages,
         temperature=1.0,
         clip_epsilon=0.2,
-        chunk_size=1,
+        chunk_size=2,
     )
     assert torch.allclose(model.table.grad, expected_grad, atol=1e-6, rtol=1e-6)
-    assert metrics["policy_tokens"] == int(torch.stack(masks).sum())
+    assert metrics["policy_tokens"] == sum(int(mask.sum()) for mask in masks)
+    assert metrics["loss"] == pytest.approx(float(baseline.loss.detach()), abs=1e-6)
+
+
+def test_native_policy_entropy_remains_finite_when_extra_logits_are_masked():
+    model = TinyCausalTable(vocab_size=9)
+    rollout = NativeRollout([2, 3], [True, True], [-0.4, -0.5], [0.8, 0.7], "eos", ())
+    _current, _old, entropy, _mask = native_policy_statistics(
+        model, [1], rollout, temperature=1.0, vocab_size=7
+    )
+    assert torch.isfinite(entropy).all()

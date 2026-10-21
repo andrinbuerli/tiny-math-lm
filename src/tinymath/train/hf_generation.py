@@ -9,6 +9,7 @@ from typing import Any
 import torch
 from torch.nn import functional as F
 
+from tinymath.checkpoint import capture_rng_state, restore_rng_state
 from tinymath.data.reasoning import task_allows_calls
 from tinymath.generation import RolloutConfig
 from tinymath.rewards.calls import CallError, execute_call
@@ -215,3 +216,157 @@ def generate_native_rollout(
         termination_reason=reason,
         call_events=tuple(events),
     )
+
+
+@torch.no_grad()
+def generate_native_rollout_group(
+    model: Any,
+    tokenizer: Any,
+    prompt_ids: Sequence[int],
+    row: dict[str, Any],
+    *,
+    group_size: int,
+    context_length: int,
+    max_completion_tokens: int,
+    temperature: float,
+    rollout: RolloutConfig | None = None,
+    greedy: bool = False,
+) -> tuple[NativeRollout, ...]:
+    """Sample one prompt's completion group together when no executor is needed.
+
+    If a sampled trajectory requests execution, discard the speculative batch,
+    restore its RNG state, and reproduce the group through the exact incremental
+    executor path. This keeps executor observations inside each trajectory.
+    """
+    if group_size < 1:
+        raise ValueError("A rollout group must contain at least one completion")
+    if group_size == 1 or not callable(getattr(model, "generate", None)):
+        return tuple(
+            generate_native_rollout(
+                model,
+                tokenizer,
+                prompt_ids,
+                row,
+                context_length=context_length,
+                max_completion_tokens=max_completion_tokens,
+                temperature=temperature,
+                rollout=rollout,
+                greedy=greedy,
+            )
+            for _ in range(group_size)
+        )
+    if not prompt_ids:
+        raise ValueError("A nonempty prompt is required")
+    room = min(max_completion_tokens, context_length - len(prompt_ids))
+    if room < 1:
+        raise ValueError("Prompt leaves no room for a completion")
+    if not greedy and temperature <= 0:
+        raise ValueError("Sampled GRPO rollouts require positive temperature")
+
+    rng_state = capture_rng_state()
+    device = next(model.parameters()).device
+    prompt = torch.tensor([list(prompt_ids)] * group_size, dtype=torch.long, device=device)
+    attention = torch.ones_like(prompt)
+    was_training = model.training
+    model.eval()
+    try:
+        generation_options: dict[str, Any] = {
+            "input_ids": prompt,
+            "attention_mask": attention,
+            "max_new_tokens": room,
+            "do_sample": not greedy,
+            "eos_token_id": tokenizer.eos_token_id,
+            "pad_token_id": (
+                tokenizer.eos_token_id
+                if getattr(tokenizer, "pad_token_id", None) is None
+                else tokenizer.pad_token_id
+            ),
+            "return_dict_in_generate": True,
+            "output_scores": True,
+            "use_cache": True,
+        }
+        if not greedy:
+            generation_options.update(
+                temperature=temperature,
+                top_k=0,
+                top_p=1.0,
+                typical_p=1.0,
+                repetition_penalty=1.0,
+            )
+        generated = model.generate(**generation_options)
+        sequences = generated.sequences
+        scores = generated.scores
+        if sequences.shape[0] != group_size or not scores:
+            raise RuntimeError("Batched generation returned incomplete rollout sequences or scores")
+        token_lists: list[list[int]] = []
+        termination: list[str] = []
+        for sequence in sequences:
+            tokens = [int(value) for value in sequence[len(prompt_ids) :].tolist()]
+            try:
+                eos_index = tokens.index(tokenizer.eos_token_id)
+            except ValueError:
+                eos_index = None
+            if eos_index is not None:
+                tokens = tokens[: eos_index + 1]
+                termination.append("eos")
+            else:
+                tokens = tokens[:room]
+                termination.append("budget_exceeded")
+            token_lists.append(tokens)
+
+        # The exact executor parser owns any transcript that starts a call.
+        for tokens in token_lists:
+            text = _decode(tokenizer, tokens)
+            think_start = text.find("<think>\n")
+            if think_start >= 0:
+                scratchpad_start = think_start + len("<think>\n")
+                think_end = text.find("</think>", scratchpad_start)
+                scratchpad = text[scratchpad_start:] if think_end < 0 else text[scratchpad_start:think_end]
+            else:
+                scratchpad = ""
+            if any(line.lstrip().startswith("call:") for line in scratchpad.splitlines()):
+                restore_rng_state(rng_state)
+                return tuple(
+                    generate_native_rollout(
+                        model,
+                        tokenizer,
+                        prompt_ids,
+                        row,
+                        context_length=context_length,
+                        max_completion_tokens=max_completion_tokens,
+                        temperature=temperature,
+                        rollout=rollout,
+                        greedy=greedy,
+                    )
+                    for _ in range(group_size)
+                )
+
+        result: list[NativeRollout] = []
+        for row_index, tokens in enumerate(token_lists):
+            token_log_probs: list[float] = []
+            entropies: list[float] = []
+            if len(tokens) > len(scores):
+                raise RuntimeError("Batched generation omitted sampled-token scores")
+            for token_index, token_id in enumerate(tokens):
+                logits = _mask_non_token_logits(scores[token_index][row_index].float(), tokenizer)
+                effective_temperature = temperature if temperature > 0 else 1.0
+                if greedy:
+                    logits = logits / effective_temperature
+                log_distribution = F.log_softmax(logits, dim=-1)
+                token_log_probs.append(float(log_distribution[token_id].item()))
+                probabilities = log_distribution.exp()
+                finite = log_distribution.masked_fill(~torch.isfinite(log_distribution), 0.0)
+                entropies.append(float(-(probabilities * finite).sum().item()))
+            result.append(
+                NativeRollout(
+                    token_ids=tokens,
+                    policy_mask=[True] * len(tokens),
+                    old_log_probs=token_log_probs,
+                    entropy=entropies,
+                    termination_reason=termination[row_index],
+                    call_events=(),
+                )
+            )
+        return tuple(result)
+    finally:
+        model.train(was_training)
