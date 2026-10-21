@@ -19,7 +19,10 @@ from tinymath.data.prompts import format_prompt
 from tinymath.data.splits import question_features
 from tinymath.model.hf_qwen import load_model, load_tokenizer, model_provenance
 from tinymath.rewards.verify import verify_answer
-from tinymath.train.hf_generation import _mask_non_token_logits, generate_native_rollout
+from tinymath.train.hf_generation import (
+    _mask_non_token_logits,
+    generate_native_rollout_batch,
+)
 
 FIXED_SPLIT_COUNTS = {"test": 50_000, "number_length_ood": 5_000, "expression_length_ood": 2_000}
 
@@ -143,6 +146,31 @@ def _generate_qa_batch(
 
 def _generate_qa(model: Any, tokenizer: Any, question: str, *, context: int, cap: int) -> tuple[str, int, bool]:
     return _generate_qa_batch(model, tokenizer, [question], context=context, cap=cap)[0]
+
+
+def _generate_reasoning_batch(
+    model: Any,
+    tokenizer: Any,
+    rows: list[dict[str, Any]],
+    *,
+    context: int,
+    cap: int,
+    rollout: Any,
+) -> tuple[Any, ...]:
+    items = [
+        (tokenizer.encode(f"Q: {row['question']}\n", add_special_tokens=False), row)
+        for row in rows
+    ]
+    return generate_native_rollout_batch(
+        model,
+        tokenizer,
+        items,
+        context_length=context,
+        max_completion_tokens=cap,
+        temperature=0.0,
+        rollout=rollout,
+        greedy=True,
+    )
 
 
 def _ratio(numerator: int, denominator: int) -> float | None:
@@ -381,53 +409,74 @@ def evaluate_hf_checkpoint(
                         records.append(record)
                         _append_progress(progress_path, record)
             else:
-                for index, row in enumerate(rows[start_index:], start=start_index):
-                    digit_width, operator_count = question_features(str(row["question"]))
-                    base = {
-                        "row_index": index,
-                        "module": row["module"],
-                        "question": row["question"],
-                        "target": row["answer"],
-                        "digit_width": digit_width,
-                        "operator_count": operator_count,
-                        "policy_tokens": 0,
-                        "executor_tokens": 0,
-                        "call_count": 0,
-                        "executor_failure": False,
-                        "trace_valid": False,
-                        "full_success": False,
-                    }
-                    prompt_ids = tokenizer.encode(f"Q: {row['question']}\n", add_special_tokens=False)
-                    rollout = generate_native_rollout(
-                        model, tokenizer, prompt_ids, row,
-                        context_length=int(config.model.context_length),
-                        max_completion_tokens=int(config.eval.max_new_tokens),
-                        temperature=0.0, rollout=config.rollout, greedy=True,
+                batch_size = max(1, int(config.eval.get("batch_size", 1)))
+                for batch_start in range(start_index, len(rows), batch_size):
+                    batch_rows = rows[batch_start : batch_start + batch_size]
+                    rollouts = _generate_reasoning_batch(
+                        model,
+                        tokenizer,
+                        batch_rows,
+                        context=int(config.model.context_length),
+                        cap=int(config.eval.max_new_tokens),
+                        rollout=config.rollout,
                     )
-                    completion_ids = rollout.token_ids
-                    if completion_ids and completion_ids[-1] == tokenizer.eos_token_id:
-                        completion_ids = completion_ids[:-1]
-                    text = tokenizer.decode(completion_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
-                    scored = score_native_reasoning(
-                        text, row,
-                        capped=rollout.termination_reason == "budget_exceeded",
-                        failure=rollout.termination_reason if rollout.termination_reason not in {"eos", "budget_exceeded"} else None,
-                        format_weight=float(config.rlvr.reward_format_weight),
-                        success_weight=float(config.rlvr.reward_success_weight),
-                        max_calls=int(config.rollout.max_calls),
-                        max_scalar_chars=int(config.rollout.max_scalar_chars),
-                    )
-                    record = base | {
-                        "prediction": text, "correct": scored.answer_correct, "format_valid": scored.format_valid,
-                        "trace_valid": scored.trace_valid, "full_success": scored.full_success,
-                        "capped": rollout.termination_reason == "budget_exceeded",
-                        "output_tokens": len(rollout.token_ids), "call_count": scored.call_count,
-                        "executor_failure": rollout.termination_reason not in {"eos", "budget_exceeded"},
-                        "policy_tokens": rollout.policy_tokens, "executor_tokens": rollout.executor_tokens,
-                        "termination_reason": rollout.termination_reason,
-                    }
-                    records.append(record)
-                    _append_progress(progress_path, record)
+                    for offset, (row, rollout_result) in enumerate(
+                        zip(batch_rows, rollouts, strict=True)
+                    ):
+                        index = batch_start + offset
+                        digit_width, operator_count = question_features(str(row["question"]))
+                        base = {
+                            "row_index": index,
+                            "module": row["module"],
+                            "question": row["question"],
+                            "target": row["answer"],
+                            "digit_width": digit_width,
+                            "operator_count": operator_count,
+                            "policy_tokens": 0,
+                            "executor_tokens": 0,
+                            "call_count": 0,
+                            "executor_failure": False,
+                            "trace_valid": False,
+                            "full_success": False,
+                        }
+                        completion_ids = rollout_result.token_ids
+                        if completion_ids and completion_ids[-1] == tokenizer.eos_token_id:
+                            completion_ids = completion_ids[:-1]
+                        text = tokenizer.decode(
+                            completion_ids,
+                            skip_special_tokens=False,
+                            clean_up_tokenization_spaces=False,
+                        )
+                        scored = score_native_reasoning(
+                            text,
+                            row,
+                            capped=rollout_result.termination_reason == "budget_exceeded",
+                            failure=(
+                                rollout_result.termination_reason
+                                if rollout_result.termination_reason not in {"eos", "budget_exceeded"}
+                                else None
+                            ),
+                            format_weight=float(config.rlvr.reward_format_weight),
+                            success_weight=float(config.rlvr.reward_success_weight),
+                            max_calls=int(config.rollout.max_calls),
+                            max_scalar_chars=int(config.rollout.max_scalar_chars),
+                        )
+                        record = base | {
+                            "prediction": text,
+                            "correct": scored.answer_correct,
+                            "format_valid": scored.format_valid,
+                            "trace_valid": scored.trace_valid,
+                            "full_success": scored.full_success,
+                            "capped": rollout_result.termination_reason == "budget_exceeded",
+                            "output_tokens": len(rollout_result.token_ids),
+                            "call_count": scored.call_count,
+                            "executor_failure": rollout_result.termination_reason not in {"eos", "budget_exceeded"},
+                            "policy_tokens": rollout_result.policy_tokens,
+                            "executor_tokens": rollout_result.executor_tokens,
+                            "termination_reason": rollout_result.termination_reason,
+                        }
+                        records.append(record)
+                        _append_progress(progress_path, record)
             summary = _summarize(records)
             key = f"{split_name}/{mode}"
             all_results[key] = summary

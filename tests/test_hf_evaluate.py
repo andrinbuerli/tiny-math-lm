@@ -147,6 +147,51 @@ def test_batched_ordinary_qa_preserves_results_when_some_prompts_exceed_context(
     assert results == [("", 0, True), ("", 0, False)]
 
 
+def test_reasoning_evaluation_batches_native_prompts_and_rows(monkeypatch):
+    captured = {}
+    rollout_result = NativeRollout(
+        token_ids=[1, 0],
+        policy_mask=[True, True],
+        old_log_probs=[0.0, 0.0],
+        entropy=[0.0, 0.0],
+        termination_reason="eos",
+        call_events=(),
+    )
+    expected = (
+        rollout_result,
+        rollout_result,
+    )
+
+    def generate_batch(model, tokenizer, items, **kwargs):
+        captured["items"] = items
+        captured["kwargs"] = kwargs
+        return expected
+
+    monkeypatch.setattr(hf_evaluate, "generate_native_rollout_batch", generate_batch)
+    rows = [
+        {"question": "2 * 3", "module": "arithmetic__mul"},
+        {"question": "x", "module": "arithmetic__mul"},
+    ]
+    result = hf_evaluate._generate_reasoning_batch(
+        object(),
+        _Tokenizer(),
+        rows,
+        context=512,
+        cap=128,
+        rollout={"executor": "exact"},
+    )
+
+    assert result == expected
+    assert captured["items"] == [([2, 3], rows[0]), ([3], rows[1])]
+    assert captured["kwargs"] == {
+        "context_length": 512,
+        "max_completion_tokens": 128,
+        "temperature": 0.0,
+        "rollout": {"executor": "exact"},
+        "greedy": True,
+    }
+
+
 def test_hf_evaluation_summary_keeps_protocol_and_length_metrics():
     records = [
         {"module": "arithmetic__mul", "digit_width": 2, "operator_count": 1,
@@ -294,15 +339,15 @@ def test_hf_evaluation_writes_both_formats_with_cpu_fixture(monkeypatch, tmp_pat
     )
     monkeypatch.setattr(
         hf_evaluate,
-        "generate_native_rollout",
-        lambda *_args, **_kwargs: NativeRollout(
+        "generate_native_rollout_batch",
+        lambda *_args, **_kwargs: (NativeRollout(
             token_ids=[1, 0],
             policy_mask=[True, True],
             old_log_probs=[0.0, 0.0],
             entropy=[0.0, 0.0],
             termination_reason="eos",
             call_events=(),
-        ),
+        ),),
     )
     config = OmegaConf.create(
         {
