@@ -63,8 +63,26 @@ def _summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     summary["policy_tokens"] = sum(int(row.get("policy_tokens", 0) or 0) for row in rows)
     summary["executor_tokens"] = sum(int(row.get("executor_tokens", 0) or 0) for row in rows)
     modules: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    digits: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    operators: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         modules[str(row.get("module", "unknown"))].append(row)
+        digits[str(row.get("digit_width", "unknown"))].append(row)
+        operators[str(row.get("operator_count", "unknown"))].append(row)
+    def grouped_accuracy(groups: dict[str, list[dict[str, Any]]]) -> dict[str, dict[str, Any]]:
+        def category_key(value: str) -> tuple[int, float | str]:
+            try:
+                return 0, float(value)
+            except ValueError:
+                return 1, value
+
+        return {
+            key: {
+                "rows": len(values),
+                "accuracy": sum(row.get("correct") is True for row in values) / len(values),
+            }
+            for key, values in sorted(groups.items(), key=lambda item: category_key(item[0]))
+        }
     summary["modules"] = {
         name: {
             "rows": len(values),
@@ -72,6 +90,8 @@ def _summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         }
         for name, values in sorted(modules.items())
     }
+    summary["by_digit_width"] = grouped_accuracy(digits)
+    summary["by_operator_count"] = grouped_accuracy(operators)
     return summary
 
 
@@ -91,8 +111,8 @@ def _render_markdown(summaries: dict[str, dict[str, Any]], updated: str) -> str:
         "",
         "## Evaluation progress",
         "",
-        "| Arm | Split | Format | Rows | Expected | Accuracy | Format valid | Protocol success | Trace valid | Capped | Mean output tokens | Executor calls | Policy tokens | Executor tokens |",
-        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Arm | Split | Format | Rows | Expected | Accuracy | Format valid | Protocol success | Trace valid | Capped | Mean output tokens | Executor calls | Executor failures | Policy tokens | Executor tokens |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for relative, summary in sorted(summaries.items()):
         parts = Path(relative).parts
@@ -112,13 +132,26 @@ def _render_markdown(summaries: dict[str, dict[str, Any]], updated: str) -> str:
             f"{_format(summary['correct'], percent=True)} | {_format(summary['format_valid'], percent=True)} | "
             f"{_format(summary['full_success'], percent=True)} | {_format(summary['trace_valid'], percent=True)} | "
             f"{_format(summary['capped'], percent=True)} | {_format(summary['mean_output_tokens'])} | "
-            f"{summary['executor_calls']} | {summary['policy_tokens']} | {summary['executor_tokens']} |"
+            f"{summary['executor_calls']} | {_format(summary.get('executor_failure'), percent=True)} | "
+            f"{summary['policy_tokens']} | {summary['executor_tokens']} |"
         )
         if summary["modules"]:
             lines.extend(["", f"### {label} · {split} · {format_name}", "", "| Module | Rows | Accuracy |", "| --- | ---: | ---: |"])
             for module, metrics in summary["modules"].items():
                 lines.append(f"| {module} | {metrics['rows']} | {_format(metrics['accuracy'], percent=True)} |")
             lines.append("")
+        for field, heading in (
+            ("by_digit_width", "Digit width"),
+            ("by_operator_count", "Operator count"),
+        ):
+            groups = summary.get(field, {})
+            if groups:
+                lines.extend([f"### {label} · {split} · {format_name} · {heading.lower()}", "", f"| {heading} | Rows | Accuracy |", "| ---: | ---: | ---: |"])
+                lines.extend(
+                    f"| {category} | {metrics['rows']} | {_format(metrics['accuracy'], percent=True)} |"
+                    for category, metrics in groups.items()
+                )
+                lines.append("")
     if not summaries:
         lines.extend(["", "No evaluation progress JSONL files are available yet."])
     lines.extend([
@@ -185,6 +218,46 @@ def _write_figures(output: Path, series: dict[str, list[dict[str, Any]]]) -> Non
     for ext in ("png", "svg"):
         fig.savefig(output / f"intermediate_progress.{ext}", dpi=160)
     plt.close(fig)
+
+    for field, filename, label in (
+        ("digit_width", "intermediate_by_digit_width", "Digit width"),
+        ("operator_count", "intermediate_by_operator_count", "Operator count"),
+    ):
+        fig, axis = plt.subplots(figsize=(9, 5))
+        plotted = False
+        for name, rows in sorted(series.items()):
+            grouped: dict[str, list[bool]] = defaultdict(list)
+            for row in rows:
+                category = row.get(field)
+                if category is not None:
+                    grouped[str(category)].append(row.get("correct") is True)
+            try:
+                categories = sorted(grouped, key=float)
+            except ValueError:
+                categories = sorted(grouped)
+            if categories:
+                try:
+                    x_values = [float(category) for category in categories]
+                    axis.set_xticks(x_values, categories)
+                except ValueError:
+                    x_values = categories
+                axis.plot(
+                    x_values,
+                    [sum(grouped[key]) / len(grouped[key]) for key in categories],
+                    marker="o",
+                    label=name,
+                )
+                plotted = True
+        axis.set_xlabel(label)
+        axis.set_ylabel("Mathematical accuracy")
+        axis.set_ylim(0, 1)
+        axis.grid(alpha=0.25)
+        if plotted:
+            axis.legend(fontsize="small")
+        fig.tight_layout()
+        for ext in ("png", "svg"):
+            fig.savefig(output / f"{filename}.{ext}", dpi=160)
+        plt.close(fig)
 
 
 def refresh(*, runs_root: Path, output_dir: Path, seed: int) -> int:

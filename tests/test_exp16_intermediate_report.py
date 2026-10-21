@@ -28,6 +28,8 @@ def test_summary_reports_rates_and_diagnostics() -> None:
             "policy_tokens": 5,
             "executor_tokens": 2,
             "module": "arithmetic__add_or_sub",
+            "digit_width": 2,
+            "operator_count": 1,
         },
         {
             "correct": False,
@@ -41,6 +43,8 @@ def test_summary_reports_rates_and_diagnostics() -> None:
             "policy_tokens": 9,
             "executor_tokens": 0,
             "module": "arithmetic__add_or_sub",
+            "digit_width": 3,
+            "operator_count": 2,
         },
     ]
 
@@ -54,6 +58,10 @@ def test_summary_reports_rates_and_diagnostics() -> None:
     assert summary["policy_tokens"] == 14
     assert summary["executor_tokens"] == 2
     assert summary["modules"]["arithmetic__add_or_sub"]["accuracy"] == 0.5
+    assert list(summary["by_digit_width"]) == ["2", "3"]
+    assert list(summary["by_operator_count"]) == ["1", "2"]
+    assert summary["by_digit_width"]["2"]["accuracy"] == 1.0
+    assert summary["by_operator_count"]["2"]["accuracy"] == 0.0
 
 
 def test_jsonl_reader_ignores_partial_trailing_record(tmp_path: Path) -> None:
@@ -75,6 +83,7 @@ def test_markdown_labels_partial_results_and_decodes_split_format() -> None:
                 "capped": 0.0,
                 "mean_output_tokens": 3.0,
                 "executor_calls": 0,
+                "executor_failure": 0.0,
                 "policy_tokens": 6,
                 "executor_tokens": 0,
                 "modules": {},
