@@ -118,7 +118,13 @@ def generate_native_rollout(
             generated.append(token_id)
             policy_mask.append(True)
             old_log_probs.append(float(log_distribution[0, token_id].item()))
-            entropy_values.append(float(-(log_distribution.exp() * log_distribution).sum(-1).item()))
+            probabilities = log_distribution.exp()
+            finite_log_distribution = log_distribution.masked_fill(
+                ~torch.isfinite(log_distribution), 0.0
+            )
+            entropy_values.append(
+                float(-(probabilities * finite_log_distribution).sum(-1).item())
+            )
             if token_id == tokenizer.eos_token_id:
                 reason = "eos"
                 break

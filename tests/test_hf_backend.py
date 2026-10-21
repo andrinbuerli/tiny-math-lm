@@ -1,4 +1,5 @@
 import json
+import math
 from typing import ClassVar
 
 import pytest
@@ -346,6 +347,7 @@ def test_native_rollout_handles_multichar_tokens_and_masks_executor_observations
     assert rollout.executor_tokens == 1
     assert rollout.call_events[0]["result"] == "3"
     assert rollout.old_log_probs[1] == rollout.entropy[1] == 0.0
+    assert all(math.isfinite(value) for value in rollout.entropy)
     text = tokenizer.decode(rollout.token_ids[:-1])
     assert score_native_reasoning(text, {**row, "scratchpad": text.split("\n", 1)[1]}).format_valid
 
