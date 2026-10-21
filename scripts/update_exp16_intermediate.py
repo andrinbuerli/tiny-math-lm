@@ -183,6 +183,18 @@ def _training_results(runs_root: Path, seed: int) -> list[dict[str, Any]]:
                 tracking = json.loads(tracking_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 tracking = {}
+            latest = dict(rows[-1])
+            validation_rows = [
+                row for row in rows if _as_float(row.get("validation/completion_loss")) is not None
+            ]
+            if validation_rows:
+                latest_validation = validation_rows[-1]
+                latest["validation/completion_loss"] = latest_validation[
+                    "validation/completion_loss"
+                ]
+                latest["validation_step"] = latest_validation.get(
+                    "optimizer_step", latest_validation.get("update", "—")
+                )
             results.append(
                 {
                     "arm": arm_root.name.upper(),
@@ -190,7 +202,7 @@ def _training_results(runs_root: Path, seed: int) -> list[dict[str, Any]]:
                     "status": str(tracking.get("run_status", "running")),
                     "sync_status": str(tracking.get("sync_status", "unknown")),
                     "metrics": rows,
-                    "latest": rows[-1],
+                    "latest": latest,
                     "wandb_id": tracking.get("id"),
                     "wandb_url": tracking.get("url"),
                 }
@@ -314,7 +326,7 @@ def _render_markdown(
     if training_results:
         lines.extend(
             [
-                "| Arm | Phase | Status | Updates | Epoch | Completion loss | Validation loss | Tokens seen | Tokens/s | Wall seconds | Peak GPU GB | W&B | Sync |",
+                "| Arm | Phase | Status | Updates | Epoch | Completion loss | Last validation loss (step) | Tokens seen | Tokens/s | Wall seconds | Peak GPU GB | W&B | Sync |",
                 "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
             ]
         )
@@ -334,7 +346,8 @@ def _render_markdown(
                 f"{latest.get('optimizer_step', latest.get('update', '—'))} | "
                 f"{_format(_as_float(latest.get('epoch')))} | "
                 f"{_format(_as_float(latest.get('train/completion_loss')))} | "
-                f"{_format(_as_float(latest.get('validation/completion_loss')))} | "
+                f"{_format(_as_float(latest.get('validation/completion_loss')))}"
+                f" @ {latest.get('validation_step', '—')} | "
                 f"{latest.get('tokens_seen', '—')} | "
                 f"{_format(_as_float(latest.get('tokens_per_second')))} | "
                 f"{_format(_as_float(latest.get('wall_seconds')))} | {peak_gb} | {link} | "
