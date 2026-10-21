@@ -64,6 +64,23 @@ def test_ordinary_qa_stops_at_first_line_even_when_token_crosses_boundary():
     assert not capped
 
 
+def test_ordinary_qa_stops_when_one_native_token_contains_the_line_break():
+    class TokenizerWithEmbeddedLineBreak(_Tokenizer):
+        id_to_text: ClassVar[dict[int, str]] = _Tokenizer.id_to_text | {
+            5: "answer\ncontinued"
+        }
+        text_to_id: ClassVar[dict[str, int]] = {
+            value: key for key, value in id_to_text.items()
+        }
+
+    answer, generated_tokens, capped = _generate_qa(
+        _Model([5]), TokenizerWithEmbeddedLineBreak(), "question", context=10, cap=8
+    )
+    assert answer == "answer"
+    assert generated_tokens == 1
+    assert not capped
+
+
 def test_ordinary_qa_does_not_search_prose_for_a_matching_scalar():
     answer, _, _ = _generate_qa(
         _Model([4, 0]), _Tokenizer(), "question", context=10, cap=8

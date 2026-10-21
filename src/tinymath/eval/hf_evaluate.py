@@ -25,6 +25,7 @@ from tinymath.train.hf_generation import (
 )
 
 FIXED_SPLIT_COUNTS = {"test": 50_000, "number_length_ood": 5_000, "expression_length_ood": 2_000}
+_LINE_TERMINATOR_IDS: dict[int, tuple[Any, frozenset[int]]] = {}
 
 
 def _cache_dir(config: Any) -> Path:
@@ -49,6 +50,22 @@ def _select_cache_rows(cache: Any, indices: torch.Tensor) -> Any:
     raise TypeError("Batched Q/A generation requires a cache that supports batch row selection")
 
 
+def _line_terminator_token_ids(tokenizer: Any) -> frozenset[int]:
+    cached = _LINE_TERMINATOR_IDS.get(id(tokenizer))
+    if cached is not None and cached[0] is tokenizer:
+        return cached[1]
+    token_ids = set()
+    for token_id in range(len(tokenizer)):
+        decoded = tokenizer.decode(
+            [token_id], skip_special_tokens=False, clean_up_tokenization_spaces=False
+        )
+        if "\n" in decoded or "\r" in decoded:
+            token_ids.add(token_id)
+    token_ids = frozenset(token_ids)
+    _LINE_TERMINATOR_IDS[id(tokenizer)] = (tokenizer, token_ids)
+    return token_ids
+
+
 @torch.no_grad()
 def _generate_qa_batch(
     model: Any, tokenizer: Any, questions: list[str], *, context: int, cap: int,
@@ -71,6 +88,7 @@ def _generate_qa_batch(
     device = next(model.parameters()).device
     pad_id = getattr(tokenizer, "pad_token_id", None)
     pad_id = tokenizer.eos_token_id if pad_id is None else pad_id
+    line_terminator_ids = _line_terminator_token_ids(tokenizer)
     width = max(len(ids) for ids in prompt_ids)
     input_ids = torch.full((active_count, width), pad_id, dtype=torch.long, device=device)
     attention_mask = torch.zeros_like(input_ids)
@@ -102,10 +120,7 @@ def _generate_qa_batch(
                 continue
             generated[index].append(int(token_id))
             counts[index] += 1
-            piece = tokenizer.decode(
-                generated[index], skip_special_tokens=False, clean_up_tokenization_spaces=False
-            )
-            if "\n" in piece or "\r" in piece:
+            if token_id in line_terminator_ids:
                 stopped[index] = True
                 continue
             if offset + 1 >= rooms[local_index]:
