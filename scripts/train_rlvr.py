@@ -33,25 +33,41 @@ def _bundle_dir(config: DictConfig, revision: str | None = None) -> Path:
     if revision:
         candidates = [path for path in candidates if path.name.startswith(revision[:12])]
     if len(candidates) != 1 or not (candidates[0] / "manifest.json").is_file():
-        raise FileNotFoundError("Could not identify one prepared bundle; set data_bundle=... explicitly")
+        raise FileNotFoundError(
+            "Could not identify one prepared bundle; set data_bundle=... explicitly"
+        )
     return candidates[0]
 
 
 @hydra.main(version_base="1.3", config_path="../configs", config_name="config")
 def main(config: DictConfig) -> None:
     if set(config.data.modules) != set(SELECTED_MODULES):
-        raise ValueError(f"The experiment is restricted to exactly these modules: {SELECTED_MODULES}")
+        raise ValueError(
+            f"The experiment is restricted to exactly these modules: {SELECTED_MODULES}"
+        )
     if str(config.model.get("backend", "tinymath")) == "huggingface":
-        init_checkpoint = workspace_path(str(config.init_checkpoint)) if config.init_checkpoint else None
+        init_checkpoint = (
+            workspace_path(str(config.init_checkpoint)) if config.init_checkpoint else None
+        )
         if init_checkpoint is not None and not init_checkpoint.is_dir():
-            raise FileNotFoundError(f"Hugging Face SFT checkpoint directory not found: {init_checkpoint}")
-        if init_checkpoint is None and str(config.experiment.phase) not in {"pilot", "smoke"}:
+            raise FileNotFoundError(
+                f"Hugging Face SFT checkpoint directory not found: {init_checkpoint}"
+            )
+        if init_checkpoint is None and str(config.experiment.phase) not in {
+            "pilot",
+            "smoke",
+            "optimization_pilot",
+        }:
             raise ValueError("Main Experiment 16 GRPO requires the selected SFT checkpoint")
         bundle_dir = _bundle_dir(config)
         wait_for_gpu_capacity(config, str(config.model.name))
         run_dir = workspace_path(
-            "runs", str(config.experiment.name), str(config.model.name), "grpo",
-            str(config.experiment.phase), f"seed{int(config.seed)}",
+            "runs",
+            str(config.experiment.name),
+            str(config.model.name),
+            "grpo",
+            str(config.experiment.phase),
+            f"seed{int(config.seed)}",
         )
         run = initialize_tracked_run(
             config,
@@ -64,7 +80,8 @@ def main(config: DictConfig) -> None:
                 {
                     "source_sft_wandb_run_id": (
                         read_wandb_run_id(init_checkpoint.parent)
-                        if init_checkpoint is not None else None
+                        if init_checkpoint is not None
+                        else None
                     ),
                 },
                 allow_val_change=True,

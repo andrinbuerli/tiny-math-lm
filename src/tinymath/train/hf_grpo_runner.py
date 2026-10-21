@@ -20,7 +20,7 @@ from tinymath.data.hf_reasoning import score_native_reasoning, sha256_file
 from tinymath.generation import RolloutConfig
 from tinymath.model.hf_qwen import load_model, load_tokenizer, save_model_identity
 from tinymath.train.grpo import group_outcome_rates, group_relative_advantages
-from tinymath.train.hf_generation import NativeRollout, generate_native_rollout_group
+from tinymath.train.hf_generation import NativeRollout, generate_native_rollout_batch
 from tinymath.train.hf_grpo import PromptRollouts, chunked_grpo_backward
 from tinymath.train.hf_sft import _find_cache
 
@@ -87,13 +87,12 @@ def _checkpoint_payload(
         "rng_state": capture_rng_state(),
     }
 
+
 def _completion_text(tokenizer: Any, rollout: NativeRollout) -> str:
     ids = rollout.token_ids
     if ids and ids[-1] == tokenizer.eos_token_id:
         ids = ids[:-1]
-    return tokenizer.decode(
-        ids, skip_special_tokens=False, clean_up_tokenization_spaces=False
-    )
+    return tokenizer.decode(ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
 
 
 def train_hf_grpo(
@@ -105,10 +104,12 @@ def train_hf_grpo(
     run: Any,
 ) -> dict[str, Any]:
     phase = str(config.experiment.phase)
-    if init_checkpoint is None and phase not in {"pilot", "smoke"}:
+    if init_checkpoint is None and phase not in {"pilot", "smoke", "optimization_pilot"}:
         raise ValueError("Main Experiment 16 GRPO must initialize from selected SFT weights")
     if init_checkpoint is not None and not init_checkpoint.is_dir():
-        raise FileNotFoundError(f"Hugging Face SFT checkpoint directory not found: {init_checkpoint}")
+        raise FileNotFoundError(
+            f"Hugging Face SFT checkpoint directory not found: {init_checkpoint}"
+        )
     cache_dir, cache_manifest = _find_cache(config)
     if sha256_file(bundle_dir / "manifest.json") != cache_manifest["source_bundle_manifest_sha256"]:
         raise ValueError("GRPO bundle manifest does not match the native token cache source")
@@ -130,7 +131,9 @@ def train_hf_grpo(
         if selected_identity.get("tokenizer_sha256") != cache_manifest["tokenizer_sha256"]:
             raise ValueError("Selected SFT checkpoint has a different native tokenizer")
         if selected_identity.get("model_revision") != str(config.model.revision):
-            raise ValueError("Selected SFT checkpoint does not descend from the pinned Base revision")
+            raise ValueError(
+                "Selected SFT checkpoint does not descend from the pinned Base revision"
+            )
     if hasattr(run, "config"):
         run.config.update(
             {
@@ -158,7 +161,15 @@ def train_hf_grpo(
     cap = int(config.rlvr.max_completion_tokens)
     clip_epsilon = float(config.rlvr.clip_epsilon)
     chunk_size = int(config.rlvr.rollout_chunk_size)
-    if updates < 1 or prompts_per_update != 16 or group_size != 16 or chunk_size < 1:
+    generation_batch_size = int(config.rlvr.get("rollout_generation_batch_size", group_size))
+    if (
+        updates < 1
+        or prompts_per_update != 16
+        or group_size != 16
+        or chunk_size < 1
+        or generation_batch_size < group_size
+        or generation_batch_size % group_size
+    ):
         raise ValueError("Experiment 16 requires positive updates and 16 prompts by 16 completions")
     learning_rate = float(config.rlvr.learning_rate)
     optimizer = torch.optim.AdamW(
@@ -206,15 +217,39 @@ def train_hf_grpo(
         restore_rng_state(state["rng_state"])
 
     fields = [
-        "update", "reward/mean", "reward/format_component", "reward/success_component",
-        "reward/answer_accuracy", "reward/full_success_rate", "reward/format_valid_rate",
-        "reward/trace_valid_rate", "reward/capped_rate", "reward/malformed_rate",
-        "group/mixed_rate", "group/constant_rate", "group/all_correct_rate",
-        "group/all_wrong_rate", "group/all_format_only_rate", "policy_tokens",
-        "executor_tokens", "generated_tokens", "mean_completion_tokens", "calls/count",
-        "calls/correctness", "calls/failure_count", "loss", "policy_loss", "kl",
-        "entropy", "clip_fraction", "grad_norm", "tokens_seen", "estimated_flops",
-        "tokens_per_second", "wall_seconds", "peak_gpu_memory_bytes",
+        "update",
+        "reward/mean",
+        "reward/format_component",
+        "reward/success_component",
+        "reward/answer_accuracy",
+        "reward/full_success_rate",
+        "reward/format_valid_rate",
+        "reward/trace_valid_rate",
+        "reward/capped_rate",
+        "reward/malformed_rate",
+        "group/mixed_rate",
+        "group/constant_rate",
+        "group/all_correct_rate",
+        "group/all_wrong_rate",
+        "group/all_format_only_rate",
+        "policy_tokens",
+        "executor_tokens",
+        "generated_tokens",
+        "mean_completion_tokens",
+        "calls/count",
+        "calls/correctness",
+        "calls/failure_count",
+        "loss",
+        "policy_loss",
+        "kl",
+        "entropy",
+        "clip_fraction",
+        "grad_norm",
+        "tokens_seen",
+        "estimated_flops",
+        "tokens_per_second",
+        "wall_seconds",
+        "peak_gpu_memory_bytes",
     ]
     metrics_path = run_dir / "metrics.csv"
     mode = "a" if metrics_path.exists() and start_update else "w"
@@ -228,29 +263,45 @@ def train_hf_grpo(
         for update in range(start_update + 1, updates + 1):
             torch.cuda.reset_peak_memory_stats(device)
             chosen = random.sample(prompts, k=prompts_per_update)
-            groups: list[PromptRollouts] = []
-            scores_by_group = []
-            lengths: list[int] = []
-            for row in chosen:
-                prompt_ids = tokenizer.encode(
-                    f"Q: {row['question']}\n", add_special_tokens=False
-                )
-                if len(prompt_ids) >= int(config.model.context_length):
-                    raise ValueError("Prepared GRPO prompt leaves no native-token context")
-                rollouts = generate_native_rollout_group(
+            prompt_groups = [
+                tokenizer.encode(f"Q: {row['question']}\n", add_special_tokens=False)
+                for row in chosen
+            ]
+            if any(
+                len(prompt_ids) >= int(config.model.context_length) for prompt_ids in prompt_groups
+            ):
+                raise ValueError("Prepared GRPO prompt leaves no native-token context")
+            rollout_items = [
+                (prompt_ids, row)
+                for prompt_ids, row in zip(prompt_groups, chosen, strict=True)
+                for _completion_index in range(group_size)
+            ]
+            sampled_rollouts: list[NativeRollout | None] = [None] * len(rollout_items)
+            for start in range(0, len(rollout_items), generation_batch_size):
+                chunk = rollout_items[start : start + generation_batch_size]
+                sampled_rollouts[start : start + len(chunk)] = generate_native_rollout_batch(
                     model,
                     tokenizer,
-                    prompt_ids,
-                    row,
-                    group_size=group_size,
+                    chunk,
                     context_length=int(config.model.context_length),
                     max_completion_tokens=cap,
                     temperature=temperature,
                     rollout=rollout_config,
                 )
+
+            groups: list[PromptRollouts] = []
+            scores_by_group = []
+            for group_index, (prompt_ids, row) in enumerate(
+                zip(prompt_groups, chosen, strict=True)
+            ):
+                start = group_index * group_size
+                rollouts = sampled_rollouts[start : start + group_size]
+                if any(rollout is None for rollout in rollouts):
+                    raise RuntimeError("Batched GRPO generation lost a completion identity")
                 completions = []
                 scores = []
                 for rollout in rollouts:
+                    assert rollout is not None
                     text = _completion_text(tokenizer, rollout)
                     capped = rollout.termination_reason == "budget_exceeded"
                     failure = (
@@ -267,11 +318,16 @@ def train_hf_grpo(
                     )
                     completions.append(rollout)
                     scores.append(score)
-                    lengths.append(len(rollout.token_ids))
-                groups.append(PromptRollouts(prompt_ids=list(prompt_ids), completions=tuple(completions)))
+                groups.append(
+                    PromptRollouts(prompt_ids=list(prompt_ids), completions=tuple(completions))
+                )
                 scores_by_group.append(scores)
-            LOGGER.info("GRPO update %d: collected all %d sampled completions", update,
-                        prompts_per_update * group_size)
+            lengths = [len(rollout.token_ids) for group in groups for rollout in group.completions]
+            LOGGER.info(
+                "GRPO update %d: collected all %d sampled completions",
+                update,
+                prompts_per_update * group_size,
+            )
 
             rewards = torch.tensor(
                 [[score.reward for score in group] for group in scores_by_group],
@@ -305,9 +361,7 @@ def train_hf_grpo(
                 rollout.executor_tokens for group in groups for rollout in group.completions
             )
             generated_tokens = policy_tokens + executor_tokens
-            prompt_tokens = sum(
-                len(group.prompt_ids) * len(group.completions) for group in groups
-            )
+            prompt_tokens = sum(len(group.prompt_ids) * len(group.completions) for group in groups)
             score_input_tokens = prompt_tokens + generated_tokens
             tokens_seen += score_input_tokens
             policy_tokens_seen += policy_tokens
@@ -320,18 +374,26 @@ def train_hf_grpo(
             calls = [score.call_count for score in total_rewards]
             calls_count = sum(calls)
             correct_calls = sum(score.correct_calls for score in total_rewards)
-            reasons = [rollout.termination_reason for group in groups for rollout in group.completions]
+            reasons = [
+                rollout.termination_reason for group in groups for rollout in group.completions
+            ]
             failure_counts = Counter(
                 reason for reason in reasons if reason not in {"eos", "budget_exceeded"}
             )
-            malformed_count = sum(value for key, value in failure_counts.items() if key != "disallowed_call")
+            malformed_count = sum(
+                value for key, value in failure_counts.items() if key != "disallowed_call"
+            )
             capped_count = sum(reason == "budget_exceeded" for reason in reasons)
             format_valid_count = sum(score.format_valid for score in total_rewards)
             full_success_count = sum(score.full_success for score in total_rewards)
             trace_valid_count = sum(score.trace_valid for score in total_rewards)
             answer_correct_count = sum(score.answer_correct for score in total_rewards)
-            format_component = sum(score.format_reward for score in total_rewards) / len(total_rewards)
-            success_component = sum(score.success_reward for score in total_rewards) / len(total_rewards)
+            format_component = sum(score.format_reward for score in total_rewards) / len(
+                total_rewards
+            )
+            success_component = sum(score.success_reward for score in total_rewards) / len(
+                total_rewards
+            )
             constant_rate = 1.0 - float(outcomes["mixed_group_rate"].item())
             elapsed = max(wall_seconds_before + time.monotonic() - started, 1e-9)
             last_loss = optimization["loss"]

@@ -15,6 +15,7 @@ from tinymath.train.grpo import group_relative_advantages, grpo_objective
 from tinymath.train.hf_generation import (
     NativeRollout,
     generate_native_rollout,
+    generate_native_rollout_batch,
     generate_native_rollout_group,
 )
 from tinymath.train.hf_grpo import PromptRollouts, chunked_grpo_backward, native_policy_statistics
@@ -43,12 +44,22 @@ def test_compute_match_plans_first_optimizer_boundary_at_or_over_flop_target():
         offsets = np.array([0, 3, 7, 12, 18], dtype=np.uint64)
 
     planned = hf_sft._plan_compute_matched_updates(
-        Split(), [0, 1, 2, 3], seed=18, parameters=10, target_flops=6 * 10 * 5,
-        batch_size=1, accumulation=2,
+        Split(),
+        [0, 1, 2, 3],
+        seed=18,
+        parameters=10,
+        target_flops=6 * 10 * 5,
+        batch_size=1,
+        accumulation=2,
     )
     repeated = hf_sft._plan_compute_matched_updates(
-        Split(), [0, 1, 2, 3], seed=18, parameters=10, target_flops=6 * 10 * 5,
-        batch_size=1, accumulation=2,
+        Split(),
+        [0, 1, 2, 3],
+        seed=18,
+        parameters=10,
+        target_flops=6 * 10 * 5,
+        batch_size=1,
+        accumulation=2,
     )
     updates, tokens, epochs = planned
     assert planned == repeated
@@ -156,7 +167,11 @@ def test_cpu_fixture_resumes_deterministically_from_optimizer_boundary(monkeypat
         {
             "seed": 18,
             "experiment": {"phase": "pilot", "pilot_train_rows": 4, "pilot_validation_rows": 2},
-            "model": {"revision": "revision", "context_length": 512, "gradient_checkpointing": True},
+            "model": {
+                "revision": "revision",
+                "context_length": 512,
+                "gradient_checkpointing": True,
+            },
             "trainer": {
                 "name": "sft",
                 "learning_rate": 1e-3,
@@ -229,12 +244,18 @@ def test_cpu_fixture_resumes_deterministically_from_optimizer_boundary(monkeypat
     assert completed["epoch"] == 1
 
 
-def test_continued_sft_stops_at_planned_compute_boundary_and_selects_final(monkeypatch, workspace_tmpdir):
+def test_continued_sft_stops_at_planned_compute_boundary_and_selects_final(
+    monkeypatch, workspace_tmpdir
+):
     config = OmegaConf.create(
         {
             "seed": 18,
             "experiment": {"phase": "continued_sft"},
-            "model": {"revision": "revision", "context_length": 512, "gradient_checkpointing": True},
+            "model": {
+                "revision": "revision",
+                "context_length": 512,
+                "gradient_checkpointing": True,
+            },
             "trainer": {
                 "name": "continued_sft",
                 "learning_rate": 1e-3,
@@ -320,17 +341,17 @@ class CachedGenerationModel(torch.nn.Module):
         new_ids = tuple(int(token) for token in input_ids.reshape(-1).tolist())
         sequence = (*prefix, *new_ids)
         next_id = 5 if sequence[-1] == 1 else 6 if sequence[-1] == 7 else 2
-        logits = torch.full(
-            (1, input_ids.shape[1], self.vocab_size), -20.0, device=input_ids.device
-        ) + self.anchor * 0
+        logits = (
+            torch.full((1, input_ids.shape[1], self.vocab_size), -20.0, device=input_ids.device)
+            + self.anchor * 0
+        )
         logits[:, -1, next_id] = 20.0
         return type("Output", (), {"logits": logits, "past_key_values": sequence})()
 
 
 def test_native_rollout_handles_multichar_tokens_and_masks_executor_observations():
     call_text = (
-        "<think>\nstep:evaluate arithmetic operations in expression order\n"
-        "call:add(1,2) -> "
+        "<think>\nstep:evaluate arithmetic operations in expression order\ncall:add(1,2) -> "
     )
     tokenizer = MultiTokenTokenizer(call_text)
     row = {"question": "Calculate (1+2)+0.", "answer": "3"}
@@ -448,27 +469,139 @@ def test_native_rollout_group_replays_executor_groups_from_saved_rng(monkeypatch
     assert observed_states == [True, True]
 
 
-def test_native_rollout_fails_closed_when_call_boundary_is_ambiguous_or_disallowed():
-    ambiguous = MultiTokenTokenizer(
-        "<think>\ncall:add(1,2) -> 3\n"
+class SelectableFakeCache:
+    def __init__(self, markers, steps):
+        self.markers = markers
+        self.steps = steps
+
+    def batch_select_indices(self, indices):
+        self.markers = self.markers.index_select(0, indices)
+        self.steps = self.steps.index_select(0, indices)
+
+
+class IncrementalBatchModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.anchor = torch.nn.Parameter(torch.zeros(()))
+
+    def forward(
+        self, input_ids, attention_mask, position_ids, past_key_values=None, use_cache=True
+    ):
+        del position_ids, use_cache
+        if past_key_values is None:
+            markers = input_ids[:, -1]
+            steps = torch.zeros_like(markers)
+        else:
+            markers = past_key_values.markers
+            steps = past_key_values.steps + 1
+        next_ids = torch.where(
+            markers == 4,
+            torch.where(steps == 0, 1, 0),
+            torch.where(
+                markers == 5,
+                torch.where(steps == 0, 2, torch.where(steps == 1, 3, 0)),
+                3,
+            ),
+        )
+        logits = (
+            torch.full(
+                (input_ids.shape[0], input_ids.shape[1], 8),
+                -20.0,
+                device=input_ids.device,
+            )
+            + self.anchor * 0
+        )
+        logits[:, -1, :].scatter_(1, next_ids[:, None], 20.0)
+        return type(
+            "Output",
+            (),
+            {
+                "logits": logits,
+                "past_key_values": SelectableFakeCache(markers, steps),
+            },
+        )()
+
+
+def test_native_rollout_batch_compacts_finished_rows_and_keeps_context_caps():
+    model = IncrementalBatchModel()
+    model.train()
+    rollouts = generate_native_rollout_batch(
+        model,
+        BatchRolloutTokenizer({0: "", 1: "x", 2: "y", 3: "z", 4: "w"}),
+        [
+            ([4], {"question": "a", "answer": "x"}),
+            ([5], {"question": "b", "answer": "yz"}),
+            ([6, 6, 6], {"question": "c", "answer": "w"}),
+        ],
+        context_length=4,
+        max_completion_tokens=3,
+        temperature=1.0,
+        rollout=RolloutConfig(executor="exact"),
     )
+    assert model.training
+    assert [rollout.token_ids for rollout in rollouts] == [[1, 0], [2, 3, 0], [3]]
+    assert [rollout.termination_reason for rollout in rollouts] == ["eos", "eos", "budget_exceeded"]
+    assert all(rollout.policy_tokens == len(rollout.token_ids) for rollout in rollouts)
+    assert all(math.isfinite(value) for rollout in rollouts for value in rollout.entropy)
+
+
+def test_native_rollout_batch_replays_all_rows_when_any_executor_call_appears(monkeypatch):
+    from tinymath.train import hf_generation
+
+    model = IncrementalBatchModel()
+    tokenizer = BatchRolloutTokenizer(
+        {0: "", 1: "<think>\ncall:add(1,2) -> ", 2: "y", 3: "z", 4: "w"}
+    )
+    expected_state = torch.get_rng_state().clone()
+    observed_states = []
+
+    def replay(_model, _tokenizer, prompt_ids, row, **_kwargs):
+        observed_states.append(torch.equal(torch.get_rng_state(), expected_state))
+        return NativeRollout([int(prompt_ids[0])], [True], [-0.1], [0.5], "eos", ())
+
+    monkeypatch.setattr(hf_generation, "generate_native_rollout", replay)
+    rollouts = generate_native_rollout_batch(
+        model,
+        tokenizer,
+        [([4], {"question": "a", "answer": "1"}), ([5], {"question": "b", "answer": "2"})],
+        context_length=4,
+        max_completion_tokens=3,
+        temperature=1.0,
+        rollout=RolloutConfig(executor="exact"),
+    )
+    assert len(rollouts) == 2
+    assert observed_states == [True, True]
+
+
+def test_native_rollout_fails_closed_when_call_boundary_is_ambiguous_or_disallowed():
+    ambiguous = MultiTokenTokenizer("<think>\ncall:add(1,2) -> 3\n")
     compound = {"question": "Calculate (1+2)+0.", "answer": "3"}
     result = generate_native_rollout(
-        CachedGenerationModel(), ambiguous, [1], compound,
-        context_length=128, max_completion_tokens=32, temperature=1.0,
-        rollout=RolloutConfig(executor="exact"), greedy=True,
+        CachedGenerationModel(),
+        ambiguous,
+        [1],
+        compound,
+        context_length=128,
+        max_completion_tokens=32,
+        temperature=1.0,
+        rollout=RolloutConfig(executor="exact"),
+        greedy=True,
     )
     assert result.termination_reason == "malformed_request"
     assert result.executor_tokens == 0
 
-    disallowed = MultiTokenTokenizer(
-        "<think>\ncall:add(1,2) -> "
-    )
+    disallowed = MultiTokenTokenizer("<think>\ncall:add(1,2) -> ")
     atomic = {"question": "Calculate 1 + 2.", "answer": "3"}
     denied = generate_native_rollout(
-        CachedGenerationModel(), disallowed, [1], atomic,
-        context_length=128, max_completion_tokens=32, temperature=1.0,
-        rollout=RolloutConfig(executor="exact"), greedy=True,
+        CachedGenerationModel(),
+        disallowed,
+        [1],
+        atomic,
+        context_length=128,
+        max_completion_tokens=32,
+        temperature=1.0,
+        rollout=RolloutConfig(executor="exact"),
+        greedy=True,
     )
     assert denied.termination_reason == "disallowed_call"
 
@@ -487,12 +620,23 @@ def test_chunked_grpo_gradients_match_full_batch_with_executor_observation_masks
     prompts = ([1, 2], [2, 3, 4])
     group_rollouts = [
         (
-            NativeRollout([4, 5, 6], [True, False, True], [-0.4, 0.0, -0.6], [0.8, 0.0, 0.7], "eos", ()),
+            NativeRollout(
+                [4, 5, 6], [True, False, True], [-0.4, 0.0, -0.6], [0.8, 0.0, 0.7], "eos", ()
+            ),
             NativeRollout([5, 6], [True, True], [-0.3, -0.5], [0.9, 0.8], "eos", ()),
         ),
         (
-            NativeRollout([3, 4, 5, 6], [True, True, False, True], [-0.2, -0.3, 0.0, -0.4], [0.8, 0.9, 0.0, 0.6], "eos", ()),
-            NativeRollout([4, 5, 6], [True, True, True], [-0.5, -0.4, -0.2], [0.7, 0.8, 0.9], "eos", ()),
+            NativeRollout(
+                [3, 4, 5, 6],
+                [True, True, False, True],
+                [-0.2, -0.3, 0.0, -0.4],
+                [0.8, 0.9, 0.0, 0.6],
+                "eos",
+                (),
+            ),
+            NativeRollout(
+                [4, 5, 6], [True, True, True], [-0.5, -0.4, -0.2], [0.7, 0.8, 0.9], "eos", ()
+            ),
         ),
     ]
     groups = [PromptRollouts(prompt, rollouts) for prompt, rollouts in zip(prompts, group_rollouts)]
