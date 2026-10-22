@@ -176,11 +176,12 @@ def test_training_results_read_latest_main_metrics_and_mark_run_live(tmp_path: P
     )
     run_dir.mkdir(parents=True)
     (run_dir / "metrics.csv").write_text(
-        "optimizer_step,epoch,train/completion_loss,validation/completion_loss,tokens_seen,"
+        "optimizer_step,epoch,train/completion_loss,validation/completion_loss,"
+        "validation/greedy_accuracy,validation/greedy_accuracy_examples,tokens_seen,"
         "tokens_per_second,wall_seconds,peak_gpu_memory_bytes\n"
-        "1,0.1,2.5,,1024,900,1.2,5000000000\n"
-        "2,0.2,2.1,2.3,2048,1000,2.4,6000000000\n"
-        "3,0.3,1.9,,3072,1100,3.6,7000000000\n",
+        "1,0.1,2.5,,,,1024,900,1.2,5000000000\n"
+        "2,0.2,2.1,2.3,0.375,8,2048,1000,2.4,6000000000\n"
+        "3,0.3,1.9,,, ,3072,1100,3.6,7000000000\n",
         encoding="utf-8",
     )
 
@@ -190,11 +191,13 @@ def test_training_results_read_latest_main_metrics_and_mark_run_live(tmp_path: P
     assert results[0]["latest"]["optimizer_step"] == "3"
     assert results[0]["latest"]["validation/completion_loss"] == "2.3"
     assert results[0]["latest"]["validation_step"] == "2"
+    assert results[0]["latest"]["validation/greedy_accuracy"] == "0.375"
+    assert results[0]["latest"]["greedy_accuracy_step"] == "2"
     assert len(results[0]["metrics"]) == 3
 
     report = _render_markdown({}, "now", training_results=results)
     assert "## Main training progress" in report
-    assert "| SFT | main | running | 3 | 0.300 | 1.900 | 2.300 @ 2 | 3072 |" in report
+    assert "| SFT | main | running | 3 | 0.300 | 1.900 | 2.300 @ 2 | 37.50% (8, 2) | 3072 |" in report
 
 
 def test_refresh_updates_training_report_and_all_plot_formats(tmp_path: Path) -> None:

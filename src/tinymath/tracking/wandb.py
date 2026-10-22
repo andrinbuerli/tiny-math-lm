@@ -171,6 +171,19 @@ def _compatible_with_runtime_extension(
             if isinstance(reporting, dict):
                 reporting.pop("intermediate_refresh_seconds", None)
                 reporting.pop("intermediate_orchestrator_pid", None)
+        if (
+            saved_normalized.get("model", {}).get("backend") == "huggingface"
+            and normalized.get("model", {}).get("backend") == "huggingface"
+        ):
+            saved_qualitative = saved_normalized.get("qualitative", {})
+            current_qualitative = normalized.get("qualitative", {})
+            if (
+                isinstance(saved_qualitative, dict)
+                and isinstance(current_qualitative, dict)
+                and "max_new_tokens" not in saved_qualitative
+                and current_qualitative.get("max_new_tokens") == 128
+            ):
+                current_qualitative.pop("max_new_tokens")
     if (
         saved_normalized.get("experiment", {}).get("name") == "exp16_qwen3_base_reasoning_v3"
         and normalized.get("experiment", {}).get("name") == "exp16_qwen3_base_reasoning_v3"
@@ -182,6 +195,18 @@ def _compatible_with_runtime_extension(
         # Ordinary-Q/A batches are independent deterministic greedy streams;
         # padding and per-row stopping preserve each question's output.
         saved_eval["batch_size"] = current_eval.get("batch_size")
+        # These diagnostics add validation-only generation and do not change the
+        # optimizer state. Accept their defaults when resuming runs created
+        # before greedy SFT validation was configurable.
+        for key, default in (
+            ("greedy_accuracy_enabled", True),
+            ("greedy_accuracy_every_steps", 500),
+            ("greedy_accuracy_max_examples", 256),
+            ("greedy_accuracy_batch_size", 8),
+            ("greedy_accuracy_max_new_tokens", 128),
+        ):
+            if key not in saved_eval and current_eval.get(key) == default:
+                current_eval.pop(key)
     if (
         saved_eval.get("greedy") is True
         and current_eval.get("greedy") is True

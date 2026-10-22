@@ -4,4 +4,9 @@ max_new_tokens: 128
 temperature: 0.8
 max_examples_per_split: null
 greedy: true
+greedy_accuracy_enabled: true
+greedy_accuracy_every_steps: 500
+greedy_accuracy_max_examples: 256
+greedy_accuracy_batch_size: 8
+greedy_accuracy_max_new_tokens: 128
 splits: [test, number_length_ood, expression_length_ood]

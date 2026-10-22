@@ -6,6 +6,8 @@ import csv
 import hashlib
 import json
 import math
+import os
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -18,6 +20,7 @@ from tinymath.data.hf_cached_dataset import HFTokenSplit
 from tinymath.data.hf_reasoning import sha256_file
 from tinymath.eval.hf_qualitative import (
     build_native_qualitative_examples,
+    evaluate_native_greedy_exact_match,
     log_native_qualitative_examples,
 )
 from tinymath.model.hf_qwen import completion_loss, load_model, load_tokenizer, save_model_identity
@@ -190,6 +193,31 @@ def _write_metric(writer: csv.DictWriter, handle: Any, values: dict[str, Any]) -
     handle.flush()
 
 
+def _upgrade_metrics_schema(path: Path, fields: list[str]) -> None:
+    """Add newly introduced metric columns while preserving all prior rows."""
+    if not path.is_file():
+        return
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames == fields:
+            return
+        rows = list(reader)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({field: row.get(field, "") for field in fields})
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 def _validate_and_select_best(
     *,
     model: Any,
@@ -203,6 +231,8 @@ def _validate_and_select_best(
     best_dir: Path,
     cache_manifest: dict[str, Any],
     cache_dir: Path,
+    validation_rows: list[dict[str, Any]],
+    tokenizer: Any,
     init_checkpoint: Path | None,
     trainer_name: str,
     parameters: int,
@@ -218,10 +248,27 @@ def _validate_and_select_best(
         max_examples=validation_cap,
     )
     values["validation/completion_loss"] = validation_loss
+    greedy_config = config.eval
+    greedy_enabled = bool(greedy_config.get("greedy_accuracy_enabled", False))
+    greedy_every = max(1, int(greedy_config.get("greedy_accuracy_every_steps", 500)))
+    if greedy_enabled and int(values["optimizer_step"]) % greedy_every == 0:
+        accuracy, accuracy_count = evaluate_native_greedy_exact_match(
+            model=model,
+            tokenizer=tokenizer,
+            rows=validation_rows,
+            seed=int(config.seed),
+            context_length=int(config.model.context_length),
+            max_new_tokens=int(greedy_config.get("greedy_accuracy_max_new_tokens", 128)),
+            batch_size=int(greedy_config.get("greedy_accuracy_batch_size", 8)),
+            max_examples=greedy_config.get("greedy_accuracy_max_examples", 256),
+            rollout_config=config.rollout,
+        )
+        values["validation/greedy_accuracy"] = accuracy
+        values["validation/greedy_accuracy_examples"] = accuracy_count
     if validation_loss < best_val:
         best_val = validation_loss
         model.save_pretrained(best_dir, safe_serialization=True)
-        load_tokenizer(config.model).save_pretrained(best_dir)
+        tokenizer.save_pretrained(best_dir)
         identity = {
             "training_arm": trainer_name,
             "training_phase": str(config.experiment.phase),
@@ -241,7 +288,22 @@ def _validate_and_select_best(
         }
         save_model_identity(best_dir / "experiment_identity.json", identity)
     if run is not None:
-        run.log({"validation/completion_loss": validation_loss}, step=wandb_step)
+        run.log(
+            {
+                "validation/completion_loss": validation_loss,
+                **(
+                    {
+                        "validation/greedy_accuracy": values["validation/greedy_accuracy"],
+                        "validation/greedy_accuracy_examples": values[
+                            "validation/greedy_accuracy_examples"
+                        ],
+                    }
+                    if "validation/greedy_accuracy" in values
+                    else {}
+                ),
+            },
+            step=wandb_step,
+        )
     return validation_loss, best_val
 
 
@@ -258,9 +320,14 @@ def train_hf_sft(
     train_split = HFTokenSplit(cache_dir, "train")
     validation_split = HFTokenSplit(cache_dir, "validation")
     qualitative = config.get("qualitative", {})
+    greedy_config = config.eval
+    greedy_enabled = bool(greedy_config.get("greedy_accuracy_enabled", False))
+    validation_rows = (
+        list(validation_split.rows()) if qualitative.get("enabled", False) or greedy_enabled else []
+    )
     qualitative_enabled = bool(qualitative.get("enabled", False))
     qualitative_every = max(1, int(qualitative.get("every_steps", 5000)))
-    qualitative_rows = list(validation_split.rows()) if qualitative_enabled else []
+    qualitative_rows = validation_rows if qualitative_enabled else []
     qualitative_max_new_tokens = int(
         qualitative.get("max_new_tokens", 128)
     )
@@ -280,6 +347,7 @@ def train_hf_sft(
     if device.type == "cuda" and not torch.cuda.is_bf16_supported():
         raise RuntimeError("Experiment 16 requires bf16 support on the admitted CUDA device")
     model = load_model(config.model, checkpoint=init_checkpoint, training=True).to(device)
+    tokenizer = load_tokenizer(config.model)
     if int(config.model.context_length) != 512:
         raise ValueError("Experiment 16 context length is fixed at 512")
     pad_id = int(cache_manifest["tokenizer_identity"]["pad_token_id"])
@@ -404,10 +472,12 @@ def train_hf_sft(
         restore_rng_state(state["rng_state"])
     fields = [
         "optimizer_step", "epoch", "train/completion_loss", "validation/completion_loss",
+        "validation/greedy_accuracy", "validation/greedy_accuracy_examples",
         "learning_rate", "gradient_norm", "tokens_seen", "examples_seen", "tokens_per_second",
         "supervised_tokens_seen", "estimated_flops", "wall_seconds", "peak_gpu_memory_bytes",
     ]
     metrics_path = run_dir / "metrics.csv"
+    _upgrade_metrics_schema(metrics_path, fields)
     previous_logged_step = int(getattr(run, "step", 0)) if run is not None else 0
     if metrics_path.is_file():
         try:
@@ -447,6 +517,34 @@ def train_hf_sft(
     running_tokens = 0
     last_qualitative_step = 0
     optimizer.zero_grad(set_to_none=True)
+
+    def log_qualitative_snapshot(snapshot_step: int) -> None:
+        nonlocal last_qualitative_step
+        if not qualitative_enabled or snapshot_step < 1:
+            return
+        destination = run_dir / "qualitative" / f"step_{snapshot_step:08d}.jsonl"
+        if destination.is_file():
+            last_qualitative_step = snapshot_step
+            return
+        qualitative_records = build_native_qualitative_examples(
+            model=model,
+            tokenizer=tokenizer,
+            rows=qualitative_rows,
+            seed=int(config.seed),
+            optimizer_step=snapshot_step,
+            context_length=int(config.model.context_length),
+            max_new_tokens=qualitative_max_new_tokens,
+            examples_per_module=qualitative_per_module,
+            rollout_config=config.rollout,
+        )
+        log_native_qualitative_examples(
+            records=qualitative_records,
+            run=run,
+            run_dir=run_dir,
+            wandb_step=snapshot_step + wandb_step_offset,
+        )
+        last_qualitative_step = snapshot_step
+
     try:
         if pending_validation_metrics is not None:
             validation_loss, best_val = _validate_and_select_best(
@@ -461,6 +559,8 @@ def train_hf_sft(
                 best_dir=best_dir,
                 cache_manifest=cache_manifest,
                 cache_dir=cache_dir,
+                validation_rows=validation_rows,
+                tokenizer=tokenizer,
                 init_checkpoint=init_checkpoint,
                 trainer_name=trainer_name,
                 parameters=parameters,
@@ -489,6 +589,10 @@ def train_hf_sft(
                     config_sha256=config_hash,
                 ),
             )
+        # On a resumed run, capture the loaded optimizer-boundary checkpoint
+        # immediately so the newly enabled logger records this training arm.
+        if step > 0:
+            log_qualitative_snapshot(step)
         while (
             epoch < max_epochs
             and step < max_steps
@@ -574,6 +678,11 @@ def train_hf_sft(
                 should_validate = (
                     step % eval_every == 0 or cursor == len(epoch_order) or target_reached
                 )
+                greedy_every = max(
+                    1, int(greedy_config.get("greedy_accuracy_every_steps", 500))
+                )
+                if greedy_enabled and step % greedy_every == 0:
+                    should_validate = True
                 should_checkpoint = step % checkpoint_interval == 0 or should_validate
                 if should_checkpoint:
                     save_checkpoint(
@@ -610,6 +719,8 @@ def train_hf_sft(
                         best_dir=best_dir,
                         cache_manifest=cache_manifest,
                         cache_dir=cache_dir,
+                        validation_rows=validation_rows,
+                        tokenizer=tokenizer,
                         init_checkpoint=init_checkpoint,
                         trainer_name=trainer_name,
                         parameters=parameters,
@@ -640,24 +751,7 @@ def train_hf_sft(
                         ),
                     )
                 if qualitative_enabled and step % qualitative_every == 0:
-                    qualitative_records = build_native_qualitative_examples(
-                        model=model,
-                        tokenizer=load_tokenizer(config.model),
-                        rows=qualitative_rows,
-                        seed=int(config.seed),
-                        optimizer_step=step,
-                        context_length=int(config.model.context_length),
-                        max_new_tokens=qualitative_max_new_tokens,
-                        examples_per_module=qualitative_per_module,
-                        rollout_config=config.rollout,
-                    )
-                    log_native_qualitative_examples(
-                        records=qualitative_records,
-                        run=run,
-                        run_dir=run_dir,
-                        wandb_step=step + wandb_step_offset,
-                    )
-                    last_qualitative_step = step
+                    log_qualitative_snapshot(step)
                 if target_flops is not None and 6 * parameters * tokens_seen >= target_flops:
                     break
             if cursor >= len(epoch_order):
@@ -716,23 +810,7 @@ def train_hf_sft(
             ),
         )
         if qualitative_enabled and step > 0 and last_qualitative_step != step:
-            qualitative_records = build_native_qualitative_examples(
-                model=model,
-                tokenizer=load_tokenizer(config.model),
-                rows=qualitative_rows,
-                seed=int(config.seed),
-                optimizer_step=step,
-                context_length=int(config.model.context_length),
-                max_new_tokens=qualitative_max_new_tokens,
-                examples_per_module=qualitative_per_module,
-                rollout_config=config.rollout,
-            )
-            log_native_qualitative_examples(
-                records=qualitative_records,
-                run=run,
-                run_dir=run_dir,
-                wandb_step=step + wandb_step_offset,
-            )
+            log_qualitative_snapshot(step)
     finally:
         handle.close()
 
@@ -775,7 +853,7 @@ def train_hf_sft(
         ),
     }
     model.save_pretrained(final_dir, safe_serialization=True)
-    load_tokenizer(config.model).save_pretrained(final_dir)
+    tokenizer.save_pretrained(final_dir)
     final_identity["checkpoint_config_sha256"] = sha256_file(final_dir / "config.json")
     final_weights = sorted(final_dir.glob("model*.safetensors"))
     if not final_weights:

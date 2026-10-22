@@ -195,6 +195,21 @@ def _training_results(runs_root: Path, seed: int) -> list[dict[str, Any]]:
                 latest["validation_step"] = latest_validation.get(
                     "optimizer_step", latest_validation.get("update", "—")
                 )
+            greedy_rows = [
+                row for row in rows
+                if _as_float(row.get("validation/greedy_accuracy")) is not None
+            ]
+            if greedy_rows:
+                latest_greedy = greedy_rows[-1]
+                latest["validation/greedy_accuracy"] = latest_greedy[
+                    "validation/greedy_accuracy"
+                ]
+                latest["validation/greedy_accuracy_examples"] = latest_greedy.get(
+                    "validation/greedy_accuracy_examples"
+                )
+                latest["greedy_accuracy_step"] = latest_greedy.get(
+                    "optimizer_step", latest_greedy.get("update", "—")
+                )
             results.append(
                 {
                     "arm": arm_root.name.upper(),
@@ -339,8 +354,8 @@ def _render_markdown(
     if training_results:
         lines.extend(
             [
-                "| Arm | Phase | Status | Updates | Epoch | Completion loss | Last validation loss (step) | Tokens seen | Tokens/s | Wall seconds | Peak GPU GB | W&B | Sync |",
-                "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+                "| Arm | Phase | Status | Updates | Epoch | Completion loss | Last validation loss (step) | Greedy exact match (n, step) | Tokens seen | Tokens/s | Wall seconds | Peak GPU GB | W&B | Sync |",
+                "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
             ]
         )
         for result in training_results:
@@ -361,6 +376,9 @@ def _render_markdown(
                 f"{_format(_as_float(latest.get('train/completion_loss')))} | "
                 f"{_format(_as_float(latest.get('validation/completion_loss')))}"
                 f" @ {latest.get('validation_step', '—')} | "
+                f"{_format(_as_float(latest.get('validation/greedy_accuracy')), percent=True)} "
+                f"({latest.get('validation/greedy_accuracy_examples', '—') or '—'}, "
+                f"{latest.get('greedy_accuracy_step', '—')}) | "
                 f"{latest.get('tokens_seen', '—')} | "
                 f"{_format(_as_float(latest.get('tokens_per_second')))} | "
                 f"{_format(_as_float(latest.get('wall_seconds')))} | {peak_gb} | {link} | "

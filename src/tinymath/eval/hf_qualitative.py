@@ -14,7 +14,10 @@ import torch
 from tinymath.data.hf_reasoning import score_native_reasoning
 from tinymath.data.prompts import format_prompt
 from tinymath.generation import RolloutConfig
-from tinymath.train.hf_generation import generate_native_rollout
+from tinymath.train.hf_generation import (
+    generate_native_rollout,
+    generate_native_rollout_batch,
+)
 
 
 def select_validation_rows(
@@ -42,6 +45,122 @@ def select_validation_rows(
     return selected
 
 
+def select_greedy_accuracy_rows(
+    rows: list[dict[str, Any]], *, seed: int, max_examples: int | None
+) -> list[dict[str, Any]]:
+    """Choose a deterministic, module-balanced validation subset (or all rows)."""
+    parents = [
+        row for row in rows
+        if not row.get("is_sub_task", False)
+        and row.get("question") and row.get("answer") and row.get("module")
+    ]
+    if max_examples is None or max_examples >= len(parents):
+        return parents
+    if max_examples < 1:
+        raise ValueError("greedy_accuracy_max_examples must be positive or null")
+    by_module: dict[str, list[dict[str, Any]]] = {}
+    for row in parents:
+        by_module.setdefault(str(row["module"]), []).append(row)
+    for module, module_rows in by_module.items():
+        module_rows.sort(
+            key=lambda row: hashlib.sha256(
+                f"{seed}\0validation-greedy\0{module}\0{row['question']}".encode("utf-8")
+            ).digest()
+        )
+    selected: list[dict[str, Any]] = []
+    depth = 0
+    modules = sorted(by_module)
+    while len(selected) < max_examples:
+        added = False
+        for module in modules:
+            if depth < len(by_module[module]):
+                selected.append(by_module[module][depth])
+                added = True
+                if len(selected) == max_examples:
+                    break
+        if not added:
+            break
+        depth += 1
+    return selected
+
+
+@torch.no_grad()
+def evaluate_native_greedy_exact_match(
+    *,
+    model: Any,
+    tokenizer: Any,
+    rows: list[dict[str, Any]],
+    seed: int,
+    context_length: int,
+    max_new_tokens: int,
+    batch_size: int,
+    max_examples: int | None,
+    rollout_config: Any,
+) -> tuple[float, int]:
+    """Measure exact parsed-answer string matches on fixed validation questions."""
+    if min(context_length, max_new_tokens, batch_size) < 1:
+        raise ValueError("Greedy validation context, completion cap, and batch size must be positive")
+    examples = select_greedy_accuracy_rows(
+        rows, seed=seed, max_examples=max_examples
+    )
+    if not examples:
+        raise ValueError("No parent validation rows were available for greedy accuracy")
+    tokenizer_config = RolloutConfig.from_config(rollout_config)
+    matched = 0
+    was_training = model.training
+    model.eval()
+    try:
+        for start in range(0, len(examples), batch_size):
+            batch = examples[start : start + batch_size]
+            items = [
+                (
+                    tokenizer.encode(
+                        format_prompt(
+                            str(row["question"]), protocol="reasoning_v3"
+                        ),
+                        add_special_tokens=False,
+                    ),
+                    row,
+                )
+                for row in batch
+            ]
+            rollouts = generate_native_rollout_batch(
+                model,
+                tokenizer,
+                items,
+                context_length=context_length,
+                max_completion_tokens=max_new_tokens,
+                temperature=0.0,
+                rollout=tokenizer_config,
+                greedy=True,
+            )
+            for row, rollout in zip(batch, rollouts, strict=True):
+                token_ids = list(rollout.token_ids)
+                if token_ids and token_ids[-1] == tokenizer.eos_token_id:
+                    token_ids.pop()
+                completion = tokenizer.decode(
+                    token_ids,
+                    skip_special_tokens=False,
+                    clean_up_tokenization_spaces=False,
+                )
+                scored = score_native_reasoning(
+                    completion,
+                    row,
+                    capped=rollout.termination_reason == "budget_exceeded",
+                    failure=(
+                        rollout.termination_reason
+                        if rollout.termination_reason not in {"eos", "budget_exceeded"}
+                        else None
+                    ),
+                    **tokenizer_config.scoring_kwargs(),
+                )
+                # Exact match is deliberately stricter than mathematical equivalence.
+                matched += int(scored.format_valid and scored.answer == str(row["answer"]))
+    finally:
+        model.train(was_training)
+    return matched / len(examples), len(examples)
+
+
 @torch.no_grad()
 def build_native_qualitative_examples(
     *,
@@ -67,7 +186,8 @@ def build_native_qualitative_examples(
     try:
         for row in examples:
             prompt = tokenizer.encode(
-                format_prompt(str(row["question"])), add_special_tokens=False
+                format_prompt(str(row["question"]), protocol="reasoning_v3"),
+                add_special_tokens=False,
             )
             room = min(max_new_tokens, context_length - len(prompt))
             if room < 1:

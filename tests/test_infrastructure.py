@@ -128,12 +128,28 @@ def test_exp16_greedy_eval_batch_size_can_change_on_resume():
         "experiment": {"name": "exp16_qwen3_base_reasoning_v3"},
         "model": {"backend": "huggingface"},
         "eval": {"greedy": True, "batch_size": 1, "max_new_tokens": 512},
+        "qualitative": {"enabled": True, "every_steps": 5000, "examples_per_module": 2},
         "reporting": {"output_dir": "/workspace/reports/exp16"},
     }
     current = {
         "experiment": {"name": "exp16_qwen3_base_reasoning_v3"},
         "model": {"backend": "huggingface"},
-        "eval": {"greedy": True, "batch_size": 16, "max_new_tokens": 512},
+        "eval": {
+            "greedy": True,
+            "batch_size": 16,
+            "max_new_tokens": 512,
+            "greedy_accuracy_enabled": True,
+            "greedy_accuracy_every_steps": 500,
+            "greedy_accuracy_max_examples": 256,
+            "greedy_accuracy_batch_size": 8,
+            "greedy_accuracy_max_new_tokens": 128,
+        },
+        "qualitative": {
+            "enabled": True,
+            "every_steps": 5000,
+            "examples_per_module": 2,
+            "max_new_tokens": 128,
+        },
         "reporting": {
             "output_dir": "/workspace/reports/exp16",
             "intermediate_refresh_seconds": 60,
@@ -144,6 +160,16 @@ def test_exp16_greedy_eval_batch_size_can_change_on_resume():
 
     sampled = {**current, "eval": {**current["eval"], "greedy": False}}
     assert not tracking._compatible_with_runtime_extension(saved, sampled)
+    changed_accuracy_budget = {
+        **current,
+        "eval": {**current["eval"], "greedy_accuracy_max_examples": 512},
+    }
+    assert not tracking._compatible_with_runtime_extension(saved, changed_accuracy_budget)
+    changed_qualitative_budget = {
+        **current,
+        "qualitative": {**current["qualitative"], "max_new_tokens": 256},
+    }
+    assert not tracking._compatible_with_runtime_extension(saved, changed_qualitative_budget)
 
 
 def test_resume_allows_only_reasoning_v3_sampler_strategy_change():

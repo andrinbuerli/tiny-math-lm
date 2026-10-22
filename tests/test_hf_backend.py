@@ -74,6 +74,106 @@ def test_cosine_schedule_reaches_zero_on_the_preplanned_final_update():
     assert hf_sft._cosine_lr(9, warmup_steps=3, total_steps=10, base_lr=1.0) == 0.0
 
 
+def test_periodic_greedy_accuracy_is_logged_with_validation_loss(monkeypatch, tmp_path):
+    config = OmegaConf.create(
+        {
+            "eval": {
+                "batch_size": 2,
+                "greedy_accuracy_enabled": True,
+                "greedy_accuracy_every_steps": 10,
+                "greedy_accuracy_max_examples": 8,
+                "greedy_accuracy_batch_size": 4,
+                "greedy_accuracy_max_new_tokens": 32,
+            },
+            "seed": 18,
+            "model": {"context_length": 512, "revision": "revision"},
+            "rollout": {"executor": "exact"},
+            "experiment": {"phase": "main"},
+        }
+    )
+    monkeypatch.setattr(hf_sft, "_evaluate_loss", lambda *_args, **_kwargs: 0.75)
+    calls = []
+
+    def fake_accuracy(**kwargs):
+        calls.append(kwargs)
+        return 0.375, 8
+
+    monkeypatch.setattr(hf_sft, "evaluate_native_greedy_exact_match", fake_accuracy)
+
+    class FakeRun:
+        def __init__(self):
+            self.logged = []
+
+        def log(self, values, *, step):
+            self.logged.append((values, step))
+
+    run = FakeRun()
+    values = {"optimizer_step": 20}
+    validation_loss, best_loss = hf_sft._validate_and_select_best(
+        model=object(),
+        validation_split=object(),
+        config=config,
+        device=torch.device("cpu"),
+        pad_id=0,
+        validation_cap=None,
+        values=values,
+        best_val=0.5,
+        best_dir=tmp_path / "best",
+        cache_manifest={},
+        cache_dir=tmp_path,
+        validation_rows=[{"question": "1 + 1", "answer": "2"}],
+        tokenizer=object(),
+        init_checkpoint=None,
+        trainer_name="sft",
+        parameters=1,
+        run=run,
+        wandb_step=120,
+    )
+
+    assert (validation_loss, best_loss) == (0.75, 0.5)
+    assert calls[0]["max_examples"] == 8
+    assert values["validation/greedy_accuracy"] == 0.375
+    assert values["validation/greedy_accuracy_examples"] == 8
+    assert len(run.logged) == 1
+    logged, step = run.logged[0]
+    assert logged == {
+        "validation/completion_loss": 0.75,
+        "validation/greedy_accuracy": 0.375,
+        "validation/greedy_accuracy_examples": 8,
+    }
+    assert step == 120
+
+
+def test_metrics_schema_upgrade_preserves_rows_and_adds_validation_columns(tmp_path):
+    path = tmp_path / "metrics.csv"
+    path.write_text(
+        "optimizer_step,validation/completion_loss\n10,0.5\n20,0.4\n",
+        encoding="utf-8",
+    )
+    fields = [
+        "optimizer_step",
+        "validation/completion_loss",
+        "validation/greedy_accuracy",
+    ]
+
+    hf_sft._upgrade_metrics_schema(path, fields)
+
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert rows == [
+        {
+            "optimizer_step": "10",
+            "validation/completion_loss": "0.5",
+            "validation/greedy_accuracy": "",
+        },
+        {
+            "optimizer_step": "20",
+            "validation/completion_loss": "0.4",
+            "validation/greedy_accuracy": "",
+        },
+    ]
+
+
 class TinyLogitModel(torch.nn.Module):
     def __init__(self, vocab_size=7):
         super().__init__()
