@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import logging
 import math
 import os
 import tempfile
@@ -24,6 +25,50 @@ from tinymath.eval.hf_qualitative import (
     log_native_qualitative_examples,
 )
 from tinymath.model.hf_qwen import completion_loss, load_model, load_tokenizer, save_model_identity
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _resume_wandb_step_offset(run: Any, *, optimizer_step: int, local_last_step: int) -> int:
+    """Align resumed optimizer steps with the existing W&B history coordinate."""
+    if run is None or optimizer_step == 0:
+        return max(0, local_last_step - optimizer_step)
+    try:
+        import wandb
+
+        remote = wandb.Api().run(f"{run.entity}/{run.project}/{run.id}")
+        latest_step = remote.summary.get("_step")
+        minimum = max(0, int(latest_step or 0) - 10)
+        rows = list(
+            remote.scan_history(
+                keys=["_step", "optimizer_step"], min_step=minimum, page_size=1000
+            )
+        )
+        candidates = [
+            (int(row["_step"]), int(row["optimizer_step"]))
+            for row in rows
+            if row.get("_step") is not None and row.get("optimizer_step") is not None
+        ]
+        if candidates:
+            history_step, history_optimizer_step = max(candidates)
+            offset = history_step - history_optimizer_step
+            if offset < 0:
+                raise ValueError("W&B history step precedes its SFT optimizer step")
+            LOGGER.info(
+                "Resuming W&B optimizer-step alignment at history step %d "
+                "(optimizer step %d, offset %d)",
+                history_step,
+                history_optimizer_step,
+                offset,
+            )
+            return offset
+        if int(latest_step or 0) == 0:
+            return max(0, local_last_step - optimizer_step)
+        raise RuntimeError("W&B history has no optimizer_step row to align the SFT resume")
+    except Exception as exc:
+        raise RuntimeError(
+            "Could not align the resumed SFT optimizer step with its existing W&B history"
+        ) from exc
 
 
 def _find_cache(config: Any) -> tuple[Path, dict[str, Any]]:
@@ -502,7 +547,9 @@ def train_hf_sft(
                     "training/previous_attempt_last_step": previous_logged_step,
                 }
             )
-    wandb_step_offset = max(0, previous_logged_step - step)
+    wandb_step_offset = _resume_wandb_step_offset(
+        run, optimizer_step=step, local_last_step=previous_logged_step
+    )
     mode = "a" if metrics_path.exists() and step else "w"
     handle = metrics_path.open(mode, newline="", encoding="utf-8")
     writer = csv.DictWriter(handle, fieldnames=fields)

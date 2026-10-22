@@ -174,6 +174,39 @@ def test_metrics_schema_upgrade_preserves_rows_and_adds_validation_columns(tmp_p
     ]
 
 
+def test_resume_wandb_step_offset_uses_existing_run_history(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    class RemoteRun:
+        summary = {"_step": 12973}
+
+        def scan_history(self, *, keys, min_step, page_size):
+            assert keys == ["_step", "optimizer_step"]
+            assert min_step == 12963
+            assert page_size == 1000
+            return iter(
+                [
+                    {"_step": 12971, "optimizer_step": 12472},
+                    {"_step": 12973, "optimizer_step": 12474},
+                ]
+            )
+
+    class FakeApi:
+        def run(self, path):
+            assert path == "entity/project/run-id"
+            return RemoteRun()
+
+    monkeypatch.setitem(sys.modules, "wandb", SimpleNamespace(Api=FakeApi))
+    run = SimpleNamespace(entity="entity", project="project", id="run-id")
+
+    offset = hf_sft._resume_wandb_step_offset(
+        run, optimizer_step=12500, local_last_step=12499
+    )
+
+    assert offset == 499
+
+
 class TinyLogitModel(torch.nn.Module):
     def __init__(self, vocab_size=7):
         super().__init__()
