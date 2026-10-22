@@ -16,6 +16,10 @@ import torch
 from tinymath.checkpoint import capture_rng_state, restore_rng_state, save_checkpoint
 from tinymath.data.hf_cached_dataset import HFTokenSplit
 from tinymath.data.hf_reasoning import sha256_file
+from tinymath.eval.hf_qualitative import (
+    build_native_qualitative_examples,
+    log_native_qualitative_examples,
+)
 from tinymath.model.hf_qwen import completion_loss, load_model, load_tokenizer, save_model_identity
 
 
@@ -253,6 +257,14 @@ def train_hf_sft(
     cache_dir, cache_manifest = _find_cache(config)
     train_split = HFTokenSplit(cache_dir, "train")
     validation_split = HFTokenSplit(cache_dir, "validation")
+    qualitative = config.get("qualitative", {})
+    qualitative_enabled = bool(qualitative.get("enabled", False))
+    qualitative_every = max(1, int(qualitative.get("every_steps", 5000)))
+    qualitative_rows = list(validation_split.rows()) if qualitative_enabled else []
+    qualitative_max_new_tokens = int(
+        qualitative.get("max_new_tokens", 128)
+    )
+    qualitative_per_module = int(qualitative.get("examples_per_module", 2))
     experiment_phase = str(config.experiment.phase)
     if experiment_phase in {"pilot", "smoke"}:
         row_cap = int(config.experiment.get("pilot_train_rows", 64))
@@ -433,6 +445,7 @@ def train_hf_sft(
     accumulated_batches = 0
     running_loss = 0.0
     running_tokens = 0
+    last_qualitative_step = 0
     optimizer.zero_grad(set_to_none=True)
     try:
         if pending_validation_metrics is not None:
@@ -626,6 +639,25 @@ def train_hf_sft(
                             config_sha256=config_hash,
                         ),
                     )
+                if qualitative_enabled and step % qualitative_every == 0:
+                    qualitative_records = build_native_qualitative_examples(
+                        model=model,
+                        tokenizer=load_tokenizer(config.model),
+                        rows=qualitative_rows,
+                        seed=int(config.seed),
+                        optimizer_step=step,
+                        context_length=int(config.model.context_length),
+                        max_new_tokens=qualitative_max_new_tokens,
+                        examples_per_module=qualitative_per_module,
+                        rollout_config=config.rollout,
+                    )
+                    log_native_qualitative_examples(
+                        records=qualitative_records,
+                        run=run,
+                        run_dir=run_dir,
+                        wandb_step=step + wandb_step_offset,
+                    )
+                    last_qualitative_step = step
                 if target_flops is not None and 6 * parameters * tokens_seen >= target_flops:
                     break
             if cursor >= len(epoch_order):
@@ -683,6 +715,24 @@ def train_hf_sft(
                 pending_validation_metrics=pending_validation_metrics,
             ),
         )
+        if qualitative_enabled and step > 0 and last_qualitative_step != step:
+            qualitative_records = build_native_qualitative_examples(
+                model=model,
+                tokenizer=load_tokenizer(config.model),
+                rows=qualitative_rows,
+                seed=int(config.seed),
+                optimizer_step=step,
+                context_length=int(config.model.context_length),
+                max_new_tokens=qualitative_max_new_tokens,
+                examples_per_module=qualitative_per_module,
+                rollout_config=config.rollout,
+            )
+            log_native_qualitative_examples(
+                records=qualitative_records,
+                run=run,
+                run_dir=run_dir,
+                wandb_step=step + wandb_step_offset,
+            )
     finally:
         handle.close()
 

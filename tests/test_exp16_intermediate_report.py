@@ -97,6 +97,32 @@ def test_markdown_labels_partial_results_and_decodes_split_format() -> None:
     assert "Live, incomplete results" in report
 
 
+def test_markdown_shows_qualitative_validation_rows_without_promoting_them_to_metrics():
+    report = _render_markdown(
+        {},
+        "now",
+        qualitative_results=[
+            {
+                "optimizer_step": 5000,
+                "module": "arithmetic__add_or_sub",
+                "question": "2 + 2?",
+                "target": "4",
+                "prediction": "4",
+                "format_valid": True,
+                "trace_valid": True,
+                "correct": True,
+                "full_success": True,
+                "completion": "<think>\\n2 + 2 = 4\\n</think>\\nA: 4",
+            }
+        ],
+    )
+
+    assert "## Qualitative validation examples" in report
+    assert "illustrative examples, not an accuracy estimate" in report
+    assert "2 + 2?" in report
+    assert "Generated completion:" in report
+
+
 def test_markdown_includes_tracked_pilot_metrics_and_incomplete_status() -> None:
     report = _render_markdown(
         {},

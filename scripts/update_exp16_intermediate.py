@@ -210,11 +210,24 @@ def _training_results(runs_root: Path, seed: int) -> list[dict[str, Any]]:
     return results
 
 
+def _qualitative_results(runs_root: Path, seed: int) -> list[dict[str, Any]]:
+    run_dir = (
+        runs_root / EXPERIMENT_DIR / MODEL_DIR / "sft" / "main" / f"seed{seed}"
+    )
+    snapshots = sorted((run_dir / "qualitative").glob("step_*.jsonl"))
+    return _read_jsonl(snapshots[-1]) if snapshots else []
+
+
+def _markdown_cell(value: Any) -> str:
+    return str(value or "—").replace("|", "\\|").replace("\n", "<br>").replace("\r", "")
+
+
 def _render_markdown(
     summaries: dict[str, dict[str, Any]],
     updated: str,
     pilot_results: list[dict[str, Any]] | None = None,
     training_results: list[dict[str, Any]] | None = None,
+    qualitative_results: list[dict[str, Any]] | None = None,
 ) -> str:
     lines = [
         "# Experiment 16 intermediate results",
@@ -355,6 +368,35 @@ def _render_markdown(
             )
     else:
         lines.append("No main-arm training metrics are available yet.")
+    qualitative_results = qualitative_results or []
+    lines.extend(["", "## Qualitative validation examples", ""])
+    if qualitative_results:
+        sample_step = qualitative_results[0].get("optimizer_step", "—")
+        lines.extend(
+            [
+                f"Deterministic parent-only validation samples at SFT optimizer step {sample_step}; these are illustrative examples, not an accuracy estimate.",
+                "",
+            ]
+        )
+        for index, row in enumerate(qualitative_results, start=1):
+            lines.extend(
+                [
+                    f"### {index}. {_markdown_cell(row.get('module'))}",
+                    "",
+                    f"- Question: {_markdown_cell(row.get('question'))}",
+                    f"- Target: `{_markdown_cell(row.get('target'))}`; prediction: `{_markdown_cell(row.get('prediction'))}`",
+                    f"- Format valid: `{row.get('format_valid')}`; trace valid: `{row.get('trace_valid')}`; correct: `{row.get('correct')}`; full success: `{row.get('full_success')}`",
+                    "",
+                    "Generated completion:",
+                    "",
+                    "```text",
+                    str(row.get("completion", "")),
+                    "```",
+                    "",
+                ]
+            )
+    else:
+        lines.append("No qualitative SFT snapshot has been written yet.")
     lines.extend(
         [
             "",
@@ -533,10 +575,17 @@ def refresh(*, runs_root: Path, output_dir: Path, seed: int) -> int:
     updated = datetime.now(UTC).isoformat(timespec="seconds")
     pilot_results = _pilot_results(runs_root, seed)
     training_results = _training_results(runs_root, seed)
+    qualitative_results = _qualitative_results(runs_root, seed)
     _write_training_figure(output_dir, training_results)
     _atomic_text(
         output_dir / "intermediate_results.md",
-        _render_markdown(summaries, updated, pilot_results, training_results),
+        _render_markdown(
+            summaries,
+            updated,
+            pilot_results,
+            training_results,
+            qualitative_results,
+        ),
     )
     return sum(summary["rows"] for summary in summaries.values())
 

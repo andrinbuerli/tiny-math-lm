@@ -1,3 +1,4 @@
 enabled: true
 every_steps: 5000
 examples_per_module: 2
+max_new_tokens: 128
