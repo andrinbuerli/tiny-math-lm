@@ -1,6 +1,9 @@
 import csv
 import json
 import math
+import sys
+from pathlib import Path
+from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
@@ -20,6 +23,78 @@ from tinymath.train.hf_generation import (
     generate_native_rollout_group,
 )
 from tinymath.train.hf_grpo import PromptRollouts, chunked_grpo_backward, native_policy_statistics
+
+
+def test_sft_resume_truncates_metrics_after_durable_checkpoint(tmp_path: Path):
+    metrics = tmp_path / "metrics.csv"
+    fields = ["optimizer_step", "train/completion_loss"]
+    with metrics.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(
+            [
+                {"optimizer_step": 20449, "train/completion_loss": 0.01},
+                {"optimizer_step": 20450, "train/completion_loss": 0.009},
+                {"optimizer_step": 20451, "train/completion_loss": 0.008},
+            ]
+        )
+
+    removed = hf_sft._truncate_metrics_after_checkpoint(
+        metrics,
+        fields=fields,
+        optimizer_step=20450,
+        pending_validation_metrics=None,
+    )
+
+    assert removed == 1
+    with metrics.open(newline="", encoding="utf-8") as handle:
+        assert [int(row["optimizer_step"]) for row in csv.DictReader(handle)] == [20449, 20450]
+
+
+def test_sft_resume_repeats_pending_validation_row(tmp_path: Path):
+    metrics = tmp_path / "metrics.csv"
+    fields = ["optimizer_step", "train/completion_loss"]
+    with metrics.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(
+            [
+                {"optimizer_step": 499, "train/completion_loss": 0.02},
+                {"optimizer_step": 500, "train/completion_loss": 0.01},
+            ]
+        )
+
+    removed = hf_sft._truncate_metrics_after_checkpoint(
+        metrics,
+        fields=fields,
+        optimizer_step=500,
+        pending_validation_metrics={"optimizer_step": 500},
+    )
+
+    assert removed == 1
+    with metrics.open(newline="", encoding="utf-8") as handle:
+        assert [int(row["optimizer_step"]) for row in csv.DictReader(handle)] == [499]
+
+
+def test_sft_resume_wandb_offset_clears_history_ahead_of_checkpoint(monkeypatch):
+    fake_wandb = SimpleNamespace(
+        Api=lambda: SimpleNamespace(
+            run=lambda _path: SimpleNamespace(
+                summary={"_step": 20934},
+                scan_history=lambda **_kwargs: [
+                    {"_step": 20934, "optimizer_step": 20461}
+                ],
+            )
+        )
+    )
+    monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
+    run = SimpleNamespace(entity="entity", project="project", id="run-id")
+
+    offset = hf_sft._resume_wandb_step_offset(
+        run, optimizer_step=20450, local_last_step=20461
+    )
+
+    assert offset == 484
 
 
 def test_pilot_subset_always_contains_longest_native_token_sequence():

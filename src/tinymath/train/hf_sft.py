@@ -54,6 +54,10 @@ def _resume_wandb_step_offset(run: Any, *, optimizer_step: int, local_last_step:
             offset = history_step - history_optimizer_step
             if offset < 0:
                 raise ValueError("W&B history step precedes its SFT optimizer step")
+            # A graceful interruption can leave W&B history a few optimizer
+            # updates ahead of the last durable model checkpoint. Resume at a
+            # later W&B step so logs from replayed updates are not discarded.
+            offset = max(offset, history_step - optimizer_step)
             LOGGER.info(
                 "Resuming W&B optimizer-step alignment at history step %d "
                 "(optimizer step %d, offset %d)",
@@ -261,6 +265,43 @@ def _upgrade_metrics_schema(path: Path, fields: list[str]) -> None:
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def _truncate_metrics_after_checkpoint(
+    path: Path,
+    *,
+    fields: list[str],
+    optimizer_step: int,
+    pending_validation_metrics: dict[str, Any] | None,
+) -> int:
+    """Drop local rows that cannot be reproduced from the durable checkpoint."""
+    if not path.is_file():
+        return 0
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    last_reproducible_step = optimizer_step - int(pending_validation_metrics is not None)
+    kept = [
+        row for row in rows
+        if int(row.get("optimizer_step") or 0) <= last_reproducible_step
+    ]
+    removed = len(rows) - len(kept)
+    if removed == 0:
+        return 0
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields)
+            writer.writeheader()
+            for row in kept:
+                writer.writerow({field: row.get(field, "") for field in fields})
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return removed
 
 
 def _validate_and_select_best(
@@ -523,6 +564,19 @@ def train_hf_sft(
     ]
     metrics_path = run_dir / "metrics.csv"
     _upgrade_metrics_schema(metrics_path, fields)
+    if step > 0:
+        removed_metrics = _truncate_metrics_after_checkpoint(
+            metrics_path,
+            fields=fields,
+            optimizer_step=step,
+            pending_validation_metrics=pending_validation_metrics,
+        )
+        if removed_metrics:
+            LOGGER.warning(
+                "Removed %d metric rows beyond the durable SFT checkpoint at step %d",
+                removed_metrics,
+                step,
+            )
     previous_logged_step = int(getattr(run, "step", 0)) if run is not None else 0
     if metrics_path.is_file():
         try:
