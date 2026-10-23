@@ -16,6 +16,7 @@ from omegaconf import DictConfig
 from tinymath.config import workspace_path
 
 LOGGER = logging.getLogger(__name__)
+EVAL_BATCH_SIZE = 4
 
 
 def _run(config: DictConfig, script: str, *overrides: str) -> None:
@@ -31,6 +32,16 @@ def _run(config: DictConfig, script: str, *overrides: str) -> None:
     ]
     LOGGER.info("Running Experiment 16 continuation stage: %s", " ".join(command[3:]))
     subprocess.run(command, cwd="/workspace", check=True)
+
+
+def _evaluate(config: DictConfig, phase: str, checkpoint: str) -> None:
+    _run(
+        config,
+        "evaluate",
+        f"experiment.phase={phase}",
+        f"checkpoint={checkpoint}",
+        f"eval.batch_size={EVAL_BATCH_SIZE}",
+    )
 
 
 def _require_checkpoint(path: Path, label: str) -> None:
@@ -111,12 +122,7 @@ def main(config: DictConfig) -> None:
 
     sft_eval_dir = root / "evaluation" / "sft" / "best" / f"seed{seed}"
     if not _stage_finished(sft_eval_dir, "results.json"):
-        _run(
-            config,
-            "evaluate",
-            "experiment.phase=sft_evaluation",
-            f"checkpoint={selected_sft.relative_to('/workspace')}",
-        )
+        _evaluate(config, "sft_evaluation", str(selected_sft.relative_to("/workspace")))
 
     grpo_run = root / "grpo" / "main" / f"seed{seed}"
     final_grpo = grpo_run / "final"
@@ -133,12 +139,7 @@ def main(config: DictConfig) -> None:
 
     grpo_eval_dir = root / "evaluation" / "grpo" / "final" / f"seed{seed}"
     if not _stage_finished(grpo_eval_dir, "results.json"):
-        _run(
-            config,
-            "evaluate",
-            "experiment.phase=grpo_evaluation",
-            f"checkpoint={final_grpo.relative_to('/workspace')}",
-        )
+        _evaluate(config, "grpo_evaluation", str(final_grpo.relative_to("/workspace")))
 
     grpo_state = torch.load(grpo_run / "latest.pt", map_location="cpu", weights_only=False)
     target_flops = int(grpo_state["estimated_flops"])
@@ -160,11 +161,10 @@ def main(config: DictConfig) -> None:
 
     control_eval_dir = root / "evaluation" / "continued_sft" / "final" / f"seed{seed}"
     if not _stage_finished(control_eval_dir, "results.json"):
-        _run(
+        _evaluate(
             config,
-            "evaluate",
-            "experiment.phase=continued_sft_evaluation",
-            f"checkpoint={final_control.relative_to('/workspace')}",
+            "continued_sft_evaluation",
+            str(final_control.relative_to("/workspace")),
         )
     _run(config, "report_exp16", "experiment.phase=report")
 

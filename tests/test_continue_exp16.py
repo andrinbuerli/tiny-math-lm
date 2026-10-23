@@ -41,6 +41,30 @@ def test_continuation_child_command_uses_hydra_config_group(monkeypatch):
     assert observed["check"] is True
 
 
+def test_continuation_evaluations_use_memory_bounded_batch(monkeypatch):
+    observed = {}
+    monkeypatch.setattr(
+        CONTINUE,
+        "_run",
+        lambda _config, script, *overrides: observed.update(
+            script=script, overrides=overrides
+        ),
+    )
+
+    CONTINUE._evaluate(
+        OmegaConf.create({"experiment": {"config_group": "16_qwen3_base_reasoning_v3"}}),
+        "sft_evaluation",
+        "runs/model/sft/best",
+    )
+
+    assert observed["script"] == "evaluate"
+    assert observed["overrides"] == (
+        "experiment.phase=sft_evaluation",
+        "checkpoint=runs/model/sft/best",
+        "eval.batch_size=4",
+    )
+
+
 def test_completed_stage_requires_finished_run_and_artifacts(tmp_path: Path):
     (tmp_path / "result.json").write_text("{}", encoding="utf-8")
     (tmp_path / "wandb_run.json").write_text(
