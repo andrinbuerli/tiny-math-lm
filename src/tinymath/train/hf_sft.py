@@ -57,7 +57,7 @@ def _resume_wandb_step_offset(run: Any, *, optimizer_step: int, local_last_step:
             # A graceful interruption can leave W&B history a few optimizer
             # updates ahead of the last durable model checkpoint. Resume at a
             # later W&B step so logs from replayed updates are not discarded.
-            offset = max(offset, history_step - optimizer_step)
+            offset = max(offset, int(latest_step or 0) + 1 - optimizer_step)
             LOGGER.info(
                 "Resuming W&B optimizer-step alignment at history step %d "
                 "(optimizer step %d, offset %d)",

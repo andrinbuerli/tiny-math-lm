@@ -80,9 +80,9 @@ def test_sft_resume_wandb_offset_clears_history_ahead_of_checkpoint(monkeypatch)
     fake_wandb = SimpleNamespace(
         Api=lambda: SimpleNamespace(
             run=lambda _path: SimpleNamespace(
-                summary={"_step": 20934},
+                summary={"_step": 20961},
                 scan_history=lambda **_kwargs: [
-                    {"_step": 20934, "optimizer_step": 20461}
+                    {"_step": 20960, "optimizer_step": 20461}
                 ],
             )
         )
@@ -94,7 +94,7 @@ def test_sft_resume_wandb_offset_clears_history_ahead_of_checkpoint(monkeypatch)
         run, optimizer_step=20450, local_last_step=20461
     )
 
-    assert offset == 484
+    assert offset == 512
 
 
 def test_pilot_subset_always_contains_longest_native_token_sequence():
