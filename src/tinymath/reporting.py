@@ -2166,7 +2166,9 @@ def make_exp13_report(
                     "reasoning_question_identity_sha256": reasoning_identity,
                     "baseline_question_identity_count": base_identity_count,
                     "reasoning_question_identity_count": reasoning_identity_count,
-                    "checkpoint_selector": "latest" if arm == "grpo" else "best",
+                    "checkpoint_selector": (
+                        "latest" if arm == "grpo" or matched_control else "best"
+                    ),
                     "checkpoint": str(checkpoint) if checkpoint.is_file() else None,
                     "checkpoint_sha256": checkpoint_hash,
                     "checkpoint_step": checkpoint_step,
@@ -2248,7 +2250,13 @@ def make_exp13_report(
         ]
         evaluation_complete = (
             len(control_evaluations) == len(SPLITS)
-            and all(item.get("status") == "complete" for item in control_evaluations)
+            and all(
+                item.get("status") == "complete"
+                and item.get("same_question_identity") is True
+                and item.get("evaluation_bundle_matches_reported_bundle") is True
+                and item.get("protocol") == "reasoning_v3"
+                for item in control_evaluations
+            )
         )
         complete_budgets = (
             grpo_step == "10000"

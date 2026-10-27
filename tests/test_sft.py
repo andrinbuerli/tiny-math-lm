@@ -319,7 +319,11 @@ def test_continued_sft_resumes_its_own_checkpoint_and_records_source(workspace_t
         ]
 
     budget_dir = workspace_tmpdir / "continued_sft_budget"
-    config.trainer.compute_budget_flops = 1
+    with Path(first["metrics_path"]).open(encoding="utf-8") as handle:
+        first_metrics = list(csv.DictReader(handle))
+    first_update_positions = int(first_metrics[0]["tokens_seen"])
+    budget_target = 6 * first["parameters"] * first_update_positions
+    config.trainer.compute_budget_flops = budget_target
     config.trainer.max_steps = 10
     config.trainer.save_every = 1000
     budgeted = train_sft(
@@ -333,8 +337,11 @@ def test_continued_sft_resumes_its_own_checkpoint_and_records_source(workspace_t
     inference = torch.load(budgeted["inference_checkpoint"], map_location="cpu", weights_only=False)
     assert budgeted["step"] == latest["step"] == inference["step"] == 1
     assert budgeted["compute_budget_reached"] is True
-    assert latest["compute_budget_flops"] == inference["compute_budget_flops"] == 1
+    assert budgeted["compute_budget_fraction"] == 1.0
+    assert latest["compute_budget_flops"] == inference["compute_budget_flops"] == budget_target
     assert latest["compute_accounting"] == inference["compute_accounting"] == "dense_padded_positions_v1"
+    assert latest["compute_spent_flops"] == budget_target
+    assert budgeted["padded_compute_positions"] == first_update_positions
     with pytest.raises(ValueError, match="compute budget does not match"):
         config.trainer.compute_budget_flops = 2
         train_sft(
@@ -344,3 +351,51 @@ def test_continued_sft_resumes_its_own_checkpoint_and_records_source(workspace_t
             run=run,
             init_checkpoint=source_checkpoint,
         )
+
+    # A budgeted continuation resumed after step 1 must exactly match an
+    # uninterrupted three-step run, including compute-based LR decay.
+    config.trainer.compute_budget_flops = (
+        6 * first["parameters"] * (int(first_metrics[1]["tokens_seen"]) + 10 * first_update_positions)
+    )
+    config.trainer.warmup_steps = 1
+    config.trainer.save_every = 1000
+    resumable_dir = workspace_tmpdir / "continued_sft_resumable_budget"
+    config.trainer.max_steps = 1
+    torch.manual_seed(12345)
+    train_sft(
+        config=config,
+        bundle_dir=bundle,
+        run_dir=resumable_dir,
+        run=run,
+        init_checkpoint=source_checkpoint,
+    )
+    config.trainer.max_steps = 3
+    resumed_budget = train_sft(
+        config=config,
+        bundle_dir=bundle,
+        run_dir=resumable_dir,
+        run=run,
+        init_checkpoint=source_checkpoint,
+    )
+    uninterrupted_dir = workspace_tmpdir / "continued_sft_uninterrupted_budget"
+    torch.manual_seed(12345)
+    uninterrupted = train_sft(
+        config=config,
+        bundle_dir=bundle,
+        run_dir=uninterrupted_dir,
+        run=run,
+        init_checkpoint=source_checkpoint,
+    )
+    resumed_payload = torch.load(resumed_budget["checkpoint"], map_location="cpu", weights_only=False)
+    uninterrupted_payload = torch.load(
+        uninterrupted["checkpoint"], map_location="cpu", weights_only=False
+    )
+    assert resumed_budget["step"] == uninterrupted["step"] == 3
+    assert resumed_budget["compute_budget_reached"] is False
+    assert all(
+        torch.equal(resumed_payload["model"][key], uninterrupted_payload["model"][key])
+        for key in resumed_payload["model"]
+    )
+    with Path(uninterrupted["metrics_path"]).open(encoding="utf-8") as handle:
+        schedule_rows = list(csv.DictReader(handle))
+    assert float(schedule_rows[2]["learning_rate"]) < float(schedule_rows[1]["learning_rate"])

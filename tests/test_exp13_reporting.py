@@ -403,7 +403,6 @@ def test_exp13_report_links_grpo_to_its_sft_checkpoint_and_run(workspace_tmpdir)
     (bundle / "manifest.json").write_text(json.dumps({
         "annotation": {}, "tokenizer": {}, "splits": {},
     }), encoding="utf-8")
-
     report, _ = make_exp13_report(
         runs_dir=runs,
         output_dir=workspace_tmpdir / "reports",
@@ -532,3 +531,147 @@ def test_exp13_compute_matching_uses_arm_namespaces_and_reports_checkpoint_updat
         row["model"], row["arm"], row["split"]
     ) == ("1m", "grpo", "test"))
     assert row["checkpoint_step"] == 50
+
+
+def test_exp13_compute_matching_requires_budget_and_all_matched_evaluations(workspace_tmpdir):
+    experiment = "report-only"
+    control_namespace = "exp15_reasoning_v3_arithmetic_subtasks-compute-matched"
+    grpo_namespace = "exp15_reasoning_v3_arithmetic_subtasks"
+    baseline = workspace_tmpdir / "baseline.json"
+    splits = ("test", "number_length_ood", "expression_length_ood")
+    baseline.write_text(json.dumps({
+        "experiment": {"canonical_name": "frozen-baseline"},
+        "available_measurements": [
+            {"model": "1m", "arm": "continued_sft", "split": split,
+             "accuracy": 0.5, "examples": 2}
+            for split in splits
+        ],
+        "provenance": {
+            "baseline_evaluation_wandb_runs": {
+                "1m": {"continued_sft": {"checkpoint_selector": "best"}}
+            }
+        },
+    }), encoding="utf-8")
+    runs = workspace_tmpdir / "runs"
+    control_dir = runs / control_namespace / "1m" / "continued_sft" / "seed18"
+    control_dir.mkdir(parents=True)
+    checkpoint = control_dir / "latest.pt"
+    torch.save({"step": 4, "training_arm": "continued_sft"}, checkpoint)
+    with (control_dir / "metrics.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=[
+            "optimizer_step", "estimated_flops", "additional_estimated_flops",
+            "compute_budget_flops", "compute_budget_fraction", "compute_accounting",
+        ])
+        writer.writeheader()
+        writer.writerow({
+            "optimizer_step": 4,
+            "estimated_flops": 2_000,
+            "additional_estimated_flops": 2_000,
+            "compute_budget_flops": 2_000,
+            "compute_budget_fraction": 1.0,
+            "compute_accounting": "dense_padded_positions_v1",
+        })
+    grpo_dir = runs / grpo_namespace / "1m" / "grpo" / "seed18"
+    grpo_dir.mkdir(parents=True)
+    torch.save({"update": 10_000}, grpo_dir / "latest.pt")
+    with (grpo_dir / "metrics.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["update", "estimated_flops"])
+        writer.writeheader()
+        writer.writerow({"update": 10_000, "estimated_flops": 2_000})
+
+    bundle = workspace_tmpdir / "bundle"
+    bundle.mkdir()
+    (bundle / "manifest.json").write_text(json.dumps({
+        "annotation": {}, "tokenizer": {}, "splits": {},
+    }), encoding="utf-8")
+    bundle_digest = hashlib.sha256((bundle / "manifest.json").read_bytes()).hexdigest()
+    questions = [("arithmetic__add_or_sub", "1 + 1", "2"),
+                 ("arithmetic__mul", "2 × 3", "6")]
+    for split in splits:
+        baseline_eval = runs / "frozen-baseline" / "1m" / "evaluation" / "continued_sft" / "best" / "seed18"
+        _write_predictions(baseline_eval / f"{split}_predictions.csv", questions)
+    evaluation_dir = (
+        runs / control_namespace / "1m" / "evaluation" / "continued_sft" / "latest" / "seed18"
+    )
+    for split in splits:
+        _write_predictions(evaluation_dir / f"{split}_predictions.csv", questions)
+    (evaluation_dir / "results.json").write_text(json.dumps({
+        "checkpoint": str(checkpoint.resolve()),
+        "checkpoint_step": 4,
+        "source_sft_checkpoint": "source-sft.pt",
+        "bundle_sha256": bundle_digest,
+        "protocol": "reasoning_v3",
+        "splits": {
+            split: {"examples": 2, "accuracy": 0.75, "module": {}}
+            for split in splits
+        },
+    }), encoding="utf-8")
+
+    report, _ = make_exp13_report(
+        runs_dir=runs,
+        output_dir=workspace_tmpdir / "reports-complete",
+        baseline_snapshot=baseline,
+        annotation_bundle_dir=bundle,
+        experiment=experiment,
+        run_namespaces={"1m": {
+            "grpo": grpo_namespace,
+            "continued_sft": control_namespace,
+        }},
+    )
+    matching = report["compute_matching"]["1m"]
+    assert matching["status"] == "measured", matching
+    assert matching["continued_sft_target_estimated_flops"] == 2_000
+    assert matching["continued_sft_to_grpo_flop_ratio"] == 1.0
+    assert matching["budget_error_fraction"] == 0.0
+    assert matching["evaluation_complete"] is True
+    control_row = next(row for row in report["rows"] if (
+        row["model"], row["arm"], row["split"]
+    ) == ("1m", "continued_sft", "test"))
+    assert control_row["checkpoint_selector"] == "latest"
+    assert control_row["checkpoint"] == str(checkpoint)
+
+    (evaluation_dir / "expression_length_ood_predictions.csv").unlink()
+    report, _ = make_exp13_report(
+        runs_dir=runs,
+        output_dir=workspace_tmpdir / "reports-incomplete",
+        baseline_snapshot=baseline,
+        annotation_bundle_dir=bundle,
+        experiment=experiment,
+        run_namespaces={"1m": {
+            "grpo": grpo_namespace,
+            "continued_sft": control_namespace,
+        }},
+    )
+    matching = report["compute_matching"]["1m"]
+    assert matching["evaluation_complete"] is False
+    assert matching["status"] == "pending"
+
+    with (control_dir / "metrics.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=[
+            "optimizer_step", "estimated_flops", "additional_estimated_flops",
+            "compute_budget_flops", "compute_budget_fraction", "compute_accounting",
+        ])
+        writer.writeheader()
+        writer.writerow({
+            "optimizer_step": 4,
+            "estimated_flops": 2_000,
+            "additional_estimated_flops": 2_000,
+            "compute_budget_flops": 2_000,
+            "compute_budget_fraction": 1.0,
+            "compute_accounting": "incompatible_version",
+        })
+    _write_predictions(evaluation_dir / "expression_length_ood_predictions.csv", questions)
+    report, _ = make_exp13_report(
+        runs_dir=runs,
+        output_dir=workspace_tmpdir / "reports-incompatible",
+        baseline_snapshot=baseline,
+        annotation_bundle_dir=bundle,
+        experiment=experiment,
+        run_namespaces={"1m": {
+            "grpo": grpo_namespace,
+            "continued_sft": control_namespace,
+        }},
+    )
+    matching = report["compute_matching"]["1m"]
+    assert matching["evaluation_complete"] is True
+    assert matching["status"] == "pending"
