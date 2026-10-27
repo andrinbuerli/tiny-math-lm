@@ -1,0 +1,338 @@
+{
+  "schema_version": 1,
+  "seed": 18,
+  "results_as_of_utc": "2026-10-21T09:42:04.427678+00:00",
+  "source": {
+    "report": "reports/exp15_reasoning_v3_arithmetic_subtasks/seed18/comparison.json",
+    "report_sha256": "2dfba3a4ff903293dfbd80b262336ced7dfc66a5a56162f1e98286bbc2734799",
+    "preset": "configs/experiment/15_reasoning_v3_arithmetic_subtasks.yaml",
+    "note": "Curated documentation snapshot. SFT/continued-SFT values come from verified historical_reference rows; GRPO values come from primary rows. Each reused checkpoint hash matches the comparison arm."
+  },
+  "provenance": {
+    "baseline_snapshot_sha256": "c039678674822a7a50d8c6efd384cb0d87903818b4428af6f907f2867f1688f8",
+    "bundle_manifest_sha256": "5d493a0f4c961b84b873036ea1bc93ebb6d01b6f022d7ed81997b094da3a018f",
+    "tokenizer_sha256": "1ec41b1dedab822e57e86a3e6ebd54e9a165431fbe1b1ff9622e89dfed57163d",
+    "question_identity_sha256": {
+      "test": "c19d79c7c8da7dae553af612182bfaacac0548576e2186fca0e89d1e40b60312",
+      "number_length_ood": "274ba2aa3b15fd7ef8f39c103eb1ca5f944991515e9ee279d7249bf44471f6cb",
+      "expression_length_ood": "8af8fa3a6c2742882968774a6c7d98be05977279a1958d7292eede1530325fd2"
+    }
+  },
+  "model_parameters": {
+    "1m": 995456,
+    "10m": 9989760,
+    "100m": 99177216
+  },
+  "evaluation": {
+    "greedy": true,
+    "context_length": 512,
+    "max_new_tokens": 512,
+    "metric": "final_answer_accuracy",
+    "parent_questions_only": true,
+    "examples_per_split": {
+      "test": 50000,
+      "number_length_ood": 5000,
+      "expression_length_ood": 2000
+    },
+    "reasoning_v3_executor": "exact; compound_task_v1"
+  },
+  "training": {
+    "sft_optimizer_steps": 100000,
+    "continued_sft_additional_optimizer_steps": 100000,
+    "grpo": {
+      "updates": 10000,
+      "prompts_per_batch": 16,
+      "group_size": 16,
+      "temperature": 1.0,
+      "max_completion_tokens": 512,
+      "sampler_version": 2,
+      "prompt_batching": "left_pad"
+    },
+    "continued_sft_to_grpo_estimated_flop_ratio": {
+      "1m": 3.7744708639938405,
+      "10m": 4.859223648163293,
+      "100m": 5.446813555278156
+    },
+    "compute_note": "Descriptive estimates only. Continued-SFT and GRPO budgets are unequal; the source report marks compute matching pending."
+  },
+  "checkpoints": {
+    "1m": {
+      "sft": {
+        "selector": "best",
+        "sha256": "b730af5b88dd83207e26a90ad77559e81658f6b20e1f713a34f2969234ce888d",
+        "training_run_id": "9064cb8cc472b809",
+        "evaluation_run_id": "723358824ed3384f"
+      },
+      "grpo": {
+        "selector": "latest",
+        "sha256": "4136821358192741e5724a71a389d155f9934d501172cf7bf123d1c9f638cb82",
+        "training_run_id": "0e2e8e650e37d739",
+        "evaluation_run_id": "7482627131329cf2"
+      },
+      "continued_sft": {
+        "selector": "best",
+        "sha256": "00137535e08d08a3648f1872ff7b46649ce9b32a7a2657911f50ce33127b043e",
+        "training_run_id": "31d3991cc3e6f618",
+        "evaluation_run_id": "f177c28d1e1837cd"
+      }
+    },
+    "10m": {
+      "sft": {
+        "selector": "best",
+        "sha256": "ab69ec255daca2b004153d1ddf03b271ca17154fdf6e5fe787f310734b208a29",
+        "training_run_id": "16d5dedb33cdcebe",
+        "evaluation_run_id": "32c94944509b87b4"
+      },
+      "grpo": {
+        "selector": "latest",
+        "sha256": "01755ee4399230aa49434dbfec5804dd9dfa34350ecab5dbf5e145fd99271b60",
+        "training_run_id": "c7a774b40fc8501c",
+        "evaluation_run_id": "f197934a28779dfa"
+      },
+      "continued_sft": {
+        "selector": "best",
+        "sha256": "129328dfd81ceb803c373ebd8a33ace3112e8bebbdf3eb64b72f6d4a697b014c",
+        "training_run_id": "02ce9f5dd7505d10",
+        "evaluation_run_id": "758a991d1b2247af"
+      }
+    },
+    "100m": {
+      "sft": {
+        "selector": "best",
+        "sha256": "baae5c80f9a5f5bf4d4009dcdb7c8e168419a908debc78fba38e393e8f7e2589",
+        "training_run_id": "2c9d9213cf557e5b",
+        "evaluation_run_id": "ad3c1c5266837771"
+      },
+      "grpo": {
+        "selector": "latest",
+        "sha256": "12db16e858619ae2661fcdfa271c3212b84ffc48c0e09bdc6124a8e47ce983ff",
+        "training_run_id": "43cede28d1b251d5",
+        "evaluation_run_id": "0b718a49abe9e085"
+      },
+      "continued_sft": {
+        "selector": "best",
+        "sha256": "f64a6420819b598a0ccfd9cc47093abaac78c79eb1a8c4f3404a98f50c38710b",
+        "training_run_id": "d0986b0d34484d54",
+        "evaluation_run_id": "05312fbcf8e12153"
+      }
+    }
+  },
+  "measurements": [
+    {
+      "model": "1m",
+      "arm": "sft",
+      "split": "test",
+      "examples": 50000,
+      "baseline_accuracy": 0.41462,
+      "reasoning_v3_accuracy": 0.65756
+    },
+    {
+      "model": "1m",
+      "arm": "sft",
+      "split": "number_length_ood",
+      "examples": 5000,
+      "baseline_accuracy": 0.4426,
+      "reasoning_v3_accuracy": 0.516
+    },
+    {
+      "model": "1m",
+      "arm": "sft",
+      "split": "expression_length_ood",
+      "examples": 2000,
+      "baseline_accuracy": 0.043,
+      "reasoning_v3_accuracy": 0.1525
+    },
+    {
+      "model": "1m",
+      "arm": "grpo",
+      "split": "test",
+      "examples": 50000,
+      "baseline_accuracy": 0.44768,
+      "reasoning_v3_accuracy": 0.6902
+    },
+    {
+      "model": "1m",
+      "arm": "grpo",
+      "split": "number_length_ood",
+      "examples": 5000,
+      "baseline_accuracy": 0.4672,
+      "reasoning_v3_accuracy": 0.5708
+    },
+    {
+      "model": "1m",
+      "arm": "grpo",
+      "split": "expression_length_ood",
+      "examples": 2000,
+      "baseline_accuracy": 0.038,
+      "reasoning_v3_accuracy": 0.163
+    },
+    {
+      "model": "1m",
+      "arm": "continued_sft",
+      "split": "test",
+      "examples": 50000,
+      "baseline_accuracy": 0.48538,
+      "reasoning_v3_accuracy": 0.77166
+    },
+    {
+      "model": "1m",
+      "arm": "continued_sft",
+      "split": "number_length_ood",
+      "examples": 5000,
+      "baseline_accuracy": 0.4636,
+      "reasoning_v3_accuracy": 0.5718
+    },
+    {
+      "model": "1m",
+      "arm": "continued_sft",
+      "split": "expression_length_ood",
+      "examples": 2000,
+      "baseline_accuracy": 0.093,
+      "reasoning_v3_accuracy": 0.287
+    },
+    {
+      "model": "10m",
+      "arm": "sft",
+      "split": "test",
+      "examples": 50000,
+      "baseline_accuracy": 0.4861,
+      "reasoning_v3_accuracy": 0.86984
+    },
+    {
+      "model": "10m",
+      "arm": "sft",
+      "split": "number_length_ood",
+      "examples": 5000,
+      "baseline_accuracy": 0.4814,
+      "reasoning_v3_accuracy": 0.6834
+    },
+    {
+      "model": "10m",
+      "arm": "sft",
+      "split": "expression_length_ood",
+      "examples": 2000,
+      "baseline_accuracy": 0.1265,
+      "reasoning_v3_accuracy": 0.4735
+    },
+    {
+      "model": "10m",
+      "arm": "grpo",
+      "split": "test",
+      "examples": 50000,
+      "baseline_accuracy": 0.50092,
+      "reasoning_v3_accuracy": 0.872
+    },
+    {
+      "model": "10m",
+      "arm": "grpo",
+      "split": "number_length_ood",
+      "examples": 5000,
+      "baseline_accuracy": 0.5144,
+      "reasoning_v3_accuracy": 0.7128
+    },
+    {
+      "model": "10m",
+      "arm": "grpo",
+      "split": "expression_length_ood",
+      "examples": 2000,
+      "baseline_accuracy": 0.0725,
+      "reasoning_v3_accuracy": 0.479
+    },
+    {
+      "model": "10m",
+      "arm": "continued_sft",
+      "split": "test",
+      "examples": 50000,
+      "baseline_accuracy": 0.50312,
+      "reasoning_v3_accuracy": 0.8697
+    },
+    {
+      "model": "10m",
+      "arm": "continued_sft",
+      "split": "number_length_ood",
+      "examples": 5000,
+      "baseline_accuracy": 0.4804,
+      "reasoning_v3_accuracy": 0.6748
+    },
+    {
+      "model": "10m",
+      "arm": "continued_sft",
+      "split": "expression_length_ood",
+      "examples": 2000,
+      "baseline_accuracy": 0.1675,
+      "reasoning_v3_accuracy": 0.4705
+    },
+    {
+      "model": "100m",
+      "arm": "sft",
+      "split": "test",
+      "examples": 50000,
+      "baseline_accuracy": 0.48882,
+      "reasoning_v3_accuracy": 0.9188
+    },
+    {
+      "model": "100m",
+      "arm": "sft",
+      "split": "number_length_ood",
+      "examples": 5000,
+      "baseline_accuracy": 0.4936,
+      "reasoning_v3_accuracy": 0.7688
+    },
+    {
+      "model": "100m",
+      "arm": "sft",
+      "split": "expression_length_ood",
+      "examples": 2000,
+      "baseline_accuracy": 0.0935,
+      "reasoning_v3_accuracy": 0.639
+    },
+    {
+      "model": "100m",
+      "arm": "grpo",
+      "split": "test",
+      "examples": 50000,
+      "baseline_accuracy": 0.5143,
+      "reasoning_v3_accuracy": 0.91096
+    },
+    {
+      "model": "100m",
+      "arm": "grpo",
+      "split": "number_length_ood",
+      "examples": 5000,
+      "baseline_accuracy": 0.56,
+      "reasoning_v3_accuracy": 0.7672
+    },
+    {
+      "model": "100m",
+      "arm": "grpo",
+      "split": "expression_length_ood",
+      "examples": 2000,
+      "baseline_accuracy": 0.086,
+      "reasoning_v3_accuracy": 0.6055
+    },
+    {
+      "model": "100m",
+      "arm": "continued_sft",
+      "split": "test",
+      "examples": 50000,
+      "baseline_accuracy": 0.51576,
+      "reasoning_v3_accuracy": 0.89924
+    },
+    {
+      "model": "100m",
+      "arm": "continued_sft",
+      "split": "number_length_ood",
+      "examples": 5000,
+      "baseline_accuracy": 0.497,
+      "reasoning_v3_accuracy": 0.716
+    },
+    {
+      "model": "100m",
+      "arm": "continued_sft",
+      "split": "expression_length_ood",
+      "examples": 2000,
+      "baseline_accuracy": 0.1485,
+      "reasoning_v3_accuracy": 0.5725
+    }
+  ]
+}
