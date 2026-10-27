@@ -52,8 +52,8 @@ def _bundle_dir(config: DictConfig) -> Path:
 def main(config: DictConfig) -> None:
     if set(config.data.modules) != set(SELECTED_MODULES):
         raise ValueError(f"The experiment is restricted to exactly these modules: {SELECTED_MODULES}")
-    if str(config.model.get("backend", "tinymath")) == "huggingface":
-        wait_for_gpu_capacity(config, str(config.model.name))
+    # Training waits for both utilization and free-VRAM headroom on every backend.
+    wait_for_gpu_capacity(config, str(config.model.name))
     bundle_dir = _bundle_dir(config)
     manifest = __import__("json").loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
     if str(config.model.get("backend", "tinymath")) == "huggingface":
@@ -147,6 +147,11 @@ def main(config: DictConfig) -> None:
                 "tokenizer_sha256": manifest["tokenizer"]["sha256"],
                 "model_parameters": parameter_model.count_parameters(),
                 "training_arm": "continued_sft" if config.trainer.name == "continued_sft" else "sft",
+                "compute_budget_flops": config.trainer.get("compute_budget_flops"),
+                "compute_accounting": (
+                    "dense_padded_positions_v1"
+                    if config.trainer.get("compute_budget_flops") else None
+                ),
                 "data_bundle": str(bundle_dir),
                 "source_sft_wandb_run_id": (
                     read_wandb_run_id(init_checkpoint.parent)
@@ -173,6 +178,9 @@ def main(config: DictConfig) -> None:
                 "training/supervised_tokens": result["supervised_tokens"],
                 "training/tokens_seen": result["tokens_seen"],
                 "training/additional_estimated_flops": result["additional_estimated_flops"],
+                "training/compute_budget_flops": result["compute_budget_flops"],
+                "training/compute_budget_reached": result["compute_budget_reached"],
+                "training/compute_budget_fraction": result["compute_budget_fraction"],
                 "training/best_validation_loss": result["best_validation_loss"],
                 "training/model_parameters": result["parameters"],
                 "training/checkpoint": result["checkpoint"],

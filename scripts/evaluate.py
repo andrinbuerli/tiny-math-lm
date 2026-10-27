@@ -44,8 +44,8 @@ def _bundle_dir(config: DictConfig) -> Path:
 def main(config: DictConfig) -> None:
     if set(config.data.modules) != set(SELECTED_MODULES):
         raise ValueError(f"The experiment is restricted to exactly these modules: {SELECTED_MODULES}")
+    wait_for_gpu_capacity(config, str(config.model.name))
     if str(config.model.get("backend", "tinymath")) == "huggingface":
-        wait_for_gpu_capacity(config, str(config.model.name))
         checkpoint = workspace_path(str(config.checkpoint)) if config.checkpoint else None
         if checkpoint is not None and not (checkpoint / "config.json").is_file():
             raise FileNotFoundError(f"Hugging Face model checkpoint directory not found: {checkpoint}")

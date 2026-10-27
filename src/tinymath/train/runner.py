@@ -192,6 +192,10 @@ def train_sft(
     supervised_tokens = 0
     source_sft_tokens_seen = 0
     source_sft_checkpoint: str | None = None
+    compute_budget_value = getattr(config.trainer, "compute_budget_flops", None)
+    compute_budget_flops = int(compute_budget_value) if compute_budget_value else None
+    compute_accounting = "dense_padded_positions_v1"
+    compute_warmup_flops = 0
     data_generator = torch.Generator(device="cpu").manual_seed(int(config.seed))
     if init_checkpoint is not None:
         payload = torch.load(init_checkpoint, map_location="cpu", weights_only=False)
@@ -238,6 +242,11 @@ def train_sft(
                 examples_drawn = int(resume_payload.get("examples_drawn", 0))
                 nonpadding_input_tokens = int(resume_payload.get("nonpadding_input_tokens", 0))
                 supervised_tokens = int(resume_payload.get("supervised_tokens", 0))
+                if resume_payload.get("compute_budget_flops") != compute_budget_flops:
+                    raise ValueError("Continued-SFT compute budget does not match resume checkpoint")
+                if compute_budget_flops is not None and resume_payload.get("compute_accounting") != compute_accounting:
+                    raise ValueError("Continued-SFT compute accounting version does not match resume checkpoint")
+                compute_warmup_flops = int(resume_payload.get("compute_warmup_flops", 0))
                 source_sft_tokens_seen = int(
                     resume_payload.get("source_sft_tokens_seen", source_sft_tokens_seen)
                 )
@@ -301,6 +310,7 @@ def train_sft(
             "optimizer_step", "train/loss", "val/loss", "learning_rate", "tokens_seen",
             "examples_drawn", "nonpadding_input_tokens", "padded_compute_positions",
             "supervised_tokens", "additional_estimated_flops",
+            "compute_budget_flops", "compute_budget_fraction", "compute_accounting",
             "tokens_per_second", "estimated_flops", "wall_seconds", "train/greedy_accuracy",
             "val/greedy_accuracy", "test/greedy_accuracy",
         ],
@@ -357,6 +367,14 @@ def train_sft(
         run.log(resume_values)
     warmup = int(config.trainer.warmup_steps)
     base_lr = float(config.trainer.learning_rate)
+    parameter_count = model.count_parameters()
+    compute_spent = 6 * parameter_count * tokens_seen
+    if compute_budget_flops is not None and compute_spent >= compute_budget_flops:
+        raise ValueError("Continued-SFT compute budget is already reached in the resume checkpoint")
+    if compute_budget_flops is not None and not warmup and not compute_warmup_flops:
+        compute_warmup_flops = compute_spent
+    budget_reached = False
+    final_step = start_step
     started = time.monotonic()
     model.train()
     try:
@@ -364,7 +382,10 @@ def train_sft(
             if warmup and step <= warmup:
                 lr_scale = step / warmup
             else:
-                progress = (step - warmup) / max(1, target_steps - warmup)
+                if compute_budget_flops is not None:
+                    progress = (compute_spent - compute_warmup_flops) / max(1, compute_budget_flops - compute_warmup_flops)
+                else:
+                    progress = (step - warmup) / max(1, target_steps - warmup)
                 lr_scale = 0.5 * (1 + math.cos(math.pi * min(1.0, progress)))
             lr = base_lr * lr_scale
             for group in optimizer.param_groups:
@@ -397,6 +418,11 @@ def train_sft(
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), float(config.trainer.grad_clip))
             optimizer.step()
             tokens_seen += tokens_this_step
+            compute_spent = 6 * parameter_count * tokens_seen
+            if compute_budget_flops is not None and step == warmup and not compute_warmup_flops:
+                compute_warmup_flops = compute_spent
+            budget_reached = compute_budget_flops is not None and compute_spent >= compute_budget_flops
+            final_step = step
             examples_drawn += examples_this_step
             nonpadding_input_tokens += nonpadding_tokens_this_step
             supervised_tokens += supervised_tokens_this_step
@@ -444,9 +470,10 @@ def train_sft(
                 "supervised_tokens": supervised_tokens,
                 "tokens_per_second": tokens_seen / max(1e-9, elapsed),
                 "estimated_flops": 6 * model.count_parameters() * tokens_seen,
-                "additional_estimated_flops": (
-                    6 * model.count_parameters() * max(0, tokens_seen - source_sft_tokens_seen)
-                ),
+                "additional_estimated_flops": 6 * parameter_count * tokens_seen,
+                "compute_budget_flops": compute_budget_flops or "",
+                "compute_budget_fraction": compute_spent / compute_budget_flops if compute_budget_flops else "",
+                "compute_accounting": compute_accounting if compute_budget_flops else "",
                 "wall_seconds": elapsed,
             }
             values = {
@@ -462,15 +489,15 @@ def train_sft(
                 "train/wall_seconds": elapsed,
                 "train/tokens_per_second": tokens_seen / max(1e-9, elapsed),
                 "train/estimated_flops": 6 * model.count_parameters() * tokens_seen,
-                "train/additional_estimated_flops": (
-                    6 * model.count_parameters() * max(0, tokens_seen - source_sft_tokens_seen)
-                ),
+                "train/additional_estimated_flops": 6 * parameter_count * tokens_seen,
+                "train/compute_budget_flops": compute_budget_flops or 0,
+                "train/compute_budget_fraction": compute_spent / compute_budget_flops if compute_budget_flops else 0,
             }
             if val_loss is not None:
                 values["val/loss"] = val_loss
             if device.type == "cuda":
                 values["system/peak_gpu_memory_bytes"] = torch.cuda.max_memory_allocated(device)
-            if step % save_every == 0 or step == target_steps:
+            if step % save_every == 0 or step == target_steps or budget_reached:
                 _save_state(
                     best_path=latest_path,
                     model=model,
@@ -488,6 +515,10 @@ def train_sft(
                     data_generator_state=data_generator.get_state(),
                     source_sft_checkpoint=source_sft_checkpoint,
                     training_arm=str(config.trainer.name),
+                    compute_budget_flops=compute_budget_flops,
+                    compute_spent_flops=compute_spent,
+                    compute_warmup_flops=compute_warmup_flops,
+                    compute_accounting=compute_accounting if compute_budget_flops else None,
                 )
                 _save_inference_state(
                     run_dir / "latest_inference.pt",
@@ -498,6 +529,9 @@ def train_sft(
                     compatibility=compatibility,
                     training_arm=str(config.trainer.name),
                     source_sft_checkpoint=source_sft_checkpoint,
+                    compute_budget_flops=compute_budget_flops,
+                    compute_spent_flops=compute_spent,
+                    compute_accounting=compute_accounting if compute_budget_flops else None,
                 )
             qualitative_due = step % qualitative_every == 0 or step == target_steps
             if qualitative_due:
@@ -539,21 +573,25 @@ def train_sft(
                 step % int(config.tracking.log_every) == 0
                 or step == 1
                 or step == target_steps
+                or budget_reached
                 or qualitative_due
             ):
                 run.log(values)
+            if budget_reached:
+                break
     finally:
         metrics_file.close()
     return {
-        "step": target_steps,
+        "step": final_step,
         "tokens_seen": tokens_seen,
         "examples_drawn": examples_drawn,
         "nonpadding_input_tokens": nonpadding_input_tokens,
         "padded_compute_positions": tokens_seen,
         "supervised_tokens": supervised_tokens,
-        "additional_estimated_flops": (
-            6 * model.count_parameters() * max(0, tokens_seen - source_sft_tokens_seen)
-        ),
+        "additional_estimated_flops": 6 * parameter_count * tokens_seen,
+        "compute_budget_flops": compute_budget_flops,
+        "compute_budget_reached": budget_reached,
+        "compute_budget_fraction": compute_spent / compute_budget_flops if compute_budget_flops else None,
         "training_examples": len(train_examples),
         "best_validation_loss": best_val,
         "metrics_path": str(metrics_path),
@@ -583,6 +621,10 @@ def _save_state(
     data_generator_state: torch.Tensor,
     source_sft_checkpoint: str | None,
     training_arm: str,
+    compute_budget_flops: int | None = None,
+    compute_spent_flops: int | None = None,
+    compute_warmup_flops: int = 0,
+    compute_accounting: str | None = None,
 ) -> None:
     save_checkpoint(
         best_path,
@@ -603,6 +645,10 @@ def _save_state(
             "model_config": model_config.__dict__,
             "source_sft_checkpoint": source_sft_checkpoint,
             "training_arm": training_arm,
+            "compute_budget_flops": compute_budget_flops,
+            "compute_spent_flops": compute_spent_flops,
+            "compute_warmup_flops": compute_warmup_flops,
+            "compute_accounting": compute_accounting,
             **({"compatibility": compatibility} if compatibility is not None else {}),
         },
     )
@@ -627,6 +673,9 @@ def _save_inference_state(
     compatibility: dict[str, Any] | None,
     training_arm: str,
     source_sft_checkpoint: str | None,
+    compute_budget_flops: int | None = None,
+    compute_spent_flops: int | None = None,
+    compute_accounting: str | None = None,
 ) -> None:
     save_checkpoint(
         path,
@@ -637,6 +686,9 @@ def _save_inference_state(
             "model_config": model_config.__dict__,
             "training_arm": training_arm,
             "source_sft_checkpoint": source_sft_checkpoint,
+            "compute_budget_flops": compute_budget_flops,
+            "compute_spent_flops": compute_spent_flops,
+            "compute_accounting": compute_accounting,
             **({"compatibility": compatibility} if compatibility is not None else {}),
         },
     )

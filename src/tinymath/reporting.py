@@ -1931,11 +1931,6 @@ def make_exp13_report(
     historical_reference: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[Path]]:
     """Build the Experiment 13 reasoning-v3 versus frozen-baseline table."""
-    experiment_number = (
-        experiment[3:].split("_", 1)[0]
-        if experiment.startswith("exp") and experiment[3:4].isdigit()
-        else "13"
-    )
     report_title = "Baseline vs reasoning-v3 comparison"
     output_dir.mkdir(parents=True, exist_ok=True)
     snapshot = _json_file(baseline_snapshot) or {}
@@ -2054,14 +2049,18 @@ def make_exp13_report(
                 / str(selector or "") / f"seed{seed}"
             )
             training_dir = runs_dir / training_experiment / model / arm / f"seed{seed}"
-            checkpoint_name = "latest.pt" if arm == "grpo" else "best.pt"
+            matched_control = (
+                arm == "continued_sft"
+                and training_experiment.endswith("-compute-matched")
+            )
+            checkpoint_name = "latest.pt" if arm == "grpo" or matched_control else "best.pt"
             checkpoint = training_dir / checkpoint_name
             eval_root = runs_dir / training_experiment / model / "evaluation" / arm / (
-                "latest" if arm == "grpo" else "best"
+                "latest" if arm == "grpo" or matched_control else "best"
             ) / f"seed{seed}"
             result_path = _exp11_result_path(
                 runs_dir, training_experiment, model, arm, seed,
-                "latest" if arm == "grpo" else "best",
+                "latest" if arm == "grpo" or matched_control else "best",
                 expected_checkpoint=checkpoint,
             )
             if result_path is not None:
@@ -2226,17 +2225,55 @@ def make_exp13_report(
             continued_additional_flops = number(control_metrics, "estimated_flops")
         grpo_step = grpo_metrics.get("update")
         control_step = control_metrics.get("optimizer_step")
+        control_budget_flops = number(control_metrics, "compute_budget_flops")
+        control_accounting = control_metrics.get("compute_accounting")
         ratio = (
             continued_additional_flops / grpo_flops
             if grpo_flops and continued_additional_flops else None
         )
-        complete_budgets = grpo_step == "100000" and control_step == "100000"
+        control_budget_fraction = number(control_metrics, "compute_budget_fraction")
+        budget_error = (
+            continued_additional_flops / control_budget_flops - 1
+            if control_budget_flops and continued_additional_flops else None
+        )
+        target_to_grpo_error = (
+            control_budget_flops / grpo_flops - 1
+            if control_budget_flops and grpo_flops else None
+        )
+        control_evaluations = [
+            item for item in rows
+            if item.get("model") == model
+            and item.get("arm") == "continued_sft"
+            and item.get("split") in SPLITS
+        ]
+        evaluation_complete = (
+            len(control_evaluations) == len(SPLITS)
+            and all(item.get("status") == "complete" for item in control_evaluations)
+        )
+        complete_budgets = (
+            grpo_step == "10000"
+            and control_budget_flops is not None
+            and control_accounting == "dense_padded_positions_v1"
+            and control_budget_fraction is not None
+            and control_budget_fraction >= 1.0
+            and control_budget_fraction <= 1.001
+            and budget_error is not None
+            and abs(budget_error) < 0.001
+            and target_to_grpo_error is not None
+            and abs(target_to_grpo_error) < 0.001
+            and evaluation_complete
+        )
         compute_matching[model] = {
             "grpo_step": int(grpo_step) if grpo_step and grpo_step.isdigit() else None,
             "grpo_estimated_flops": grpo_flops,
             "continued_sft_step": int(control_step) if control_step and control_step.isdigit() else None,
             "continued_sft_additional_estimated_flops": continued_additional_flops,
+            "continued_sft_target_estimated_flops": control_budget_flops,
             "continued_sft_to_grpo_flop_ratio": ratio,
+            "budget_error_fraction": budget_error,
+            "target_to_grpo_error_fraction": target_to_grpo_error,
+            "compute_accounting": control_accounting,
+            "evaluation_complete": evaluation_complete,
             "status": "measured" if complete_budgets and ratio is not None else "pending",
         }
 
@@ -2392,16 +2429,21 @@ def make_exp13_report(
         "", "## Evaluation diagnostics", "",
         "Module accuracy, format and trace validity, mean output tokens, cap counts, checkpoint hashes, question identity hashes, and W&B run metadata are recorded per row in `comparison.json` and `comparison.csv`.",
         "", "## Approximate compute matching", "",
-        "Continued-SFT uses effective batch 128. The ratio uses its measured additional FLOPs (or the run-only FLOP estimate for older metrics without that counter); it is marked measured only when GRPO and continued-SFT both reach 100,000 updates.",
-        "", "| Model | GRPO update | GRPO estimated FLOPs | Continued-SFT update | Continued-SFT additional FLOPs | Continued-SFT / GRPO | Status |",
-        "|---|---:|---:|---:|---:|---:|---|",
+        "Continued-SFT uses effective batch 128. Matched controls count padded input positions after initialization using `dense_padded_positions_v1`; source-SFT work is excluded. A matched result is measured only when the GRPO 10,000-update checkpoint is present, the control reaches its recorded FLOP budget with under 0.1% overshoot, and all three fixed-split evaluations are complete.",
+        "", "| Model | GRPO update | GRPO FLOPs | Continued-SFT update | Control target FLOPs | Control achieved FLOPs | Control / GRPO | Budget error | Evaluations | Status |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---|---|",
         *[
             f"| {model} | {values['grpo_step'] or '—'} | {values['grpo_estimated_flops'] or '—'} | "
-            f"{values['continued_sft_step'] or '—'} | {values['continued_sft_additional_estimated_flops'] or '—'} | "
-            f"{values['continued_sft_to_grpo_flop_ratio']:.4f}× | {values['status']} |"
-            if values['continued_sft_to_grpo_flop_ratio'] is not None else
+            f"{values['continued_sft_step'] or '—'} | {values['continued_sft_target_estimated_flops'] or '—'} | "
+            f"{values['continued_sft_additional_estimated_flops'] or '—'} | "
+            f"{values['continued_sft_to_grpo_flop_ratio']:.4f}× | "
+            f"{values['budget_error_fraction'] * 100:+.3f}% | "
+            f"{'complete' if values['evaluation_complete'] else 'pending'} | {values['status']} |"
+            if values['continued_sft_to_grpo_flop_ratio'] is not None and values['budget_error_fraction'] is not None else
             f"| {model} | {values['grpo_step'] or '—'} | {values['grpo_estimated_flops'] or '—'} | "
-            f"{values['continued_sft_step'] or '—'} | {values['continued_sft_additional_estimated_flops'] or '—'} | — | {values['status']} |"
+            f"{values['continued_sft_step'] or '—'} | {values['continued_sft_target_estimated_flops'] or '—'} | "
+            f"{values['continued_sft_additional_estimated_flops'] or '—'} | — | — | "
+            f"{'complete' if values['evaluation_complete'] else 'pending'} | {values['status']} |"
             for model, values in compute_matching.items()
         ],
         "", "## Limitations", "", *[f"- {item}" for item in report["limitations"]], "",

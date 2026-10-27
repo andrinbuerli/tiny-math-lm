@@ -35,10 +35,12 @@ reasoning-v3 protocol.
 *Blue: baseline SFT. Orange: reasoning-v3 SFT. Model size uses a logarithmic
 axis. [Open the vector figure](docs/assets/reasoning-v3-scaling.svg).*
 
-### All reasoning-v3 results
+### Existing reasoning-v3 results
 
 Final-answer accuracy; **bold** marks the best training arm within each row.
 Continued SFT and GRPO start from the same SFT checkpoint for each model size.
+The continued-SFT column below is the historical, unequal-budget run; matched
+continued-SFT controls have not yet completed.
 
 | Model | Evaluation split | SFT | GRPO | Continued SFT |
 |:---|:---|---:|---:|---:|
@@ -73,9 +75,13 @@ protocol in mind. Final-answer correctness also does not establish the validity
 of every intermediate reasoning step.
 
 The additional training budgets are **unequal**: GRPO runs for 10,000 updates;
-continued SFT runs for 100,000 additional optimizer steps. Estimated continued-SFT
-compute is approximately **3.77×, 4.86×, and 5.45×** GRPO compute at 1M, 10M, and
-100M, respectively. The comparison is not a completed compute-matched study.
+the historical continued-SFT runs run for 100,000 updates. Recomputing their
+run-only dense FLOPs from padded positions (without subtracting source-SFT work
+a second time) gives approximately **5.03×, 6.48×, and 7.26×** the GRPO compute
+at 1M, 10M, and 100M, respectively. A new comparison will replace this column
+only after the GRPO-matched controls are trained and evaluated. See the
+[matched-compute plan](docs/compute-matched-continued-sft-plan.md) for budgets,
+stopping criteria, GPU admission limits, and the reporting protocol.
 
 The selected source modules lacked eligible official extrapolation rows at the
 pinned dataset revision. The OOD tests therefore use deterministic held-out

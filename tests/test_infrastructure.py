@@ -242,7 +242,7 @@ def test_experiment_presets_are_contiguously_numbered_and_documented():
     numbered_presets = []
 
     for path in experiment_dir.glob("*.yaml"):
-        if "_report_" in path.stem:
+        if "_report_" in path.stem or "_compute_matched" in path.stem:
             continue
         match = header_pattern.search(path.read_text())
         assert match is not None, f"{path.name} needs an experiment purpose and origin header"

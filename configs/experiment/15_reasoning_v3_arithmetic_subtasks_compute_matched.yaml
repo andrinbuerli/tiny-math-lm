@@ -1,0 +1,117 @@
+# Experiment 15 — GRPO-compute-matched continued-SFT control
+# Origin: Match continued-SFT compute to the completed Experiment 15 GRPO arms.
+# @package _global_
+defaults:
+  - override /trainer: continued_sft
+  - override /rollout: v3_exact
+
+experiment:
+  number: 15
+  name: exp15_reasoning_v3_arithmetic_subtasks-compute-matched
+  title: "Experiment 15 — GRPO-compute-matched continued SFT"
+  baseline: restarted_100k_greedy_restart_2
+  lineage: exp14_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f
+  protocol: reasoning_v3
+  phase: main
+  seed: 18
+  data_budget: 500000
+  ood_examples_per_module: 1000
+  updates: 100000
+  max_steps: 100000
+  run_optimization: true
+  context_length: 512
+
+seed: 18
+data_bundle: data/processed/exp13_reasoning_v3_arithmetic_subtasks-seed18
+
+model:
+  context_length: 512
+
+data:
+  context_length: 512
+
+trainer:
+  name: continued_sft
+  max_steps: 100000
+  compute_budget_flops: ${checkpoint_provenance.compute_budgets_flops.${model.name}}
+
+eval:
+  splits: [test, number_length_ood, expression_length_ood]
+  max_new_tokens: 512
+  batch_size: 64
+  greedy: true
+  temperature: 0.8
+  max_examples_per_split: null
+
+checkpoint_provenance:
+  data_bundle_manifest_sha256: 5d493a0f4c961b84b873036ea1bc93ebb6d01b6f022d7ed81997b094da3a018f
+  annotation_sha256: 97c89724efc407a4b5d5db417e263259b002377e0bff08c0fcfdc22bca04dcad
+  tokenizer_sha256: 1ec41b1dedab822e57e86a3e6ebd54e9a165431fbe1b1ff9622e89dfed57163d
+  accounting_version: dense_padded_positions_v1
+  compute_budgets_flops:
+    1m: 6290593446703104
+    10m: 49035859649187840
+    100m: 434305201066598400
+  fixed_evaluation_question_identity_sha256:
+    test: c19d79c7c8da7dae553af612182bfaacac0548576e2186fca0e89d1e40b60312
+    number_length_ood: 274ba2aa3b15fd7ef8f39c103eb1ca5f944991515e9ee279d7249bf44471f6cb
+    expression_length_ood: 8af8fa3a6c2742882968774a6c7d98be05977279a1958d7292eede1530325fd2
+  source_sft:
+    1m:
+      path: runs/exp14_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f/1m/sft/seed18/best.pt
+      sha256: b730af5b88dd83207e26a90ad77559e81658f6b20e1f713a34f2969234ce888d
+      step: 100000
+      wandb_run_id: 9064cb8cc472b809
+    10m:
+      path: runs/exp14_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f/10m/sft/seed18/best.pt
+      sha256: ab69ec255daca2b004153d1ddf03b271ca17154fdf6e5fe787f310734b208a29
+      step: 100000
+      wandb_run_id: 16d5dedb33cdcebe
+    100m:
+      path: runs/exp14_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f/100m/sft/seed18/best.pt
+      sha256: baae5c80f9a5f5bf4d4009dcdb7c8e168419a908debc78fba38e393e8f7e2589
+      step: 100000
+      wandb_run_id: 2c9d9213cf557e5b
+  grpo_reference:
+    namespace: exp15_reasoning_v3_arithmetic_subtasks
+    updates: 10000
+    estimator: kv_cached_position_v3
+
+init_checkpoint: ${checkpoint_provenance.source_sft.${model.name}.path}
+
+reporting:
+  output_dir: ${paths.root}/reports/exp15_reasoning_v3_arithmetic_subtasks-compute-matched/seed18
+  baseline_snapshot: ${paths.root}/baselines/exp10_restarted_100k_greedy_restart_2/seed18/snapshot.json
+  annotation_bundle_dir: ${paths.root}/data/processed/exp13_reasoning_v3_arithmetic_subtasks-seed18
+  historical_reference:
+    experiment: exp13_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f-eval1k
+    figure: ${paths.root}/docs/assets/exp13-accuracy-comparison.svg
+    source_bundle_manifest_sha256: 5d493a0f4c961b84b873036ea1bc93ebb6d01b6f022d7ed81997b094da3a018f
+  run_namespaces:
+    1m:
+      sft: exp14_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f
+      grpo: exp15_reasoning_v3_arithmetic_subtasks
+      continued_sft: exp15_reasoning_v3_arithmetic_subtasks-compute-matched
+    10m:
+      sft: exp14_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f
+      grpo: exp15_reasoning_v3_arithmetic_subtasks
+      continued_sft: exp15_reasoning_v3_arithmetic_subtasks-compute-matched
+    100m:
+      sft: exp14_reasoning_v3_arithmetic_subtasks-fresh-5d493a0f
+      grpo: exp15_reasoning_v3_arithmetic_subtasks
+      continued_sft: exp15_reasoning_v3_arithmetic_subtasks-compute-matched
+
+tracking:
+  mode: online
+  resume: true
+  group: exp15-compute-matched-${model.name}-continued-sft
+  name: exp15-compute-matched-${model.name}-continued-sft-seed18
+  tags: [exp15, reasoning-v3, compute-matched, "${model.name}", continued-sft]
+
+runtime:
+  parallel_gpu_max_utilization: 60
+  parallel_gpu_min_free_vram_gb: 3
+  parallel_model_vram_gb:
+    1m: 2
+    10m: 4
+    100m: 17

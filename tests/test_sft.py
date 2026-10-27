@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from tinymath.data.char_tokenizer import CharacterTokenizer
@@ -295,9 +296,7 @@ def test_continued_sft_resumes_its_own_checkpoint_and_records_source(workspace_t
     assert first_payload["training_arm"] == "continued_sft"
     assert first_payload["source_sft_checkpoint"] == str(source_checkpoint)
     assert first_payload["source_sft_tokens_seen"] == source_result["tokens_seen"]
-    assert first["additional_estimated_flops"] == 6 * first["parameters"] * (
-        first["tokens_seen"] - source_result["tokens_seen"]
-    )
+    assert first["additional_estimated_flops"] == 6 * first["parameters"] * first["tokens_seen"]
 
     config.trainer.max_steps = 3
     resumed = train_sft(
@@ -311,12 +310,37 @@ def test_continued_sft_resumes_its_own_checkpoint_and_records_source(workspace_t
     assert resumed["step"] == resumed_payload["step"] == 3
     assert resumed_payload["source_sft_checkpoint"] == str(source_checkpoint)
     assert resumed_payload["source_sft_tokens_seen"] == source_result["tokens_seen"]
-    assert resumed["additional_estimated_flops"] == 6 * resumed["parameters"] * (
-        resumed["tokens_seen"] - source_result["tokens_seen"]
-    )
+    assert resumed["additional_estimated_flops"] == 6 * resumed["parameters"] * resumed["tokens_seen"]
     with Path(resumed["metrics_path"]).open(encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
         assert [int(row["optimizer_step"]) for row in rows] == [1, 2, 3]
         assert int(float(rows[-1]["additional_estimated_flops"])) == resumed[
             "additional_estimated_flops"
         ]
+
+    budget_dir = workspace_tmpdir / "continued_sft_budget"
+    config.trainer.compute_budget_flops = 1
+    config.trainer.max_steps = 10
+    config.trainer.save_every = 1000
+    budgeted = train_sft(
+        config=config,
+        bundle_dir=bundle,
+        run_dir=budget_dir,
+        run=run,
+        init_checkpoint=source_checkpoint,
+    )
+    latest = torch.load(budgeted["checkpoint"], map_location="cpu", weights_only=False)
+    inference = torch.load(budgeted["inference_checkpoint"], map_location="cpu", weights_only=False)
+    assert budgeted["step"] == latest["step"] == inference["step"] == 1
+    assert budgeted["compute_budget_reached"] is True
+    assert latest["compute_budget_flops"] == inference["compute_budget_flops"] == 1
+    assert latest["compute_accounting"] == inference["compute_accounting"] == "dense_padded_positions_v1"
+    with pytest.raises(ValueError, match="compute budget does not match"):
+        config.trainer.compute_budget_flops = 2
+        train_sft(
+            config=config,
+            bundle_dir=bundle,
+            run_dir=budget_dir,
+            run=run,
+            init_checkpoint=source_checkpoint,
+        )
