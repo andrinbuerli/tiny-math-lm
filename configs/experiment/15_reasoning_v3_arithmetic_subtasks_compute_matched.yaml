@@ -1,6 +1,6 @@
+# @package _global_
 # Experiment 15 — GRPO-compute-matched continued-SFT control
 # Origin: Match continued-SFT compute to the completed Experiment 15 GRPO arms.
-# @package _global_
 defaults:
   - override /trainer: continued_sft
   - override /rollout: v3_exact

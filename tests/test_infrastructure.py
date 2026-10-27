@@ -53,6 +53,34 @@ def test_hydra_composes_all_experiment_groups_and_overrides():
     assert 'tracking.tags=["pilot", "100m"]' in overrides
 
 
+@pytest.mark.parametrize(
+    ("model", "budget"),
+    [
+        ("1m", 6290593446703104),
+        ("10m", 49035859649187840),
+        ("100m", 434305201066598400),
+    ],
+)
+def test_hydra_composes_compute_matched_continued_sft(model, budget):
+    with initialize_config_dir(
+        version_base="1.3", config_dir=str(Path(__file__).resolve().parents[1] / "configs")
+    ):
+        config = compose(
+            config_name="config",
+            overrides=[
+                f"model={model}",
+                "experiment=15_reasoning_v3_arithmetic_subtasks_compute_matched",
+            ],
+        )
+    assert config.experiment.name == "exp15_reasoning_v3_arithmetic_subtasks-compute-matched"
+    assert config.trainer.name == "continued_sft"
+    assert config.trainer.compute_budget_flops == budget
+    assert config.seed == 18
+    assert config.data_bundle == "data/processed/exp13_reasoning_v3_arithmetic_subtasks-seed18"
+    assert config.init_checkpoint.endswith(f"/{model}/sft/seed18/best.pt")
+    assert config.eval.splits == ["test", "number_length_ood", "expression_length_ood"]
+
+
 def test_parallel_gpu_admission_requires_utilization_and_vram_headroom():
     with initialize_config_dir(version_base="1.3", config_dir=str(Path(__file__).resolve().parents[1] / "configs")):
         config = compose(config_name="config")
