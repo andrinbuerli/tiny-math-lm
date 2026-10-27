@@ -54,11 +54,13 @@ continued-SFT controls have not yet completed.
 | 100M | Number-length OOD | **76.88%** | 76.72% | 71.60% |
 | 100M | Expression-length OOD | **63.90%** | 60.55% | 57.25% |
 
-**Additional training has different effects at different sizes.** Continued SFT
-leads at 1M, including a 13.45-point improvement over SFT on expression-length
-OOD. GRPO leads on all three splits at 10M, although its test gain over SFT is
-only 0.22 points. At 100M, SFT remains strongest on every split; neither
-additional training arm improves its accuracy in this run.
+**In these historical, unequal-budget runs, additional training has different
+effects at different sizes.** Continued SFT leads at 1M, including a 13.45-point
+improvement over SFT on expression-length OOD. GRPO leads on all three splits
+at 10M, although its test gain over SFT is only 0.22 points. At 100M, SFT
+remains strongest on every split; neither additional training arm improves its
+accuracy in this run. These per-arm outcomes are descriptive until the matched
+compute continued-SFT controls have been evaluated.
 
 [![Accuracy changes from SFT for GRPO and continued SFT, shown separately for test and both OOD splits. Both help the 1M model, GRPO makes small gains at 10M, and both reduce accuracy at 100M.](docs/assets/reasoning-v3-training-gains.png)](docs/assets/reasoning-v3-training-gains.svg)
 
