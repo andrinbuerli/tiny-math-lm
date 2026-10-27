@@ -50,6 +50,7 @@ def save_figure(fig: plt.Figure, stem: str) -> None:
 
 def main() -> None:
     snapshot = json.loads((ROOT / "docs/results/reasoning-v3-seed18.json").read_text())
+    training = snapshot.get("training", {})
     rows = snapshot["measurements"]
     lookup = {(row["model"], row["arm"], row["split"]): row for row in rows}
     expected = {
@@ -153,7 +154,13 @@ def main() -> None:
     fig.legend(
         handles=[
             Patch(facecolor=ORANGE, label="GRPO · 10,000 updates"),
-            Patch(facecolor=TEAL, label="Continued SFT · 100,000 additional steps"),
+            Patch(
+                facecolor=TEAL,
+                label=training.get(
+                    "continued_sft_display_label",
+                    "Continued SFT · 100,000 additional steps",
+                ),
+            ),
         ],
         loc="upper left",
         bbox_to_anchor=(0.054, 0.84),
@@ -202,7 +209,10 @@ def main() -> None:
     fig.text(
         0.06,
         0.07,
-        "Additional compute budgets differ. These are descriptive changes; a single seed gives no estimate of seed variability.",
+        training.get(
+            "continued_sft_plot_note",
+            "Additional compute budgets differ. These are descriptive changes; a single seed gives no estimate of seed variability.",
+        ),
         fontsize=9,
         color=MUTED,
     )

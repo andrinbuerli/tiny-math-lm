@@ -77,7 +77,7 @@ protocol in mind. Final-answer correctness also does not establish the validity
 of every intermediate reasoning step.
 
 The additional training budgets are **unequal**: GRPO runs for 10,000 updates;
-the historical continued-SFT runs run for 100,000 updates. Recomputing their
+the historical continued-SFT arm runs for 100,000 updates. Recomputing its
 run-only dense FLOPs from padded positions (without subtracting source-SFT work
 a second time) gives approximately **5.03×, 6.48×, and 7.26×** the GRPO compute
 at 1M, 10M, and 100M, respectively. A new comparison will replace this column
@@ -94,7 +94,9 @@ All displayed values and figure inputs are available in the versioned
 [result snapshot](docs/results/reasoning-v3-seed18.json), including checkpoint
 hashes, evaluation run IDs, and question-population hashes. The figures combine
 verified existing SFT/continued-SFT evaluations with the completed GRPO
-evaluations; comparison arms were reused without retraining.
+evaluations; comparison arms were reused without retraining. The exact snapshot
+for this historical unequal-budget comparison is preserved at
+[reasoning-v3-seed18-unequal-budget.json](docs/results/reasoning-v3-seed18-unequal-budget.json).
 
 ## How it works
 
