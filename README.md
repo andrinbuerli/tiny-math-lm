@@ -38,31 +38,30 @@ axis. [Open the vector figure](docs/assets/reasoning-v3-scaling.svg).*
 ### Existing reasoning-v3 results
 
 Final-answer accuracy; **bold** marks the best training arm within each row.
-Continued SFT and GRPO start from the same SFT checkpoint for each model size.
-The continued-SFT column below is the historical, unequal-budget run; matched
-continued-SFT controls have not yet completed.
+Continued SFT and GRPO start from the same original SFT checkpoint for each
+model size. The continued-SFT results below use new controls whose estimated
+training FLOPs match the corresponding completed GRPO run.
 
-| Model | Evaluation split | SFT | GRPO | Continued SFT |
+| Model | Evaluation split | SFT | GRPO | Continued SFT, GRPO-matched compute |
 |:---|:---|---:|---:|---:|
-| 1M | Test | 65.76% | 69.02% | **77.17%** |
-| 1M | Number-length OOD | 51.60% | 57.08% | **57.18%** |
-| 1M | Expression-length OOD | 15.25% | 16.30% | **28.70%** |
-| 10M | Test | 86.98% | **87.20%** | 86.97% |
-| 10M | Number-length OOD | 68.34% | **71.28%** | 67.48% |
-| 10M | Expression-length OOD | 47.35% | **47.90%** | 47.05% |
-| 100M | Test | **91.88%** | 91.10% | 89.92% |
-| 100M | Number-length OOD | **76.88%** | 76.72% | 71.60% |
-| 100M | Expression-length OOD | **63.90%** | 60.55% | 57.25% |
+| 1M | Test | 65.76% | 69.02% | **69.49%** |
+| 1M | Number-length OOD | 51.60% | **57.08%** | 53.20% |
+| 1M | Expression-length OOD | 15.25% | 16.30% | **19.70%** |
+| 10M | Test | 86.98% | 87.20% | **88.41%** |
+| 10M | Number-length OOD | 68.34% | **71.28%** | 70.24% |
+| 10M | Expression-length OOD | 47.35% | 47.90% | **49.80%** |
+| 100M | Test | 91.88% | 91.10% | **92.98%** |
+| 100M | Number-length OOD | 76.88% | 76.72% | **78.92%** |
+| 100M | Expression-length OOD | 63.90% | 60.55% | **68.30%** |
 
-**In these historical, unequal-budget runs, additional training has different
-effects at different sizes.** Continued SFT leads at 1M, including a 13.45-point
-improvement over SFT on expression-length OOD. GRPO leads on all three splits
-at 10M, although its test gain over SFT is only 0.22 points. At 100M, SFT
-remains strongest on every split; neither additional training arm improves its
-accuracy in this run. These per-arm outcomes are descriptive until the matched
-compute continued-SFT controls have been evaluated.
+**At matched estimated training compute, continued SFT has the highest accuracy
+in seven of the nine model-size and split comparisons.** It leads on test and
+expression-length OOD at 1M and 10M, and on all three splits at 100M. GRPO
+remains strongest on number-length OOD at 1M and 10M. Continued SFT improves on
+the SFT result in all nine comparisons, including the two number-length OOD
+cases where GRPO is still higher. These are single-seed measurements.
 
-[![Accuracy changes from SFT for GRPO and continued SFT, shown separately for test and both OOD splits. Both help the 1M model, GRPO makes small gains at 10M, and both reduce accuracy at 100M.](docs/assets/reasoning-v3-training-gains.png)](docs/assets/reasoning-v3-training-gains.svg)
+[![Accuracy changes from SFT for GRPO and GRPO-matched-compute continued SFT, shown separately for test and both OOD splits. Continued SFT improves over SFT on all splits at each model size.](docs/assets/reasoning-v3-training-gains.png)](docs/assets/reasoning-v3-training-gains.svg)
 
 *Each bar is a change from that model's reasoning-v3 SFT accuracy; zero means
 no change. [Open the vector figure](docs/assets/reasoning-v3-training-gains.svg).*
@@ -76,14 +75,23 @@ component causes the gains, and assisted accuracy should be read with that
 protocol in mind. Final-answer correctness also does not establish the validity
 of every intermediate reasoning step.
 
-The additional training budgets are **unequal**: GRPO runs for 10,000 updates;
-the historical continued-SFT arm runs for 100,000 updates. Recomputing its
-run-only dense FLOPs from padded positions (without subtracting source-SFT work
-a second time) gives approximately **5.03×, 6.48×, and 7.26×** the GRPO compute
-at 1M, 10M, and 100M, respectively. A new comparison will replace this column
-only after the GRPO-matched controls are trained and evaluated. See the
+Continued SFT starts from the original SFT weights and matches the completed
+10,000-update GRPO runs by estimated training FLOPs. It stops at the first
+complete optimizer update that reaches the budget, with less than 0.1% overshoot.
+The comparison uses `dense_padded_positions_v1`, which counts padded input
+positions after initialization and excludes source-SFT work.
+
+| Model | GRPO updates | Continued-SFT updates | Target FLOPs | Achieved FLOPs | Control / GRPO |
+|:---|---:|---:|---:|---:|---:|
+| 1M | 10,000 | 19,863 | 6.290593 × 10¹⁵ | 6.290840 × 10¹⁵ | 1.00004× |
+| 10M | 10,000 | 15,425 | 4.903586 × 10¹⁶ | 4.903821 × 10¹⁶ | 1.00005× |
+| 100M | 10,000 | 13,757 | 4.343052 × 10¹⁷ | 4.343255 × 10¹⁷ | 1.00005× |
+
+These FLOP values are estimates from the repository's dense model-cost
+estimator, not hardware-counter measurements. The compute match does not remove
+the single-seed, assisted-protocol, or controlled-OOD limitations. See the
 [matched-compute plan](docs/compute-matched-continued-sft-plan.md) for budgets,
-stopping criteria, GPU admission limits, and the reporting protocol.
+stopping criteria, and the reporting protocol.
 
 The selected source modules lacked eligible official extrapolation rows at the
 pinned dataset revision. The OOD tests therefore use deterministic held-out
@@ -91,11 +99,12 @@ pools with documented difficulty thresholds. See the
 [data and OOD protocol](docs/USAGE.md#data-and-ood-protocol-note).
 
 All displayed values and figure inputs are available in the versioned
-[result snapshot](docs/results/reasoning-v3-seed18.json), including checkpoint
-hashes, evaluation run IDs, and question-population hashes. The figures combine
-verified existing SFT/continued-SFT evaluations with the completed GRPO
-evaluations; comparison arms were reused without retraining. The exact snapshot
-for this historical unequal-budget comparison is preserved at
+[result snapshot](docs/results/reasoning-v3-seed18.json), including per-module
+metrics, checkpoint hashes, evaluation run IDs, and question-population hashes.
+The SFT scaling plot is unchanged; the additional-training plot shows the
+GRPO-matched controls, and the snapshot records their measured update counts.
+The exact snapshot for the earlier historical unequal-budget comparison is
+preserved at
 [reasoning-v3-seed18-unequal-budget.json](docs/results/reasoning-v3-seed18-unequal-budget.json).
 
 ## How it works
