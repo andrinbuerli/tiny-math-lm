@@ -17,6 +17,7 @@ htmlcov/
 wandb/
 
 # Downloaded data and generated run artifacts
+/baselines/
 /data/raw/
 /data/processed/
 /data/cache/
