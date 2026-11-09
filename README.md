@@ -178,7 +178,8 @@ export WANDB_ENTITY=your-wandb-entity
 ```
 
 Experiment runs use W&B. Supply `WANDB_API_KEY` through the environment or an
-ignored `/workspace/.env` file; experiment entry points load it at runtime.
+ignored `/workspace/.env` file; use [.env.example](.env.example) as a template.
+Experiment entry points load the file at runtime.
 Keep credentials out of Hydra overrides and version control. Documentation,
 figure rendering, and tests need no W&B connection.
 
