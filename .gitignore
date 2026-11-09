@@ -32,3 +32,5 @@ wandb/
 .DS_Store
 *.swp
 *.tmp
+
+.codex-docker-home
