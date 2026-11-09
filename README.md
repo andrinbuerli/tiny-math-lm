@@ -1,8 +1,8 @@
-# TinyMath-RL
+# Tiny Math Lab
 
 **Small models. Character-level mathematics. Verifiable learning.**
 
-TinyMath-RL explores how much arithmetic a small language model can learn—and
+Tiny Math Lab explores how much arithmetic a small language model can learn—and
 whether reinforcement learning helps it generalize. It trains decoder-only
 Transformers from scratch at **1M, 10M, and 100M parameters**, then compares
 supervised fine-tuning (SFT), Group Relative Policy Optimization (GRPO), and
