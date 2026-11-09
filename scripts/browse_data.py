@@ -10,8 +10,8 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-from tinymath.data.browser import count_example_tokens, discover_bundles, read_jsonl
-from tinymath.data.trace_explanations import TRACE_KEY, transcribe_scratchpad
+from tiny_math_lm.data.browser import count_example_tokens, discover_bundles, read_jsonl
+from tiny_math_lm.data.trace_explanations import TRACE_KEY, transcribe_scratchpad
 
 SPLIT_LABELS = {
     "sft_train": "SFT train",
@@ -64,7 +64,7 @@ def main() -> None:
     bundle = bundle_by_name[selected_bundle]
     tokenizer_path = bundle / "char_tokenizer.json"
     try:
-        from tinymath.data.char_tokenizer import CharacterTokenizer
+        from tiny_math_lm.data.char_tokenizer import CharacterTokenizer
 
         tokenizer = CharacterTokenizer.load(tokenizer_path)
     except (OSError, ValueError, KeyError) as exc:

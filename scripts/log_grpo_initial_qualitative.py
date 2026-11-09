@@ -11,16 +11,16 @@ import hydra
 import torch
 from omegaconf import DictConfig
 
-from tinymath.checkpoint import sha256_file
-from tinymath.config import workspace_path
-from tinymath.data.char_tokenizer import CharacterTokenizer
-from tinymath.data.load import SELECTED_MODULES
-from tinymath.eval.qualitative import build_qualitative_table
-from tinymath.generation import RolloutConfig
-from tinymath.model.gpt import GPTConfig, TinyMathGPT
-from tinymath.tracking.provenance import read_wandb_run_id
-from tinymath.tracking.wandb import finish_wandb, initialize_tracked_run
-from tinymath.train.runner import read_jsonl
+from tiny_math_lm.checkpoint import sha256_file
+from tiny_math_lm.config import workspace_path
+from tiny_math_lm.data.char_tokenizer import CharacterTokenizer
+from tiny_math_lm.data.load import SELECTED_MODULES
+from tiny_math_lm.eval.qualitative import build_qualitative_table
+from tiny_math_lm.generation import RolloutConfig
+from tiny_math_lm.model.gpt import GPTConfig, TinyMathGPT
+from tiny_math_lm.tracking.provenance import read_wandb_run_id
+from tiny_math_lm.tracking.wandb import finish_wandb, initialize_tracked_run
+from tiny_math_lm.train.runner import read_jsonl
 
 LOGGER = logging.getLogger(__name__)
 

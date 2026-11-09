@@ -6,11 +6,11 @@ from types import SimpleNamespace
 
 import torch
 
-from tinymath.data.char_tokenizer import CharacterTokenizer
-from tinymath.data.prompts import format_completion, format_prompt
-from tinymath.eval.evaluate import evaluate_checkpoint
-from tinymath.train import grpo_runner, runner
-from tinymath.train.grpo import Rollouts
+from tiny_math_lm.data.char_tokenizer import CharacterTokenizer
+from tiny_math_lm.data.prompts import format_completion, format_prompt
+from tiny_math_lm.eval.evaluate import evaluate_checkpoint
+from tiny_math_lm.train import grpo_runner, runner
+from tiny_math_lm.train.grpo import Rollouts
 
 
 def test_sft_grpo_checkpoint_evaluation_pipeline(workspace_tmpdir, monkeypatch):

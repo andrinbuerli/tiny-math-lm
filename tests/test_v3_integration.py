@@ -9,14 +9,14 @@ import pytest
 import torch
 from hydra import compose, initialize_config_dir
 
-from tinymath.checkpoint import compatibility_metadata, save_checkpoint, sha256_file
-from tinymath.data.char_tokenizer import CharacterTokenizer
-from tinymath.eval import evaluate as evaluation
-from tinymath.eval.qualitative import build_qualitative_table
-from tinymath.generation import RolloutConfig, Rollouts, generate_rollouts
-from tinymath.model.gpt import GPTConfig, TinyMathGPT
-from tinymath.repro import seed_everything
-from tinymath.train import grpo_runner
+from tiny_math_lm.checkpoint import compatibility_metadata, save_checkpoint, sha256_file
+from tiny_math_lm.data.char_tokenizer import CharacterTokenizer
+from tiny_math_lm.eval import evaluate as evaluation
+from tiny_math_lm.eval.qualitative import build_qualitative_table
+from tiny_math_lm.generation import RolloutConfig, Rollouts, generate_rollouts
+from tiny_math_lm.model.gpt import GPTConfig, TinyMathGPT
+from tiny_math_lm.repro import seed_everything
+from tiny_math_lm.train import grpo_runner
 
 GOOD = "<scp>\nstep:evaluate arithmetic operations in expression order\ncall:add(1,2) -> 3\nstep:+(3,0)\n</scp>\nA: 3"
 WRONG = GOOD[:-1] + "4"
@@ -149,7 +149,7 @@ def test_evaluation_and_qualitative_share_scoring_and_parent_population(v3_setup
     assert evaluation.evaluate_checkpoint(**kwargs) == summary
     with pytest.raises(ValueError, match="progress"):
         evaluation.evaluate_checkpoint(**{**kwargs, "rollout": RolloutConfig()})
-    from tinymath.eval import qualitative
+    from tiny_math_lm.eval import qualitative
     monkeypatch.setattr(qualitative, "generate_rollouts", controlled_rollouts)
     reference_trace = "step:+(1,2)\n=>3\n+(3,0)"
     parent = {"question": "Calculate (1 + 2) + 0.", "answer": "3", "module": "arithmetic__mixed",

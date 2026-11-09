@@ -14,18 +14,18 @@ from typing import Any
 import hydra
 from omegaconf import DictConfig
 
-from tinymath.config import workspace_path
-from tinymath.data.char_tokenizer import CharacterTokenizer
-from tinymath.data.prompts import format_prompt
-from tinymath.data.reasoning import (
+from tiny_math_lm.config import workspace_path
+from tiny_math_lm.data.char_tokenizer import CharacterTokenizer
+from tiny_math_lm.data.prompts import format_prompt
+from tiny_math_lm.data.reasoning import (
     DELEGATION_POLICY,
     SUBTASK_SCHEMA_VERSION,
     annotate_row,
     distribution,
     verify_annotation,
 )
-from tinymath.data.reasoning_v3_bundle import build_reasoning_v3_bundle
-from tinymath.tracking.wandb import finish_wandb, initialize_wandb
+from tiny_math_lm.data.reasoning_v3_bundle import build_reasoning_v3_bundle
+from tiny_math_lm.tracking.wandb import finish_wandb, initialize_wandb
 
 LOGGER = logging.getLogger(__name__)
 

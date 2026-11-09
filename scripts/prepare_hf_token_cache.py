@@ -12,10 +12,10 @@ from huggingface_hub import hf_hub_download
 from omegaconf import DictConfig, OmegaConf
 from transformers import AutoTokenizer
 
-from tinymath.config import workspace_path
-from tinymath.data.hf_reasoning import sha256_file, validate_source_bundle
-from tinymath.data.hf_token_cache import prepare_hf_token_cache
-from tinymath.tracking.wandb import finish_wandb, initialize_tracked_run
+from tiny_math_lm.config import workspace_path
+from tiny_math_lm.data.hf_reasoning import sha256_file, validate_source_bundle
+from tiny_math_lm.data.hf_token_cache import prepare_hf_token_cache
+from tiny_math_lm.tracking.wandb import finish_wandb, initialize_tracked_run
 
 LOGGER = logging.getLogger(__name__)
 

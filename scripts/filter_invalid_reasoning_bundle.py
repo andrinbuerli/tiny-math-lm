@@ -13,8 +13,8 @@ from typing import Any
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
-from tinymath.config import workspace_path
-from tinymath.data.reasoning import verify_annotation
+from tiny_math_lm.config import workspace_path
+from tiny_math_lm.data.reasoning import verify_annotation
 
 LOGGER = logging.getLogger(__name__)
 

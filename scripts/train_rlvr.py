@@ -10,14 +10,14 @@ from pathlib import Path
 import hydra
 from omegaconf import DictConfig
 
-from tinymath.config import workspace_path
-from tinymath.data.load import SELECTED_MODULES
-from tinymath.runtime_gpu import wait_for_gpu_capacity
-from tinymath.tracking.provenance import read_wandb_run_id
-from tinymath.tracking.wandb import finish_wandb, initialize_tracked_run
-from tinymath.train.budgets import isolated_training_run_dir
-from tinymath.train.grpo_runner import train_grpo
-from tinymath.train.hf_grpo_runner import train_hf_grpo
+from tiny_math_lm.config import workspace_path
+from tiny_math_lm.data.load import SELECTED_MODULES
+from tiny_math_lm.runtime_gpu import wait_for_gpu_capacity
+from tiny_math_lm.tracking.provenance import read_wandb_run_id
+from tiny_math_lm.tracking.wandb import finish_wandb, initialize_tracked_run
+from tiny_math_lm.train.budgets import isolated_training_run_dir
+from tiny_math_lm.train.grpo_runner import train_grpo
+from tiny_math_lm.train.hf_grpo_runner import train_hf_grpo
 
 LOGGER = logging.getLogger(__name__)
 

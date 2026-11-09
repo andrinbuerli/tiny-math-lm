@@ -4,11 +4,11 @@ import json
 
 import pytest
 
-from tinymath.checkpoint import save_checkpoint
-from tinymath.data.char_tokenizer import CharacterTokenizer
-from tinymath.data.prompts import format_prompt
-from tinymath.eval.evaluate import _balanced_limit, evaluate_checkpoint
-from tinymath.model.gpt import GPTConfig, TinyMathGPT
+from tiny_math_lm.checkpoint import save_checkpoint
+from tiny_math_lm.data.char_tokenizer import CharacterTokenizer
+from tiny_math_lm.data.prompts import format_prompt
+from tiny_math_lm.eval.evaluate import _balanced_limit, evaluate_checkpoint
+from tiny_math_lm.model.gpt import GPTConfig, TinyMathGPT
 
 
 @pytest.mark.parametrize(

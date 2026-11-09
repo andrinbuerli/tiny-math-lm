@@ -6,15 +6,15 @@ import json
 import pytest
 import torch
 
-from tinymath.checkpoint import (
+from tiny_math_lm.checkpoint import (
     compatibility_metadata,
     save_checkpoint,
     validate_checkpoint_compatibility,
 )
-from tinymath.data.char_tokenizer import CharacterTokenizer
-from tinymath.data.prompts import format_prompt
-from tinymath.eval.evaluate import evaluate_checkpoint
-from tinymath.model.gpt import GPTConfig, TinyMathGPT
+from tiny_math_lm.data.char_tokenizer import CharacterTokenizer
+from tiny_math_lm.data.prompts import format_prompt
+from tiny_math_lm.eval.evaluate import evaluate_checkpoint
+from tiny_math_lm.model.gpt import GPTConfig, TinyMathGPT
 
 
 def _reasoning_fixture(workspace_tmpdir, questions=("1 + 1", "2 + 2")):

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from tinymath.model.gpt import GPTConfig, TinyMathGPT
+from tiny_math_lm.model.gpt import GPTConfig, TinyMathGPT
 
 
 def test_model_forward_generation_and_tied_embeddings():

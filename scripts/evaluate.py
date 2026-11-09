@@ -11,15 +11,15 @@ import hydra
 import torch
 from omegaconf import DictConfig
 
-from tinymath.checkpoint import sha256_file
-from tinymath.config import workspace_path
-from tinymath.data.load import SELECTED_MODULES
-from tinymath.eval.evaluate import evaluate_checkpoint
-from tinymath.eval.hf_evaluate import evaluate_hf_checkpoint
-from tinymath.generation import RolloutConfig
-from tinymath.runtime_gpu import wait_for_gpu_capacity
-from tinymath.tracking.provenance import read_wandb_run_id
-from tinymath.tracking.wandb import finish_wandb, initialize_tracked_run
+from tiny_math_lm.checkpoint import sha256_file
+from tiny_math_lm.config import workspace_path
+from tiny_math_lm.data.load import SELECTED_MODULES
+from tiny_math_lm.eval.evaluate import evaluate_checkpoint
+from tiny_math_lm.eval.hf_evaluate import evaluate_hf_checkpoint
+from tiny_math_lm.generation import RolloutConfig
+from tiny_math_lm.runtime_gpu import wait_for_gpu_capacity
+from tiny_math_lm.tracking.provenance import read_wandb_run_id
+from tiny_math_lm.tracking.wandb import finish_wandb, initialize_tracked_run
 
 LOGGER = logging.getLogger(__name__)
 

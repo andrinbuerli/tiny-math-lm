@@ -1,5 +1,5 @@
-from tinymath.generation import RolloutConfig
-from tinymath.train.grpo_runner import _prompt_buckets
+from tiny_math_lm.generation import RolloutConfig
+from tiny_math_lm.train.grpo_runner import _prompt_buckets
 
 
 def test_left_padding_is_default_and_old_rollout_config_stays_legacy():

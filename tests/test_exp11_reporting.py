@@ -4,7 +4,7 @@ import csv
 import hashlib
 import json
 
-from tinymath.reporting import _exp11_state, make_exp11_report
+from tiny_math_lm.reporting import _exp11_state, make_exp11_report
 
 
 def _snapshot(path, *, measurements=None, missing=None):

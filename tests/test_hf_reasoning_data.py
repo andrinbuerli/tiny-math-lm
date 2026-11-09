@@ -3,8 +3,8 @@ import json
 import pytest
 import torch
 
-from tinymath.data.hf_cached_dataset import HFTokenSplit
-from tinymath.data.hf_reasoning import (
+from tiny_math_lm.data.hf_cached_dataset import HFTokenSplit
+from tiny_math_lm.data.hf_reasoning import (
     encode_completion,
     identity_hash,
     parse_native_reasoning,
@@ -14,7 +14,7 @@ from tinymath.data.hf_reasoning import (
     select_parent_rows,
     select_training_rows,
 )
-from tinymath.data.hf_token_cache import _write_split
+from tiny_math_lm.data.hf_token_cache import _write_split
 
 
 class FakeTokenizer:

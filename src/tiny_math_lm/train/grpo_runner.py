@@ -1,0 +1,697 @@
+"""End-to-end GRPO updates over the fixed disjoint RLVR prompt pool."""
+
+from __future__ import annotations
+
+import csv
+import json
+import logging
+import random
+import time
+from collections import Counter
+from pathlib import Path
+from typing import Any
+
+import torch
+
+from tiny_math_lm.checkpoint import (
+    capture_rng_state,
+    compatibility_metadata,
+    restore_rng_state,
+    save_checkpoint,
+    sha256_file,
+    validate_checkpoint_compatibility,
+)
+from tiny_math_lm.data.char_tokenizer import CharacterTokenizer
+from tiny_math_lm.data.completions import parse_reasoning_completion
+from tiny_math_lm.data.prompts import format_prompt
+from tiny_math_lm.data.trace_explanations import transcribe_scratchpad
+from tiny_math_lm.eval.qualitative import build_qualitative_table
+from tiny_math_lm.generation import RolloutConfig, Rollouts
+from tiny_math_lm.model.gpt import GPTConfig, TinyMathGPT
+from tiny_math_lm.rewards.reasoning import score_v3
+from tiny_math_lm.rewards.verify import verify_answer
+from tiny_math_lm.train.budgets import budget_rows
+from tiny_math_lm.train.grpo import (
+    completion_log_probs,
+    group_outcome_rates,
+    group_relative_advantages,
+    grpo_objective,
+    sample_group_rollouts,
+)
+from tiny_math_lm.train.metrics import elapsed_seconds_through_step, truncate_csv_after_step
+
+CALL_FAILURES = (
+    "disallowed_call",
+    "malformed_request", "scalar_limit", "noncanonical_operand", "division_by_zero",
+    "incorrect_call_result", "call_limit", "unencodable_result",
+)
+LOGGER = logging.getLogger(__name__)
+
+
+def _rollout_semantics_identity(config: Any) -> dict[str, Any]:
+    identity = RolloutConfig.from_config(config).identity()
+    identity.pop("sampler_version")
+    identity.pop("prompt_batching")
+    return identity
+
+
+def _prompt_buckets(
+    prompt_lengths: list[int], *, max_completion_tokens: int,
+    context_length: int, strategy: str,
+) -> list[list[int]]:
+    if strategy not in {"left_pad", "exact_length"}:
+        raise ValueError("prompt_batching must be left_pad or exact_length")
+    buckets: dict[int, list[int]] = {}
+    if strategy == "left_pad":
+        for length in prompt_lengths:
+            if context_length - length < 1:
+                raise ValueError("Prepared RLVR prompt leaves no room for a completion")
+        return [list(range(len(prompt_lengths)))] if prompt_lengths else []
+    for index, length in enumerate(prompt_lengths):
+        room = context_length - length
+        if room < 1:
+            raise ValueError("Prepared RLVR prompt leaves no room for a completion")
+        key = length
+        buckets.setdefault(key, []).append(index)
+    return list(buckets.values())
+
+def _load_rows(path: Path) -> list[dict[str, str]]:
+    with path.open(encoding="utf-8") as handle:
+        return [json.loads(line) for line in handle if line.strip()]
+
+
+def _score_completion(
+    token_ids: list[int], tokenizer: CharacterTokenizer, row: dict[str, str]
+) -> tuple[float, bool, str | None, bool | None, bool | None]:
+    """Return reward, answer validity, trace, reference match, and trace validity."""
+    if tokenizer.protocol in {"reasoning_v3", "reasoning_v4"}:
+        score = score_v3(token_ids, tokenizer, row)
+        return score.reward, score.format_valid, score.scratchpad, score.reference_match, score.trace_valid
+    if tokenizer.protocol in {"reasoning_v1", "reasoning_v2"}:
+        try:
+            parsed = parse_reasoning_completion(token_ids, tokenizer)
+        except ValueError:
+            return False, False, None, False, False
+        try:
+            trace_valid = bool(
+                transcribe_scratchpad(parsed.scratchpad, version=tokenizer.protocol)
+            )
+        except ValueError:
+            trace_valid = False
+        correct, valid = verify_answer(parsed.answer, row["answer"], question=row["question"])
+        reference_match = parsed.scratchpad == row.get("scratchpad")
+        return correct and valid and trace_valid, valid, parsed.scratchpad, reference_match, trace_valid
+    text = tokenizer.decode(token_ids, skip_special=True).strip()
+    correct, valid = verify_answer(text, row["answer"], question=row["question"])
+    return correct and valid, valid, None, None, None
+
+
+def train_grpo(
+    *,
+    config: Any,
+    bundle_dir: Path,
+    init_checkpoint: Path,
+    run_dir: Path,
+    run: Any,
+) -> dict[str, Any]:
+    if not init_checkpoint.is_file():
+        raise FileNotFoundError(f"SFT initialization checkpoint not found: {init_checkpoint}")
+    tokenizer = CharacterTokenizer.load(bundle_dir / "char_tokenizer.json")
+    rollout_config = RolloutConfig.from_config(getattr(config, "rollout", None))
+    rollout_identity = rollout_config.identity()
+    if rollout_config.executor == "exact" and tokenizer.protocol not in {"reasoning_v3", "reasoning_v4"}:
+        raise ValueError("Exact call execution requires reasoning_v3 or reasoning_v4")
+    if tokenizer.protocol in {"reasoning_v3", "reasoning_v4"} and hasattr(run, "config"):
+        run.config.update({"rollout": rollout_identity}, allow_val_change=True)
+    prompts = [row for row in _load_rows(bundle_dir / "rlvr.jsonl") if not row.get("is_sub_task", False)]
+    experiment = getattr(config, "experiment", {})
+    if (
+        int(experiment.get("number", 0) or 0) == 11
+        and str(experiment.get("phase", "main")) in {"smoke", "pilot"}
+    ):
+        prompts = budget_rows(
+            prompts,
+            examples=int(experiment.get("data_budget", 0)),
+            seed=int(config.seed),
+        )
+    if not prompts:
+        raise ValueError("RLVR prompt pool is empty")
+    initial = torch.load(init_checkpoint, map_location="cpu", weights_only=False)
+    if initial.get("tokenizer_sha256") != tokenizer.sha256:
+        raise ValueError("SFT checkpoint tokenizer does not match the RLVR data bundle")
+    model_config = GPTConfig.from_mapping(initial["model_config"])
+    manifest_path = bundle_dir / "manifest.json"
+    compatibility = None
+    if manifest_path.is_file():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if int(manifest.get("context_length", model_config.context_length)) != model_config.context_length:
+            raise ValueError("Model context length does not match the RLVR data bundle")
+        compatibility = compatibility_metadata(
+            protocol=tokenizer.protocol,
+            annotation_sha256=(manifest.get("annotation") or {}).get("annotation_sha256"),
+            tokenizer_sha256=tokenizer.sha256,
+            bundle_sha256=sha256_file(manifest_path),
+            context_length=model_config.context_length,
+        )
+    elif tokenizer.protocol != "answer_only":
+        raise ValueError("Reasoning GRPO requires a provenance-bearing annotated bundle")
+    if compatibility is not None:
+        validate_checkpoint_compatibility(
+            initial,
+            compatibility,
+            allow_legacy_answer_only=(tokenizer.protocol == "answer_only"),
+        )
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = TinyMathGPT(model_config).to(device)
+    model.load_state_dict(initial["model"])
+    use_bf16 = bool(config.trainer.bf16 and device.type == "cuda")
+    reference: TinyMathGPT | None = None
+    if float(config.rlvr.kl_coefficient) > 0:
+        reference = TinyMathGPT(model_config).to(device)
+        reference.load_state_dict(initial["model"])
+        reference.eval()
+        reference.requires_grad_(False)
+
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=float(config.rlvr.learning_rate),
+        weight_decay=float(config.trainer.weight_decay),
+    )
+    run_dir.mkdir(parents=True, exist_ok=True)
+    latest_path = run_dir / "latest.pt"
+    start_update = 0
+    tokens_seen = 0
+    examples_drawn = 0
+    policy_tokens_seen = executor_tokens_seen = 0
+    reward_mean = 0.0
+    nonpadding_input_tokens = 0
+    padded_compute_positions = 0
+    estimated_flops_seen = 0
+    parameter_count = model.count_parameters()
+    if hasattr(run, "config"):
+        run.config.update({"model_parameters": parameter_count}, allow_val_change=True)
+    if latest_path.exists():
+        resumed = torch.load(latest_path, map_location="cpu", weights_only=False)
+        if resumed.get("tokenizer_sha256") != tokenizer.sha256:
+            raise ValueError("GRPO checkpoint tokenizer does not match the RLVR data bundle")
+        if compatibility is not None:
+            validate_checkpoint_compatibility(
+                resumed,
+                compatibility,
+                allow_legacy_answer_only=(tokenizer.protocol == "answer_only"),
+            )
+        if tokenizer.protocol in {"reasoning_v3", "reasoning_v4"}:
+            saved_rollout = resumed.get("rollout")
+            if saved_rollout is None or _rollout_semantics_identity(saved_rollout) != \
+                    _rollout_semantics_identity(rollout_identity):
+                raise ValueError("GRPO resume rollout/reward settings do not match checkpoint")
+            saved_sampler = RolloutConfig.from_config(saved_rollout)
+            if (saved_sampler.sampler_version, saved_sampler.prompt_batching) != (
+                rollout_config.sampler_version, rollout_config.prompt_batching
+            ):
+                LOGGER.warning(
+                    "Resuming GRPO with sampler version %s/%s instead of checkpoint version %s/%s; "
+                    "the next sampled tokens will not match legacy RNG lane ordering",
+                    rollout_config.sampler_version, rollout_config.prompt_batching,
+                    saved_sampler.sampler_version, saved_sampler.prompt_batching,
+                )
+        policy_tokens_seen = int(resumed.get("policy_tokens_seen", resumed.get("tokens_seen", 0)))
+        executor_tokens_seen = int(resumed.get("executor_tokens_seen", 0))
+        model.load_state_dict(resumed["model"])
+        optimizer.load_state_dict(resumed["optimizer"])
+        start_update = int(resumed["update"])
+        reward_mean = float(resumed.get("last_reward_mean", 0.0))
+        tokens_seen = int(resumed.get("tokens_seen", 0))
+        examples_drawn = int(resumed.get("examples_drawn", 0))
+        nonpadding_input_tokens = int(resumed.get("nonpadding_input_tokens", 0))
+        padded_compute_positions = int(resumed.get("padded_compute_positions", 0))
+        estimated_flops_seen = int(
+            resumed.get("estimated_flops", 6 * parameter_count * tokens_seen)
+        )
+        restore_rng_state(resumed["rng_state"])
+
+    updates = int(config.rlvr.updates)
+    qualitative_every = max(1, int(getattr(getattr(config, "qualitative", None), "every_steps", 20_000)))
+    qualitative_count = 0
+    define_metric = getattr(run, "define_metric", None)
+    if callable(define_metric):
+        define_metric("optimizer_step")
+        define_metric("grpo/update")
+        define_metric("grpo/*", step_metric="grpo/update")
+        for metric in ("train/*", "val/*", "test/*"):
+            define_metric(metric, step_metric="optimizer_step")
+        define_metric("qualitative/*", step_metric="optimizer_step")
+    prompts_per_batch = int(config.rlvr.prompts_per_batch)
+    group_size = int(config.rlvr.group_size)
+    temperature = float(config.rlvr.temperature)
+    max_completion = int(config.rlvr.max_completion_tokens)
+    clip_epsilon = float(config.rlvr.clip_epsilon)
+    kl_coefficient = float(config.rlvr.kl_coefficient)
+    if prompts_per_batch < 1 or group_size < 2 or updates < 1:
+        raise ValueError("GRPO requires positive updates/prompts and group_size >= 2")
+    metrics_path = run_dir / "metrics.csv"
+    elapsed_before = (
+        elapsed_seconds_through_step(metrics_path, step_column="update", step=start_update)
+        if start_update
+        else 0.0
+    )
+    fields = [
+        "update", "reward/mean", "reward/format_valid_rate", "reward/verifier_failure_rate",
+        "reward/trace_valid_rate", "reward/trace_reference_exact_match_rate",
+        "reward/capped_rate", "reward/malformed_rate",
+        "group/mixed_rate", "group/all_correct_rate", "group/all_wrong_rate", "loss",
+        "policy_loss", "kl", "entropy", "clip_fraction", "grad_norm", "tokens_seen",
+        "policy_tokens", "executor_tokens", "transcript_tokens", "group/all_format_only_rate",
+        "reward/format_component", "reward/success_component", "reward/full_success_rate",
+        "reward/answer_accuracy", "reward/format_only_rate", "calls/per_completion",
+        "calls/correctness", "calls/executor_failure_rate", "calls/no_call_success_rate",
+        "calls/policy_violation_rate",
+        "generated_tokens", "examples_drawn", "nonpadding_input_tokens",
+        "padded_compute_positions", "wall_seconds",
+        "tokens_per_second", "estimated_flops", "peak_gpu_memory_bytes",
+        "timing/rollout_seconds", "timing/score_policy_seconds",
+        "timing/optimizer_seconds", "timing/checkpoint_seconds",
+        "timing/qualitative_seconds", "timing/logging_seconds",
+        "timing/previous_logging_seconds",
+        "flops_estimator_version", "train/greedy_accuracy", "val/greedy_accuracy",
+        "test/greedy_accuracy",
+    ] + [f"calls/failure/{reason}" for reason in CALL_FAILURES]
+    if start_update:
+        truncate_csv_after_step(
+            metrics_path,
+            step_column="update",
+            step=start_update,
+            fieldnames=fields,
+        )
+    mode = "a" if metrics_path.exists() and start_update else "w"
+    metrics_file = metrics_path.open(mode, newline="", encoding="utf-8")
+    writer = csv.DictWriter(metrics_file, fieldnames=fields)
+    if mode == "w":
+        writer.writeheader()
+    started = time.monotonic()
+    previous_logging_seconds = 0.0
+    try:
+        for update in range(start_update + 1, updates + 1):
+            chosen = random.sample(prompts, k=min(prompts_per_batch, len(prompts)))
+            optimizer.zero_grad(set_to_none=True)
+            metric_groups: list[dict[str, torch.Tensor]] = []
+            batch_correct = batch_valid = batch_total = token_total = 0
+            reward_total = 0.0
+            format_component = success_component = answer_correct = format_only = 0
+            calls_total = correct_calls = no_call_count = no_call_success = 0
+            policy_token_total = executor_token_total = 0
+            failures: Counter[str] = Counter()
+            batch_capped = batch_malformed = batch_trace_valid = batch_trace_reference_match = 0
+            optimized_groups = 0
+            phase_seconds = {
+                "rollout": 0.0, "score_policy": 0.0, "optimizer": 0.0,
+                "checkpoint": 0.0, "qualitative": 0.0, "logging": 0.0,
+            }
+            policy_losses: list[float] = []
+            kl_values: list[float] = []
+            entropy_values: list[float] = []
+            clip_values: list[float] = []
+            estimated_flops_update = 0
+            nonpadding_input_tokens_update = 0
+            padded_compute_positions_update = 0
+            prepared_prompts = []
+            for index, row in enumerate(chosen):
+                prompt_text = format_prompt(row["question"], protocol=tokenizer.protocol)
+                prompt_ids = torch.tensor(
+                    [tokenizer.encode(prompt_text, add_bos=True)], dtype=torch.long, device=device
+                )
+                room = model_config.context_length - prompt_ids.shape[1]
+                if room < 1:
+                    raise ValueError("Prepared RLVR prompt leaves no room for a completion")
+                prepared_prompts.append((prompt_ids, room))
+
+            rollout_by_prompt: dict[int, Rollouts] = {}
+            rollout_prompt_width_by_prompt: dict[int, int] = {}
+            prompt_lengths = [int(prompt_ids.shape[1]) for prompt_ids, _room in prepared_prompts]
+            prompt_buckets = _prompt_buckets(
+                prompt_lengths,
+                max_completion_tokens=max_completion,
+                context_length=model_config.context_length,
+                strategy=rollout_config.prompt_batching,
+            )
+            phase_started = time.perf_counter()
+            for indices in prompt_buckets:
+                bucket_width = max(prompt_lengths[index] for index in indices)
+                if rollout_config.prompt_batching == "left_pad":
+                    bucket_prompts = torch.full(
+                        (len(indices), bucket_width), tokenizer.pad_id,
+                        dtype=torch.long, device=device,
+                    )
+                    bucket_mask = torch.zeros_like(bucket_prompts, dtype=torch.bool)
+                    for bucket_index, prompt_index in enumerate(indices):
+                        prompt_ids = prepared_prompts[prompt_index][0][0]
+                        prompt_len = prompt_ids.numel()
+                        bucket_prompts[bucket_index, -prompt_len:] = prompt_ids
+                        bucket_mask[bucket_index, -prompt_len:] = True
+                else:
+                    bucket_prompts = torch.cat(
+                        [prepared_prompts[index][0] for index in indices], dim=0
+                    )
+                    bucket_mask = None
+                bucket_rows = [chosen[index] for index in indices]
+                bucket_room = min(prepared_prompts[index][1] for index in indices)
+                with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_bf16):
+                    bucket_rollouts = sample_group_rollouts(
+                        model,
+                        bucket_prompts,
+                        group_size=group_size,
+                        max_completion_tokens=(
+                            max_completion if rollout_config.prompt_batching == "left_pad"
+                            else min(max_completion, bucket_room)
+                        ),
+                        temperature=temperature,
+                        eos_id=tokenizer.eos_id,
+                        pad_id=tokenizer.pad_id,
+                        tokenizer=tokenizer, rollout=rollout_config,
+                        task_rows=bucket_rows,
+                        prompt_mask=bucket_mask,
+                    )
+                for bucket_index, prompt_index in enumerate(indices):
+                    lane_start = bucket_index * group_size
+                    lane_end = lane_start + group_size
+                    rollout_by_prompt[prompt_index] = Rollouts(
+                        bucket_rollouts.completion_ids[bucket_index:bucket_index + 1],
+                        bucket_rollouts.completion_mask[bucket_index:bucket_index + 1],
+                        bucket_rollouts.old_log_probs[bucket_index:bucket_index + 1],
+                        bucket_rollouts.entropy[bucket_index:bucket_index + 1],
+                        (bucket_rollouts.policy_mask[bucket_index:bucket_index + 1]
+                         if bucket_rollouts.policy_mask is not None else None),
+                        bucket_rollouts.termination_reasons[lane_start:lane_end],
+                        bucket_rollouts.call_events[lane_start:lane_end],
+                    )
+                    rollout_prompt_width_by_prompt[prompt_index] = bucket_width
+            phase_seconds["rollout"] = time.perf_counter() - phase_started
+
+            for prompt_index, row in enumerate(chosen):
+                phase_started = time.perf_counter()
+                prompt_ids, room = prepared_prompts[prompt_index]
+                rollouts = rollout_by_prompt[prompt_index]
+                completions = rollouts.completion_ids[0]
+                completion_values = completions.detach().cpu().tolist()
+                completion_lengths = rollouts.completion_mask[0].sum(dim=-1).detach().cpu().tolist()
+                generated_ids = [
+                    completion[:length]
+                    for completion, length in zip(completion_values, completion_lengths, strict=True)
+                ]
+                v3_scores = []
+                if tokenizer.protocol in {"reasoning_v3", "reasoning_v4"}:
+                    reasons = rollouts.termination_reasons or tuple(
+                        "eos" if ids and ids[-1] == tokenizer.eos_id else "budget_exceeded"
+                        for ids in generated_ids
+                    )
+                    for ids, reason in zip(generated_ids, reasons, strict=True):
+                        failed = reason not in {"eos", "budget_exceeded"}
+                        if failed:
+                            failures[reason] += 1
+                        score = score_v3(
+                            ids, tokenizer, row, capped=reason == "budget_exceeded",
+                            failure=reason if failed else None, **rollout_config.scoring_kwargs(),
+                        )
+                        v3_scores.append(score)
+                        format_component += score.format_reward
+                        success_component += score.success_reward
+                        answer_correct += score.answer_correct
+                        format_only += 0 < score.reward < 1
+                        if not score.call_policy_valid and not failed:
+                            failures["disallowed_call"] += 1
+                        calls_total += score.call_count
+                        correct_calls += score.correct_calls
+                        no_call_count += score.format_valid and score.call_count == 0
+                        no_call_success += score.full_success and score.call_count == 0
+                    outcomes = [(v.reward, v.format_valid, v.scratchpad, v.reference_match, v.trace_valid)
+                                for v in v3_scores]
+                else:
+                    outcomes = [_score_completion(ids, tokenizer, row) for ids in generated_ids]
+                rewards = torch.tensor(
+                    [float(correct) for correct, _valid, _trace, _reference_match, _trace_valid in outcomes],
+                    dtype=torch.float32,
+                    device=device,
+                )
+                valid_count = sum(int(valid) for _correct, valid, _trace, _match, _trace_valid in outcomes)
+                batch_capped += sum(reason == "budget_exceeded" for reason in reasons) if v3_scores else sum(
+                    int(len(ids) >= min(max_completion, room) and (not ids or ids[-1] != tokenizer.eos_id))
+                    for ids in generated_ids
+                )
+                batch_malformed += group_size - valid_count
+                batch_trace_valid += sum(
+                    int(trace_valid) if trace_valid is not None else int(valid)
+                    for _correct, valid, _trace, _match, trace_valid in outcomes
+                )
+                batch_trace_reference_match += sum(
+                    int(reference_match is True)
+                    for _correct, _valid, _trace, reference_match, _trace_valid in outcomes
+                )
+                reward_total += float(rewards.sum().item())
+                batch_correct += int((rewards == 1).sum().item())
+                policy_token_total += int(rollouts.loss_mask.sum().item())
+                executor_token_total += int((rollouts.completion_mask & ~rollouts.loss_mask).sum().item())
+                batch_valid += valid_count
+                batch_total += group_size
+                token_total += int(rollouts.completion_mask.sum().item())
+                nonpadding_input_tokens_update += prompt_ids.numel() * group_size
+                advantages = group_relative_advantages(rewards.unsqueeze(0))
+                metric_groups.append(group_outcome_rates(rewards.unsqueeze(0)))
+                with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_bf16):
+                    current = completion_log_probs(
+                        model, prompt_ids, rollouts.completion_ids, temperature=temperature,
+                        completion_mask=rollouts.completion_mask,
+                    )
+                    reference_logs = (
+                        completion_log_probs(reference, prompt_ids, rollouts.completion_ids,
+                                             temperature=temperature,
+                                             completion_mask=rollouts.completion_mask)
+                        if reference is not None else None
+                    )
+                metrics = grpo_objective(
+                    current,
+                    rollouts.old_log_probs,
+                    advantages,
+                    rollouts.loss_mask,
+                    clip_epsilon=clip_epsilon,
+                    reference_log_probs=reference_logs,
+                    kl_coefficient=kl_coefficient,
+                    entropy=rollouts.entropy,
+                )
+                if torch.any(advantages):
+                    (metrics.loss / len(chosen)).backward()
+                    optimized_groups += 1
+                phase_seconds["score_policy"] += time.perf_counter() - phase_started
+                completion_length = completions.shape[-1]
+                # Rollout decoding uses a KV cache: the prompt is prefetched
+                # once and each generated position is forwarded once. The
+                # policy pass still evaluates the padded full completion batch.
+                rollout_positions = group_size * (
+                    rollout_prompt_width_by_prompt[prompt_index] + completion_length
+                )
+                policy_positions = group_size * (prompt_ids.shape[1] + completion_length)
+                padded_compute_positions_update += (
+                    rollout_positions
+                    + policy_positions * (1 + int(reference is not None))
+                )
+                policy_factor = 6 if torch.any(advantages) else 2
+                reference_factor = 2 if reference is not None else 0
+                estimated_flops_update += parameter_count * (
+                    2 * rollout_positions
+                    + (policy_factor + reference_factor) * policy_positions
+                )
+                policy_losses.append(float(metrics.policy_loss.detach().item()))
+                kl_values.append(float(metrics.kl.detach().item()))
+                entropy_values.append(float(metrics.entropy.detach().item()))
+                clip_values.append(float(metrics.clip_fraction.detach().item()))
+            grad_norm_value = 0.0
+            if optimized_groups:
+                phase_started = time.perf_counter()
+                grad_norm_value = float(
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), float(config.trainer.grad_clip)).item()
+                )
+                optimizer.step()
+                phase_seconds["optimizer"] = time.perf_counter() - phase_started
+            tokens_seen += token_total
+            policy_tokens_seen += policy_token_total
+            executor_tokens_seen += executor_token_total
+            examples_drawn += len(chosen)
+            nonpadding_input_tokens += nonpadding_input_tokens_update
+            padded_compute_positions += padded_compute_positions_update
+            estimated_flops_seen += estimated_flops_update
+            reward_mean = reward_total / batch_total
+
+            def mean(values: list[float]) -> float:
+                return sum(values) / max(1, len(values))
+            mixed = mean([item["mixed_group_rate"].item() for item in metric_groups])
+            all_correct = mean([item["all_correct_group_rate"].item() for item in metric_groups])
+            all_wrong = mean([item["all_wrong_group_rate"].item() for item in metric_groups])
+            elapsed = elapsed_before + time.monotonic() - started
+            values = {
+                "update": update,
+                "reward/mean": reward_mean,
+                **{f"calls/failure/{reason}": failures[reason] for reason in CALL_FAILURES},
+                "reward/full_success_rate": batch_correct / batch_total,
+                "reward/format_component": format_component / batch_total,
+                "reward/success_component": success_component / batch_total,
+                "reward/answer_accuracy": answer_correct / batch_total if v3_scores else batch_correct / batch_total,
+                "reward/format_only_rate": format_only / batch_total,
+                "group/all_format_only_rate": mean([item["all_format_only_group_rate"].item() for item in metric_groups]),
+                "calls/per_completion": calls_total / batch_total,
+                "calls/correctness": correct_calls / calls_total if calls_total else 0.0,
+                "calls/executor_failure_rate": sum(failures.values()) / batch_total,
+                "calls/policy_violation_rate": failures["disallowed_call"] / batch_total,
+                "calls/no_call_success_rate": no_call_success / no_call_count if no_call_count else 0.0,
+                "policy_tokens": policy_tokens_seen,
+                "executor_tokens": executor_tokens_seen,
+                "transcript_tokens": tokens_seen,
+                "reward/format_valid_rate": batch_valid / batch_total,
+                "reward/verifier_failure_rate": 1 - batch_valid / batch_total,
+                "reward/trace_valid_rate": batch_trace_valid / batch_total,
+                "reward/trace_reference_exact_match_rate": batch_trace_reference_match / batch_total,
+                "reward/capped_rate": batch_capped / batch_total,
+                "reward/malformed_rate": batch_malformed / batch_total,
+                "group/mixed_rate": mixed,
+                "group/all_correct_rate": all_correct,
+                "group/all_wrong_rate": all_wrong,
+                "loss": mean(policy_losses) + kl_coefficient * mean(kl_values),
+                "policy_loss": mean(policy_losses),
+                "kl": mean(kl_values),
+                "entropy": mean(entropy_values),
+                "clip_fraction": mean(clip_values),
+                "grad_norm": grad_norm_value,
+                "tokens_seen": tokens_seen,
+                "examples_drawn": examples_drawn,
+                "nonpadding_input_tokens": nonpadding_input_tokens,
+                "generated_tokens": policy_tokens_seen,
+                "padded_compute_positions": padded_compute_positions,
+                "wall_seconds": elapsed,
+                "tokens_per_second": tokens_seen / max(1e-9, elapsed),
+                "estimated_flops": estimated_flops_seen,
+                "flops_estimator_version": "kv_cached_position_v3",
+                "peak_gpu_memory_bytes": (
+                    torch.cuda.max_memory_allocated(device) if device.type == "cuda" else 0
+                ),
+                "timing/rollout_seconds": phase_seconds["rollout"],
+                "timing/score_policy_seconds": phase_seconds["score_policy"],
+                "timing/optimizer_seconds": phase_seconds["optimizer"],
+                "timing/previous_logging_seconds": previous_logging_seconds,
+            }
+            if update % int(config.trainer.save_every) == 0 or update == updates:
+                phase_started = time.perf_counter()
+                save_checkpoint(
+                    latest_path,
+                    {
+                        "model": model.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                        "update": update,
+                        "last_reward_mean": reward_mean,
+                        "tokens_seen": tokens_seen,
+                        "policy_tokens_seen": policy_tokens_seen,
+                        "executor_tokens_seen": executor_tokens_seen,
+                        **({"rollout": rollout_identity} if tokenizer.protocol in {"reasoning_v3", "reasoning_v4"} else {}),
+                        "examples_drawn": examples_drawn,
+                        "nonpadding_input_tokens": nonpadding_input_tokens,
+                        "padded_compute_positions": padded_compute_positions,
+                        "estimated_flops": estimated_flops_seen,
+                        "flops_estimator_version": "kv_cached_position_v3",
+                        "rng_state": capture_rng_state(),
+                        "tokenizer_sha256": tokenizer.sha256,
+                        **({"compatibility": compatibility} if compatibility is not None else {}),
+                        "model_config": model_config.__dict__,
+                        "training_arm": "grpo",
+                        "source_sft_checkpoint": str(init_checkpoint),
+                    },
+                )
+                save_checkpoint(
+                    run_dir / "latest_inference.pt",
+                    {
+                        "model": model.state_dict(),
+                        "update": update,
+                        **({"rollout": rollout_identity} if tokenizer.protocol in {"reasoning_v3", "reasoning_v4"} else {}),
+                        "tokenizer_sha256": tokenizer.sha256,
+                        **({"compatibility": compatibility} if compatibility is not None else {}),
+                        "model_config": model_config.__dict__,
+                        "training_arm": "grpo",
+                        "source_sft_checkpoint": str(init_checkpoint.resolve()),
+                    },
+                )
+                phase_seconds["checkpoint"] = time.perf_counter() - phase_started
+                values["timing/checkpoint_seconds"] = phase_seconds["checkpoint"]
+            qualitative_due = update % qualitative_every == 0 or update == updates
+            if qualitative_due:
+                phase_started = time.perf_counter()
+                qualitative_table, qualitative_count, greedy_accuracy = build_qualitative_table(
+                    model=model,
+                    tokenizer=tokenizer,
+                    split_rows={
+                        "train": prompts,
+                        "validation": _load_rows(bundle_dir / "sft_validation.jsonl"),
+                        "test": _load_rows(bundle_dir / "test.jsonl"),
+                    },
+                    training_arm="grpo",
+                    seed=int(getattr(config, "seed", 0)),
+                    max_new_tokens=int(
+                        getattr(getattr(config, "eval", None), "max_new_tokens", max_completion)
+                    ),
+                    rollout=rollout_config,
+                    examples_per_module=int(
+                        getattr(getattr(config, "qualitative", None), "examples_per_module", 2)
+                    ),
+                )
+                summary = getattr(run, "summary", None)
+                if summary is not None:
+                    summary["qualitative/example_count"] = qualitative_count
+                    summary["qualitative/splits"] = ["train", "validation", "test"]
+                    summary["training/latest_inference_checkpoint"] = str(
+                        run_dir / "latest_inference.pt"
+                    )
+                values["qualitative/examples"] = qualitative_table
+                for split, value in greedy_accuracy.items():
+                    metric_name = "val/greedy_accuracy" if split == "validation" else f"{split}/greedy_accuracy"
+                    values[metric_name] = value
+                phase_seconds["qualitative"] = time.perf_counter() - phase_started
+                values["timing/qualitative_seconds"] = phase_seconds["qualitative"]
+            if (
+                update % int(config.tracking.log_every) == 0
+                or update == 1
+                or update == updates
+                or qualitative_due
+            ):
+                phase_started = time.perf_counter()
+                logged = {"optimizer_step": update}
+                for key, value in values.items():
+                    if key == "update":
+                        logged["grpo/update"] = value
+                    elif key == "qualitative/examples" or key in {
+                        "train/greedy_accuracy", "val/greedy_accuracy", "test/greedy_accuracy"
+                    }:
+                        logged[key] = value
+                    else:
+                        logged[f"grpo/{key}"] = value
+                for reason, count in failures.items():
+                    logged[f"grpo/calls/failure/{reason}"] = count
+                run.log(logged)
+                phase_seconds["logging"] = time.perf_counter() - phase_started
+                values["timing/logging_seconds"] = phase_seconds["logging"]
+                previous_logging_seconds = phase_seconds["logging"]
+            writer.writerow({key: value for key, value in values.items() if key in fields})
+            metrics_file.flush()
+    finally:
+        metrics_file.close()
+    return {
+        "update": updates,
+        "prompt_examples": len(prompts),
+        "tokens_seen": tokens_seen,
+        "policy_tokens": policy_tokens_seen,
+        "executor_tokens": executor_tokens_seen,
+        "generated_tokens": policy_tokens_seen,
+        "examples_drawn": examples_drawn,
+        "nonpadding_input_tokens": nonpadding_input_tokens,
+        "padded_compute_positions": padded_compute_positions,
+        "estimated_flops": estimated_flops_seen,
+        "checkpoint": str(latest_path),
+        "inference_checkpoint": str(run_dir / "latest_inference.pt"),
+        "metrics_path": str(metrics_path),
+        "final_reward": reward_mean,
+        "qualitative_examples": qualitative_count,
+    }

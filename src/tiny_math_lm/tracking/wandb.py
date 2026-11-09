@@ -1,0 +1,410 @@
+"""Secure, resumable W&B run setup used by all experiment entry points."""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import secrets
+from pathlib import Path
+from typing import Any
+
+import requests
+from dotenv import dotenv_values, load_dotenv
+from omegaconf import DictConfig
+
+from tiny_math_lm.config import (
+    WORKSPACE,
+    persist_resolved_config,
+    read_saved_resolved_config,
+    sanitized_config,
+)
+from tiny_math_lm.repro import runtime_info, seed_everything
+
+
+class TrackingError(RuntimeError):
+    """Raised when required experiment tracking cannot be initialized."""
+
+
+LOGGER = logging.getLogger(__name__)
+
+
+_ACTIVE_STATE_PATHS: dict[str, Path] = {}
+
+
+def _load_workspace_credentials() -> None:
+    # python-dotenv parses standard assignment syntax and never prints the values.
+    env_path = WORKSPACE / ".env"
+    load_dotenv(dotenv_path=env_path, override=False, verbose=False)
+    if os.environ.get("WANDB_API_KEY"):
+        return
+
+    # Accept the legacy spelling present in this workspace's supplied .env.
+    # Keep the value in process memory only; it is never added to config or metadata.
+    legacy_key = dotenv_values(dotenv_path=env_path).get("WANDBKEY")
+    if legacy_key:
+        os.environ["WANDB_API_KEY"] = legacy_key
+
+
+def _configure_wandb_service_threads(config: DictConfig) -> None:
+    """Bound W&B's Go service thread pool for containers with tight PID limits."""
+    runtime = config.get("runtime", {})
+    max_procs = max(1, int(runtime.get("wandb_service_gomaxprocs", 2)))
+    # Respect an explicit runtime environment override. GOMAXPROCS is read by
+    # wandb-core when the SDK starts its Go service subprocess.
+    os.environ.setdefault("GOMAXPROCS", str(max_procs))
+
+
+def _tracking_state(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TrackingError(f"Cannot read W&B resume metadata at {path}: {exc}") from exc
+    if not isinstance(state, dict) or not isinstance(state.get("id"), str):
+        raise TrackingError(f"Invalid W&B resume metadata at {path}")
+    return state
+
+
+def _write_tracking_state(path: Path, state: dict[str, Any]) -> None:
+    """Replace local resume metadata atomically so a failed write preserves the run ID."""
+    temp_path = path.with_name(f"{path.name}.tmp")
+    try:
+        with temp_path.open("w", encoding="utf-8") as handle:
+            json.dump(state, handle, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def _compatible_with_runtime_extension(
+    saved: dict[str, Any], current: dict[str, Any]
+) -> bool:
+    """Accept config-only additions that cannot change a resumed training run."""
+    import copy
+
+    normalized = copy.deepcopy(current)
+    saved_normalized = copy.deepcopy(saved)
+
+    # Sampler v2 changes prompt batching and therefore RNG lane order. It is
+    # the only reasoning-v3 training setting that may change when resuming a
+    # checkpoint; the runner validates the saved sampler identity and emits a
+    # warning before continuing. Treat pre-versioned rollout configs as v1.
+    if (
+        saved_normalized.get("experiment", {}).get("protocol") == "reasoning_v3"
+        and normalized.get("experiment", {}).get("protocol") == "reasoning_v3"
+    ):
+        for config in (saved_normalized, normalized):
+            rollout = config.get("rollout")
+            if not isinstance(rollout, dict):
+                return False
+            sampler_version = rollout.get(
+                "sampler_version", 1 if "rollout_version" in rollout else 2
+            )
+            prompt_batching = rollout.get(
+                "prompt_batching", "exact_length" if sampler_version == 1 else "left_pad"
+            )
+            if (sampler_version, prompt_batching) not in {
+                (1, "exact_length"), (2, "left_pad")
+            }:
+                return False
+            rollout.pop("sampler_version", None)
+            rollout.pop("prompt_batching", None)
+
+    # The default rollout group is inert for legacy non-v3 experiments.
+    if ("rollout" not in saved_normalized
+            and normalized.get("experiment", {}).get("protocol") != "reasoning_v3"):
+        from tiny_math_lm.generation import RolloutConfig
+
+        if normalized.get("rollout") == RolloutConfig().identity():
+            normalized.pop("rollout")
+
+    # Tracking mode changes do not alter the experiment or its checkpoint.
+    # This permits an exact resume to move an offline run online (or vice
+    # versa) while keeping the same local W&B identity and scientific config.
+    saved_tracking = saved_normalized.get("tracking", {})
+    current_tracking = normalized.get("tracking", {})
+    for key in ("mode", "entity"):
+        if key in saved_tracking and key in current_tracking:
+            saved_tracking.pop(key)
+            current_tracking.pop(key)
+
+    # This group was added to cap thread usage on resume. It does not change the
+    # model, batches, optimizer, or objective.
+    if "runtime" not in saved_normalized and "runtime" in normalized:
+        normalized.pop("runtime")
+    elif "runtime" in saved_normalized and "runtime" in normalized:
+        # Added later to keep wandb-core within the container's PID limit. This
+        # changes service resource use only, not the experiment itself.
+        saved_runtime = saved_normalized["runtime"]
+        current_runtime = normalized["runtime"]
+        if (
+            "wandb_service_gomaxprocs" not in saved_runtime
+            and "wandb_service_gomaxprocs" in current_runtime
+        ):
+            current_runtime.pop("wandb_service_gomaxprocs")
+
+    # A prepared bundle fixes the actual data. A newer pinned source revision
+    # default therefore does not alter the data seen by a resumed run.
+    if (
+        saved_normalized.get("data_bundle")
+        and saved_normalized.get("data_bundle") == normalized.get("data_bundle")
+        and saved_normalized.get("data", {}).get("revision") is None
+        and normalized.get("data", {}).get("revision") is not None
+    ):
+        normalized["data"]["revision"] = None
+
+    # Temperature is inert under greedy decoding, so adding this setting to a
+    # config created before it existed is safe only when both configs are greedy.
+    saved_eval = saved_normalized.get("eval", {})
+    current_eval = normalized.get("eval", {})
+    if (
+        saved_normalized.get("experiment", {}).get("name") == "exp16_qwen3_base_reasoning_v3"
+        and normalized.get("experiment", {}).get("name") == "exp16_qwen3_base_reasoning_v3"
+    ):
+        for config in (saved_normalized, normalized):
+            reporting = config.get("reporting")
+            if isinstance(reporting, dict):
+                reporting.pop("intermediate_refresh_seconds", None)
+                reporting.pop("intermediate_orchestrator_pid", None)
+        if (
+            saved_normalized.get("model", {}).get("backend") == "huggingface"
+            and normalized.get("model", {}).get("backend") == "huggingface"
+        ):
+            saved_qualitative = saved_normalized.get("qualitative", {})
+            current_qualitative = normalized.get("qualitative", {})
+            if (
+                isinstance(saved_qualitative, dict)
+                and isinstance(current_qualitative, dict)
+                and "max_new_tokens" not in saved_qualitative
+                and current_qualitative.get("max_new_tokens") == 128
+            ):
+                current_qualitative.pop("max_new_tokens")
+    if (
+        saved_normalized.get("experiment", {}).get("name") == "exp16_qwen3_base_reasoning_v3"
+        and normalized.get("experiment", {}).get("name") == "exp16_qwen3_base_reasoning_v3"
+        and saved_normalized.get("model", {}).get("backend") == "huggingface"
+        and normalized.get("model", {}).get("backend") == "huggingface"
+        and saved_eval.get("greedy") is True
+        and current_eval.get("greedy") is True
+    ):
+        # Ordinary-Q/A batches are independent deterministic greedy streams;
+        # padding and per-row stopping preserve each question's output.
+        saved_eval["batch_size"] = current_eval.get("batch_size")
+        # These diagnostics add validation-only generation and do not change the
+        # optimizer state. Accept their defaults when resuming runs created
+        # before greedy SFT validation was configurable.
+        for key, default in (
+            ("greedy_accuracy_enabled", True),
+            ("greedy_accuracy_every_steps", 500),
+            ("greedy_accuracy_max_examples", 256),
+            ("greedy_accuracy_batch_size", 8),
+            ("greedy_accuracy_max_new_tokens", 128),
+        ):
+            if key not in saved_eval and current_eval.get(key) == default:
+                current_eval.pop(key)
+    if (
+        saved_eval.get("greedy") is True
+        and current_eval.get("greedy") is True
+        and "temperature" not in saved_eval
+        and "temperature" in current_eval
+    ):
+        current_eval.pop("temperature")
+
+    # Reasoning generation is capped by remaining context, so increasing this
+    # configured ceiling changes provenance only for reasoning runs. It is
+    # safe when the model context already supplies the effective per-prompt cap.
+    if (
+        saved_normalized.get("experiment", {}).get("protocol") in {"reasoning_v1", "reasoning_v2"}
+        and normalized.get("experiment", {}).get("protocol") in {"reasoning_v1", "reasoning_v2"}
+        and saved_eval.get("max_new_tokens", 0) < current_eval.get("max_new_tokens", 0)
+        and current_eval.get("max_new_tokens")
+        == normalized.get("model", {}).get("context_length")
+    ):
+        saved_eval["max_new_tokens"] = current_eval["max_new_tokens"]
+
+    return saved_normalized == normalized
+
+
+def initialize_wandb(
+    config: DictConfig,
+    run_dir: str | Path,
+    *,
+    job_type: str,
+    job_metadata: dict[str, Any] | None = None,
+) -> Any:
+    """Create or resume one W&B run, persisting its ID before initialization."""
+    _configure_wandb_service_threads(config)
+    import wandb
+
+    _load_workspace_credentials()
+    tracking = config.tracking
+    mode = str(tracking.get("mode", "online"))
+    run_path = Path(run_dir).resolve()
+    run_path.mkdir(parents=True, exist_ok=True)
+    state_path = run_path / "wandb_run.json"
+    state = _tracking_state(state_path)
+    saved_config = read_saved_resolved_config(run_path)
+    current_config = sanitized_config(config)
+    if (
+        state
+        and saved_config is not None
+        and saved_config != current_config
+        and not _compatible_with_runtime_extension(saved_config, current_config)
+    ):
+        raise TrackingError(
+            "This W&B run already has a different resolved Hydra config; resume it with the "
+            "original options or choose a new run directory."
+        )
+    config_path = persist_resolved_config(config, run_path)
+    run_id = state.get("id") or secrets.token_hex(8)
+    entity_value = tracking.get("entity")
+    entity = str(entity_value).strip() if entity_value is not None else ""
+    entity = entity or None
+    from tiny_math_lm.tracking.naming import build_run_naming
+
+    job_metadata = dict(job_metadata or {})
+    experiment = config.get("experiment", {})
+    is_exp11 = int(experiment.get("number", 0) or 0) == 11
+    phase = str(job_metadata.get("phase", experiment.get("phase", "main")))
+    naming = build_run_naming(
+        config,
+        job_type=(phase if is_exp11 and phase in {"smoke", "pilot"} else job_type),
+        phase=phase,
+        model=str(job_metadata.get("model", config.model.name)),
+        arm=str(job_metadata.get("arm", job_metadata.get("source_arm", job_type))),
+        source_arm=job_metadata.get("source_arm"),
+        examples=job_metadata.get("examples"),
+        updates=job_metadata.get("updates"),
+        checkpoint_selector=job_metadata.get("checkpoint_selector"),
+        checkpoint_step=job_metadata.get("checkpoint_step"),
+        checkpoint_hash=job_metadata.get("checkpoint_hash"),
+    )
+    if state.get("identity") is not None and state["identity"] != naming:
+        raise TrackingError(
+            "This W&B run directory already has a different experiment identity; "
+            "resume with the original job metadata or choose a separate run directory."
+        )
+    if mode != "offline" and not os.environ.get("WANDB_API_KEY"):
+        raise TrackingError(
+            f"W&B online tracking requires WANDB_API_KEY in the environment or {WORKSPACE / '.env'}; "
+            "no online run was started. Set tracking.mode=offline explicitly to create an "
+            "unsynced local run."
+        )
+    state = {
+        "id": run_id,
+        "mode": mode,
+        "sync_status": "unsynced" if mode == "offline" else "pending",
+        "run_status": "running",
+        "identity": naming,
+    }
+    _write_tracking_state(state_path, state)
+    metadata = {
+        "resolved_config_path": str(config_path),
+        "protocol": "tinymath-r1",
+        "resolved_config": sanitized_config(config),
+        "job_identity": naming.get("metadata", {}),
+    }
+    run = None
+    try:
+        run = wandb.init(
+            project=str(naming["project"]),
+            entity=entity,
+            group=str(naming["group"]),
+            name=str(naming["name"]),
+            tags=list(tracking.get("tags", [])),
+            mode=mode,
+            id=run_id,
+            resume="allow" if tracking.get("resume", True) or state else None,
+            dir=str(run_path),
+            job_type=job_type,
+            config=metadata,
+            settings=wandb.Settings(code_dir=str(WORKSPACE)),
+        )
+        _ACTIVE_STATE_PATHS[str(getattr(run, "id", run_id))] = state_path
+        state["url"] = getattr(run, "url", None)
+        state["entity"] = entity
+        state["project"] = str(naming["project"])
+        _write_tracking_state(state_path, state)
+        # runtime_info probes CUDA. Collect it after W&B has started its service
+        # threads so constrained process quotas do not block W&B initialization.
+        run.config.update({"runtime": runtime_info().as_dict()}, allow_val_change=True)
+        return run
+    except (
+        wandb.errors.Error,
+        requests.exceptions.RequestException,
+        OSError,
+        ValueError,
+        RuntimeError,
+    ) as exc:
+        if run is not None:
+            try:
+                finish_wandb(run, exit_code=1)
+            except (wandb.errors.Error, requests.exceptions.RequestException, OSError, RuntimeError):
+                LOGGER.warning("Could not flush W&B run after initialization failure")
+        failed_state = {
+            **state,
+            "id": run_id,
+            "mode": mode,
+            "sync_status": "unsynced" if mode == "offline" else "pending",
+            "run_status": "failed",
+            "exit_code": 1,
+        }
+        try:
+            _write_tracking_state(state_path, failed_state)
+        except OSError as state_exc:
+            LOGGER.warning("Could not save failed W&B initialization state at %s: %s", state_path, state_exc)
+        message = str(exc).replace(os.environ.get("WANDB_API_KEY", "\0"), "<redacted>")
+        raise TrackingError(f"W&B initialization failed ({mode} mode): {message}") from None
+
+
+def initialize_tracked_run(
+    config: DictConfig,
+    run_dir: str | Path,
+    *,
+    job_type: str,
+    job_metadata: dict[str, Any] | None = None,
+) -> Any:
+    """Start W&B before seeding CUDA, then seed before any training/evaluation work."""
+    run = initialize_wandb(config, run_dir, job_type=job_type, job_metadata=job_metadata)
+    try:
+        seed_everything(int(config.seed), cpu_threads=int(config.runtime.cpu_threads))
+    except BaseException:
+        finish_wandb(run, exit_code=1)
+        raise
+    return run
+
+
+def finish_wandb(run: Any, *, exit_code: int = 0) -> None:
+    """Flush a run and record whether its experiment completed successfully."""
+    if run is None:
+        return
+    mode = getattr(getattr(run, "settings", None), "mode", None)
+    offline = str(mode) == "offline"
+    status = "unsynced" if offline else "pending"
+    try:
+        # Offline is known not to reach W&B. For online runs, a local status is
+        # only marked synced after finish() returns without interruption/error.
+        if offline and hasattr(run, "summary"):
+            run.summary["tracking/sync_status"] = "unsynced"
+        run.finish(exit_code=exit_code)
+        if not offline and not bool(getattr(run, "_finish_timed_out", False)):
+            status = "synced"
+    except BaseException:
+        exit_code = 1
+        raise
+    finally:
+        state_path = _ACTIVE_STATE_PATHS.pop(str(getattr(run, "id", "")), None)
+        if state_path is not None and state_path.exists():
+            state = _tracking_state(state_path)
+            state["sync_status"] = status
+            state["run_status"] = "finished" if exit_code == 0 else "failed"
+            state["exit_code"] = int(exit_code)
+            try:
+                _write_tracking_state(state_path, state)
+            except OSError as exc:
+                LOGGER.warning("Could not update W&B resume metadata at %s: %s", state_path, exc)

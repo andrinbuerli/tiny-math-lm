@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tinymath-rl"
+name = "tiny-math-lm"
 version = "0.1.0"
 description = "Reproducible character-level math language modeling and RLVR experiments"
 requires-python = ">=3.11"

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from tinymath.data.char_tokenizer import CharacterTokenizer
-from tinymath.data.completions import parse_reasoning_completion
+from tiny_math_lm.data.char_tokenizer import CharacterTokenizer
+from tiny_math_lm.data.completions import parse_reasoning_completion
 
 
 @pytest.fixture

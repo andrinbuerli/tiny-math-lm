@@ -6,8 +6,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from tinymath.data.char_tokenizer import CharacterTokenizer
-from tinymath.inference import (
+from tiny_math_lm.data.char_tokenizer import CharacterTokenizer
+from tiny_math_lm.inference import (
     discover_inference_checkpoints,
     format_raw_text,
     format_tool_call,
@@ -16,7 +16,7 @@ from tinymath.inference import (
     sample_split_question,
     stream_inference_events,
 )
-from tinymath.model.gpt import GPTConfig, TinyMathGPT
+from tiny_math_lm.model.gpt import GPTConfig, TinyMathGPT
 
 
 def _write_tokenizer(tokenizer: CharacterTokenizer, path: Path) -> None:

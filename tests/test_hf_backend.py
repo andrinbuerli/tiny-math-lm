@@ -10,19 +10,19 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 
-from tinymath.data.hf_reasoning import score_native_reasoning
-from tinymath.generation import RolloutConfig
-from tinymath.model.hf_qwen import completion_loss
-from tinymath.runtime_gpu import gpu_capacity_available
-from tinymath.train import hf_sft
-from tinymath.train.grpo import group_relative_advantages, grpo_objective
-from tinymath.train.hf_generation import (
+from tiny_math_lm.data.hf_reasoning import score_native_reasoning
+from tiny_math_lm.generation import RolloutConfig
+from tiny_math_lm.model.hf_qwen import completion_loss
+from tiny_math_lm.runtime_gpu import gpu_capacity_available
+from tiny_math_lm.train import hf_sft
+from tiny_math_lm.train.grpo import group_relative_advantages, grpo_objective
+from tiny_math_lm.train.hf_generation import (
     NativeRollout,
     generate_native_rollout,
     generate_native_rollout_batch,
     generate_native_rollout_group,
 )
-from tinymath.train.hf_grpo import PromptRollouts, chunked_grpo_backward, native_policy_statistics
+from tiny_math_lm.train.hf_grpo import PromptRollouts, chunked_grpo_backward, native_policy_statistics
 
 
 def test_sft_resume_truncates_metrics_after_durable_checkpoint(tmp_path: Path):
@@ -654,7 +654,7 @@ def test_native_rollout_group_batches_no_call_sampling_and_keeps_scores_aligned(
 
 
 def test_native_rollout_group_replays_executor_groups_from_saved_rng(monkeypatch):
-    from tinymath.train import hf_generation
+    from tiny_math_lm.train import hf_generation
 
     model = ScriptedBatchGenerator(
         torch.tensor([[1], [1]]),
@@ -760,7 +760,7 @@ def test_native_rollout_batch_compacts_finished_rows_and_keeps_context_caps():
 
 
 def test_native_rollout_batch_replays_all_rows_when_any_executor_call_appears(monkeypatch):
-    from tinymath.train import hf_generation
+    from tiny_math_lm.train import hf_generation
 
     model = IncrementalBatchModel()
     tokenizer = BatchRolloutTokenizer(

@@ -6,12 +6,12 @@ from types import SimpleNamespace
 
 import torch
 
-from tinymath.checkpoint import save_checkpoint
-from tinymath.data.char_tokenizer import CharacterTokenizer
-from tinymath.data.prompts import format_prompt
-from tinymath.model.gpt import GPTConfig, TinyMathGPT
-from tinymath.train import grpo_runner
-from tinymath.train.grpo import (
+from tiny_math_lm.checkpoint import save_checkpoint
+from tiny_math_lm.data.char_tokenizer import CharacterTokenizer
+from tiny_math_lm.data.prompts import format_prompt
+from tiny_math_lm.model.gpt import GPTConfig, TinyMathGPT
+from tiny_math_lm.train import grpo_runner
+from tiny_math_lm.train.grpo import (
     Rollouts,
     completion_log_probs,
     group_outcome_rates,

@@ -2,9 +2,9 @@ import json
 
 import torch
 
-from tinymath.data.hf_reasoning import NativeReasoningScore
-from tinymath.eval import hf_qualitative
-from tinymath.train.hf_generation import NativeRollout
+from tiny_math_lm.data.hf_reasoning import NativeReasoningScore
+from tiny_math_lm.eval import hf_qualitative
+from tiny_math_lm.train.hf_generation import NativeRollout
 
 
 def test_qualitative_selection_is_fixed_parent_only_and_module_balanced():

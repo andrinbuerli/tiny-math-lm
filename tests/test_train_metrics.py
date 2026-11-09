@@ -1,6 +1,6 @@
 import csv
 
-from tinymath.train.metrics import elapsed_seconds_through_step, truncate_csv_after_step
+from tiny_math_lm.train.metrics import elapsed_seconds_through_step, truncate_csv_after_step
 
 
 def test_elapsed_seconds_uses_checkpoint_aligned_metric_row(tmp_path):

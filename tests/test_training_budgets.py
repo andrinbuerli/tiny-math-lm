@@ -5,7 +5,7 @@ from pathlib import Path
 
 from hydra import compose, initialize_config_dir
 
-from tinymath.train.budgets import budget_rows, isolated_training_run_dir
+from tiny_math_lm.train.budgets import budget_rows, isolated_training_run_dir
 
 
 def test_budget_rows_are_deterministic_balanced_and_keep_source_order():

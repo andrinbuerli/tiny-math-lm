@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tinymath.data.char_tokenizer import CharacterTokenizer
+from tiny_math_lm.data.char_tokenizer import CharacterTokenizer
 
 
 def test_each_unicode_codepoint_is_one_token_and_round_trips():

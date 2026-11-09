@@ -13,16 +13,16 @@ import torch
 from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 
-from tinymath.checkpoint import load_checkpoint, save_checkpoint
-from tinymath.config import (
+from tiny_math_lm.checkpoint import load_checkpoint, save_checkpoint
+from tiny_math_lm.config import (
     persist_resolved_config,
     read_saved_resolved_config,
     sanitized_config,
     workspace_path,
 )
-from tinymath.repro import seed_everything
-from tinymath.tracking import wandb as tracking
-from tinymath.tracking.provenance import read_wandb_run_id
+from tiny_math_lm.repro import seed_everything
+from tiny_math_lm.tracking import wandb as tracking
+from tiny_math_lm.tracking.provenance import read_wandb_run_id
 
 
 def test_hydra_composes_all_experiment_groups_and_overrides():

@@ -9,10 +9,10 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 
 import wandb
-from tinymath.config import workspace_path
-from tinymath.reporting import make_exp11_report, make_exp13_report, make_report
-from tinymath.tracking.naming import comparison_identity
-from tinymath.tracking.wandb import finish_wandb, initialize_wandb
+from tiny_math_lm.config import workspace_path
+from tiny_math_lm.reporting import make_exp11_report, make_exp13_report, make_report
+from tiny_math_lm.tracking.naming import comparison_identity
+from tiny_math_lm.tracking.wandb import finish_wandb, initialize_wandb
 
 LOGGER = logging.getLogger(__name__)
 

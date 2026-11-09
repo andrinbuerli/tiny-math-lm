@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 
-from tinymath.data.load import SELECTED_MODULES, DatasetInspection
-from tinymath.data.prepare import prepare_bundle
-from tinymath.data.splits import normalize_question, split_records
+from tiny_math_lm.data.load import SELECTED_MODULES, DatasetInspection
+from tiny_math_lm.data.prepare import prepare_bundle
+from tiny_math_lm.data.splits import normalize_question, split_records
 
 
 def _records():

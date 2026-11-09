@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import pytest
 
-from tinymath.data.char_tokenizer import CharacterTokenizer
-from tinymath.data.reasoning import (
+from tiny_math_lm.data.char_tokenizer import CharacterTokenizer
+from tiny_math_lm.data.reasoning import (
     annotate_row,
     permitted_call_requests,
     task_allows_calls,
     verify_annotation,
 )
-from tinymath.rewards.calls import CallError, execute_call
-from tinymath.rewards.reasoning import score_v3
+from tiny_math_lm.rewards.calls import CallError, execute_call
+from tiny_math_lm.rewards.reasoning import score_v3
 
 
 def score(trace="step:+(1,2)\n=>3", answer="3", transform=lambda ids, t: ids, question="Calculate 1 + 2.", **kwargs):
@@ -150,7 +150,7 @@ def test_fractional_scalar_recognition_preserves_left_associative_division():
 def test_v3_local_multiplication_uses_character_delimiter_budget():
     import string
 
-    from tinymath.data.prompts import format_prompt
+    from tiny_math_lm.data.prompts import format_prompt
 
     row = {"question": "Product of -2 and 22252915.", "answer": "-44505830", "module": "arithmetic__mul"}
     tokenizer = CharacterTokenizer.from_texts([string.printable], protocol="reasoning_v3")

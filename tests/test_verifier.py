@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from tinymath.rewards.verify import AnswerFormatError, answers_equal, parse_answer, verify_answer
+from tiny_math_lm.rewards.verify import AnswerFormatError, answers_equal, parse_answer, verify_answer
 
 
 @pytest.mark.parametrize(

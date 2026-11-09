@@ -16,7 +16,7 @@ from typing import Any
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
-from tinymath.config import workspace_path
+from tiny_math_lm.config import workspace_path
 
 LOGGER = logging.getLogger(__name__)
 EXPERIMENT_DIR = "exp16_qwen3_base_reasoning_v3"

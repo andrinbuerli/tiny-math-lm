@@ -1,9 +1,9 @@
 import json
 import os
 
-from tinymath.data.browser import count_example_tokens, discover_bundles, read_jsonl
-from tinymath.data.char_tokenizer import CharacterTokenizer
-from tinymath.data.prompts import format_prompt
+from tiny_math_lm.data.browser import count_example_tokens, discover_bundles, read_jsonl
+from tiny_math_lm.data.char_tokenizer import CharacterTokenizer
+from tiny_math_lm.data.prompts import format_prompt
 
 
 def test_discover_bundles_returns_manifest_directories(tmp_path):

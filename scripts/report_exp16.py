@@ -8,9 +8,9 @@ import sys
 import hydra
 from omegaconf import DictConfig
 
-from tinymath.config import workspace_path
-from tinymath.eval.exp16_report import build_exp16_report
-from tinymath.tracking.wandb import finish_wandb, initialize_tracked_run
+from tiny_math_lm.config import workspace_path
+from tiny_math_lm.eval.exp16_report import build_exp16_report
+from tiny_math_lm.tracking.wandb import finish_wandb, initialize_tracked_run
 
 LOGGER = logging.getLogger(__name__)
 

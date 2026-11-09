@@ -16,10 +16,10 @@ import hydra
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 
-from tinymath.config import workspace_path
-from tinymath.data.load import SELECTED_MODULES
-from tinymath.generation import RolloutConfig
-from tinymath.train.budgets import isolated_training_run_dir
+from tiny_math_lm.config import workspace_path
+from tiny_math_lm.data.load import SELECTED_MODULES
+from tiny_math_lm.generation import RolloutConfig
+from tiny_math_lm.train.budgets import isolated_training_run_dir
 
 LOGGER = logging.getLogger(__name__)
 _GPU_LAUNCH_LOCK = threading.Lock()

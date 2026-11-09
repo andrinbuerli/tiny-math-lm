@@ -11,7 +11,7 @@ import hydra
 import torch
 from omegaconf import DictConfig
 
-from tinymath.config import workspace_path
+from tiny_math_lm.config import workspace_path
 
 LOGGER = logging.getLogger(__name__)
 

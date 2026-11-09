@@ -20,19 +20,19 @@ import torch
 from omegaconf import DictConfig
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from tinymath.checkpoint import compatibility_metadata, save_checkpoint, sha256_file
-from tinymath.config import workspace_path
-from tinymath.data.char_tokenizer import CharacterTokenizer
-from tinymath.data.load import SELECTED_MODULES
-from tinymath.data.prompts import format_prompt, format_reasoning_display
-from tinymath.data.reasoning import annotate_row
-from tinymath.eval.evaluate import evaluate_checkpoint
-from tinymath.generation import RolloutConfig, generate_rollouts
-from tinymath.model.gpt import GPTConfig, TinyMathGPT
-from tinymath.rewards.calls import scalar_text
-from tinymath.tracking.provenance import read_wandb_run_id
-from tinymath.tracking.wandb import finish_wandb, initialize_tracked_run
-from tinymath.train import grpo_runner
+from tiny_math_lm.checkpoint import compatibility_metadata, save_checkpoint, sha256_file
+from tiny_math_lm.config import workspace_path
+from tiny_math_lm.data.char_tokenizer import CharacterTokenizer
+from tiny_math_lm.data.load import SELECTED_MODULES
+from tiny_math_lm.data.prompts import format_prompt, format_reasoning_display
+from tiny_math_lm.data.reasoning import annotate_row
+from tiny_math_lm.eval.evaluate import evaluate_checkpoint
+from tiny_math_lm.generation import RolloutConfig, generate_rollouts
+from tiny_math_lm.model.gpt import GPTConfig, TinyMathGPT
+from tiny_math_lm.rewards.calls import scalar_text
+from tiny_math_lm.tracking.provenance import read_wandb_run_id
+from tiny_math_lm.tracking.wandb import finish_wandb, initialize_tracked_run
+from tiny_math_lm.train import grpo_runner
 
 LOGGER = logging.getLogger(__name__)
 

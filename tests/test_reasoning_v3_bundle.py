@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from tinymath.data.reasoning import annotate_row, verify_annotation
-from tinymath.data.reasoning_v3_bundle import build_reasoning_v3_bundle
-from tinymath.train.runner import _sft_training_rows
+from tiny_math_lm.data.reasoning import annotate_row, verify_annotation
+from tiny_math_lm.data.reasoning_v3_bundle import build_reasoning_v3_bundle
+from tiny_math_lm.train.runner import _sft_training_rows
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, str]]) -> None:
@@ -110,7 +110,7 @@ def test_fraction_bundle_contains_one_operator_tasks_and_preserves_old_bundle(wo
 
 
 def test_failed_regeneration_never_modifies_published_bundle(workspace_tmpdir, monkeypatch):
-    import tinymath.data.reasoning_v3_bundle as builder
+    import tiny_math_lm.data.reasoning_v3_bundle as builder
     source = workspace_tmpdir / "source"
     source.mkdir()
     destination = workspace_tmpdir / "v3"

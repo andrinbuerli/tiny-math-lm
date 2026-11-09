@@ -9,11 +9,11 @@ import time
 import hydra
 from omegaconf import DictConfig
 
-from tinymath.config import read_saved_resolved_config, workspace_path
-from tinymath.data.load import SELECTED_MODULES, inspect_dataset, stream_english_rows
-from tinymath.data.prepare import prepare_bundle
-from tinymath.repro import seed_everything
-from tinymath.tracking.wandb import finish_wandb, initialize_wandb
+from tiny_math_lm.config import read_saved_resolved_config, workspace_path
+from tiny_math_lm.data.load import SELECTED_MODULES, inspect_dataset, stream_english_rows
+from tiny_math_lm.data.prepare import prepare_bundle
+from tiny_math_lm.repro import seed_everything
+from tiny_math_lm.tracking.wandb import finish_wandb, initialize_wandb
 
 LOGGER = logging.getLogger(__name__)
 

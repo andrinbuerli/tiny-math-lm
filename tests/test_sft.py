@@ -8,11 +8,11 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from tinymath.data.char_tokenizer import CharacterTokenizer
-from tinymath.data.prompts import format_completion, format_prompt
-from tinymath.model.gpt import GPTConfig, TinyMathGPT
-from tinymath.train.runner import train_sft
-from tinymath.train.sft import build_completion_batch, completion_only_loss
+from tiny_math_lm.data.char_tokenizer import CharacterTokenizer
+from tiny_math_lm.data.prompts import format_completion, format_prompt
+from tiny_math_lm.model.gpt import GPTConfig, TinyMathGPT
+from tiny_math_lm.train.runner import train_sft
+from tiny_math_lm.train.sft import build_completion_batch, completion_only_loss
 
 
 def test_loss_mask_begins_at_first_answer_target_and_includes_eos():

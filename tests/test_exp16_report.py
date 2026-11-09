@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from tinymath.eval.exp16_report import build_exp16_report, paired_bootstrap
+from tiny_math_lm.eval.exp16_report import build_exp16_report, paired_bootstrap
 
 
 def _record(module, question, target, correct):

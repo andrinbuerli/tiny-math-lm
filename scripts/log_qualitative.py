@@ -12,13 +12,13 @@ import hydra
 import torch
 from omegaconf import DictConfig, OmegaConf
 
-from tinymath.config import workspace_path
-from tinymath.data.char_tokenizer import CharacterTokenizer
-from tinymath.eval.qualitative import log_qualitative_examples
-from tinymath.model.gpt import GPTConfig, TinyMathGPT
-from tinymath.repro import seed_everything
-from tinymath.tracking.wandb import finish_wandb, initialize_wandb
-from tinymath.train.runner import read_jsonl
+from tiny_math_lm.config import workspace_path
+from tiny_math_lm.data.char_tokenizer import CharacterTokenizer
+from tiny_math_lm.eval.qualitative import log_qualitative_examples
+from tiny_math_lm.model.gpt import GPTConfig, TinyMathGPT
+from tiny_math_lm.repro import seed_everything
+from tiny_math_lm.tracking.wandb import finish_wandb, initialize_wandb
+from tiny_math_lm.train.runner import read_jsonl
 
 LOGGER = logging.getLogger(__name__)
 

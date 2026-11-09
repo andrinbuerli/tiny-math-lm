@@ -225,6 +225,12 @@ Browse prepared data locally:
 uv run --locked streamlit run scripts/browse_data.py
 ```
 
+Run the interactive checkpoint inference app:
+
+```bash
+uv run --locked streamlit run scripts/streamlit_app.py
+```
+
 See the [usage guide](docs/USAGE.md) for bundle preparation, training, checkpoint
 resume, evaluation, and explicit offline tracking when needed.
 
@@ -238,9 +244,9 @@ uses greedy decoding and records the output cap and context limit.
 
 | Location | Contents |
 |:---|:---|
-| `src/tinymath/` | Data pipeline, models, training, verification, evaluation, and tracking |
+| `src/tiny_math_lm/` | Data pipeline, models, training, verification, evaluation, and tracking |
 | `configs/` | Model families, training settings, and composed experiment presets |
-| `scripts/` | Experiment entry points and local data browser |
+| `scripts/` | Experiment entry points, local data browser, and inference app |
 | `tests/` | Tokenization, leakage, loss masks, verification, GRPO, and integration checks |
 | `docs/results/` | Small versioned result snapshots used by documentation figures |
 | `runs/`, `reports/`, `outputs/` | Local checkpoints, full reports, metrics, and Hydra outputs; excluded from Git |

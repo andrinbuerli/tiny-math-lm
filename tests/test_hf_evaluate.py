@@ -10,15 +10,15 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 
-from tinymath.data.hf_reasoning import identity_hash
-from tinymath.eval import hf_evaluate
-from tinymath.eval.hf_evaluate import (
+from tiny_math_lm.data.hf_reasoning import identity_hash
+from tiny_math_lm.eval import hf_evaluate
+from tiny_math_lm.eval.hf_evaluate import (
     _generate_qa,
     _generate_qa_batch,
     _summarize,
     _validate_checkpoint_identity,
 )
-from tinymath.train.hf_generation import NativeRollout
+from tiny_math_lm.train.hf_generation import NativeRollout
 
 
 class _Tokenizer:

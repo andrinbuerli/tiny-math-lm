@@ -1,4 +1,4 @@
-from tinymath.data.trace_explanations import explain_reasoning_trace, transcribe_scratchpad
+from tiny_math_lm.data.trace_explanations import explain_reasoning_trace, transcribe_scratchpad
 
 
 def test_algebra_trace_explains_collect_move_solution_and_check():

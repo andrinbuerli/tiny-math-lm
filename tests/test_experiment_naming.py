@@ -4,7 +4,7 @@ from pathlib import Path
 
 from hydra import compose, initialize_config_dir
 
-from tinymath.tracking.naming import build_run_naming, comparison_identity
+from tiny_math_lm.tracking.naming import build_run_naming, comparison_identity
 
 
 def test_exp13_comparison_report_has_distinct_stable_identity():

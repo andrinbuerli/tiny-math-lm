@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from tinymath.reporting import _accuracy_label, collect_results, make_report
+from tiny_math_lm.reporting import _accuracy_label, collect_results, make_report
 
 
 def test_accuracy_label_matches_greedy_sampled_or_mixed_results():

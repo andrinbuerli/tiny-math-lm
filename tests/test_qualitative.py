@@ -5,9 +5,9 @@ import types
 
 import torch
 
-from tinymath.data.char_tokenizer import CharacterTokenizer
-from tinymath.data.prompts import format_prompt
-from tinymath.eval.qualitative import (
+from tiny_math_lm.data.char_tokenizer import CharacterTokenizer
+from tiny_math_lm.data.prompts import format_prompt
+from tiny_math_lm.eval.qualitative import (
     _selected_rows,
     build_qualitative_table,
     log_qualitative_examples,

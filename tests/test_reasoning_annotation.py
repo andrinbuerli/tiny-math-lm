@@ -7,7 +7,7 @@ from fractions import Fraction
 
 import pytest
 
-from tinymath.data.reasoning import (
+from tiny_math_lm.data.reasoning import (
     _Builder,
     _decimal,
     _ExpressionParser,

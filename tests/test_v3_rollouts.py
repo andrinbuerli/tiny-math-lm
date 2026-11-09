@@ -5,10 +5,10 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from tinymath.data.char_tokenizer import CharacterTokenizer
-from tinymath.generation import RolloutConfig, generate_rollouts
-from tinymath.model.gpt import GPTConfig, TinyMathGPT
-from tinymath.train.grpo import (
+from tiny_math_lm.data.char_tokenizer import CharacterTokenizer
+from tiny_math_lm.generation import RolloutConfig, generate_rollouts
+from tiny_math_lm.model.gpt import GPTConfig, TinyMathGPT
+from tiny_math_lm.train.grpo import (
     completion_log_probs,
     group_outcome_rates,
     group_relative_advantages,
@@ -287,7 +287,7 @@ def test_real_model_cached_logs_and_conditioning_across_inserted_result(monkeypa
 
 @pytest.mark.parametrize("executor", ["exact", "none"])
 def test_atomic_calls_are_rejected_before_execution(monkeypatch, executor):
-    from tinymath import generation
+    from tiny_math_lm import generation
     def forbidden(*args, **kwargs):
         raise AssertionError("A forbidden request reached the arithmetic executor")
     monkeypatch.setattr(generation, "execute_call", forbidden)

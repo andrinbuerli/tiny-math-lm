@@ -7,7 +7,7 @@ from pathlib import Path
 
 import torch
 
-from tinymath.reporting import make_exp13_report
+from tiny_math_lm.reporting import make_exp13_report
 
 
 def _baseline_snapshot(path: Path) -> Path:
