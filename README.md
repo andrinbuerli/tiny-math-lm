@@ -1,48 +1,24 @@
 # Tiny Math LM
 
-**Small models. Character-level mathematics. Verifiable learning.**
+Character-level decoder-only Transformers trained from scratch at **1M, 10M, and 100M parameters**
+for a single **RTX 4090 (24 GB)**. Compares supervised fine-tuning (SFT), Group
+Relative Policy Optimization (GRPO), and continued SFT on fixed evaluation questions.
 
-Tiny Math LM explores how much arithmetic a small language model can learn—and
-whether reinforcement learning helps it generalize. It trains decoder-only
-Transformers from scratch at **1M, 10M, and 100M parameters**, then compares
-supervised fine-tuning (SFT), Group Relative Policy Optimization (GRPO), and
-continued SFT on the same fixed math questions.
-
-The setting is deliberately small and inspectable: five tasks from the
-[DeepMind Mathematics Dataset](https://huggingface.co/datasets/d0rj/mathematics_dataset),
-one Unicode character per token, exact answer verification,
-and experiments designed for a **single RTX 4090 with 24 GB VRAM**. The
-reasoning-v3 protocol adds structured scratchpads, arithmetic subtask examples,
-and optional exact arithmetic calls on eligible compound tasks.
-
-[Results](#results) · [How it works](#how-it-works) · [Quick start](#quick-start) · [Reproducibility](#reproducibility) · [Outlook](#outlook)
+Five DeepMind Mathematics Dataset modules: `arithmetic__add_or_sub`,
+`arithmetic__mul`, `arithmetic__div`, `arithmetic__mixed`, and `algebra__linear_1d`.
+One Unicode character per token, disjoint SFT/RLVR/evaluation pools,
+completion-only SFT loss, and deterministic answer verification.
 
 ## Results
 
-The completed comparison covers all three model sizes and training arms at
-**seed 18**, using 50,000 test questions, 5,000 number-length OOD questions, and
-2,000 expression-length OOD questions. OOD means out of distribution; these
-held-out tests select questions by number width or expression length using fixed
-difficulty thresholds.
+**Continued SFT leads in 7 of 9 comparisons at matched estimated training FLOPs.**
+GRPO leads on number-length OOD at 1M and 10M. Both start from the same SFT
+checkpoint for each size.
 
-The **100M SFT model reaches 91.88% test accuracy and 63.90% expression-length
-OOD accuracy**. The corresponding baseline SFT model scores 48.88% and 9.35%.
-That is a **54.55 percentage-point gain** on expression-length OOD for the full
-reasoning-v3 protocol.
+Reasoning-v3 final-answer accuracy, **seed 18**. Bold marks the best arm per row.
+OOD means out of distribution.
 
-[![Three SFT scaling plots show baseline and reasoning-v3 accuracy at 1M, 10M, and 100M parameters. Reasoning-v3 improves every displayed split; its 100M model reaches 91.88% test and 63.90% expression-length OOD accuracy.](docs/assets/reasoning-v3-scaling.png)](docs/assets/reasoning-v3-scaling.svg)
-
-*Blue: baseline SFT. Orange: reasoning-v3 SFT. Model size uses a logarithmic
-axis. [Open the vector figure](docs/assets/reasoning-v3-scaling.svg).*
-
-### Existing reasoning-v3 results
-
-Final-answer accuracy; **bold** marks the best training arm within each row.
-Continued SFT and GRPO start from the same original SFT checkpoint for each
-model size. The continued-SFT results below use new controls whose estimated
-training FLOPs match the corresponding completed GRPO run.
-
-| Model | Evaluation split | SFT | GRPO | Continued SFT, GRPO-matched compute |
+| Model | Split | SFT | GRPO | Continued SFT¹ |
 |:---|:---|---:|---:|---:|
 | 1M | Test | 65.76% | 69.02% | **69.49%** |
 | 1M | Number-length OOD | 51.60% | **57.08%** | 53.20% |
@@ -54,244 +30,53 @@ training FLOPs match the corresponding completed GRPO run.
 | 100M | Number-length OOD | 76.88% | 76.72% | **78.92%** |
 | 100M | Expression-length OOD | 63.90% | 60.55% | **68.30%** |
 
-**At matched estimated training compute, continued SFT has the highest accuracy
-in seven of the nine model-size and split comparisons.** It leads on test and
-expression-length OOD at 1M and 10M, and on all three splits at 100M. GRPO
-remains strongest on number-length OOD at 1M and 10M. Continued SFT improves on
-the SFT result in all nine comparisons, including the two number-length OOD
-cases where GRPO is still higher. These are single-seed measurements.
+¹ Additional training compute matches GRPO using estimated dense FLOPs, not
+hardware measurements. [Budgets and accounting](docs/compute-matched-continued-sft-plan.md).
 
-[![Accuracy changes from SFT for GRPO and GRPO-matched-compute continued SFT, shown separately for test and both OOD splits. Continued SFT improves over SFT on all splits at each model size.](docs/assets/reasoning-v3-training-gains.png)](docs/assets/reasoning-v3-training-gains.svg)
-
-*Each bar is a change from that model's reasoning-v3 SFT accuracy; zero means
-no change. [Open the vector figure](docs/assets/reasoning-v3-training-gains.svg).*
-
-### What these measurements support
-
-These are **single-seed, descriptive results**. The baseline-to-reasoning-v3
-comparison changes the training representation, adds subtask examples, and
-permits arithmetic assistance on eligible tasks. It does not isolate which
-component causes the gains, and assisted accuracy should be read with that
-protocol in mind. Final-answer correctness also does not establish the validity
-of every intermediate reasoning step.
-
-Continued SFT starts from the original SFT weights and matches the completed
-10,000-update GRPO runs by estimated training FLOPs. It stops at the first
-complete optimizer update that reaches the budget, with less than 0.1% overshoot.
-The comparison uses `dense_padded_positions_v1`, which counts padded input
-positions after initialization and excludes source-SFT work.
-
-| Model | GRPO updates | Continued-SFT updates | Target FLOPs | Achieved FLOPs | Control / GRPO |
-|:---|---:|---:|---:|---:|---:|
-| 1M | 10,000 | 19,863 | 6.290593 × 10¹⁵ | 6.290840 × 10¹⁵ | 1.00004× |
-| 10M | 10,000 | 15,425 | 4.903586 × 10¹⁶ | 4.903821 × 10¹⁶ | 1.00005× |
-| 100M | 10,000 | 13,757 | 4.343052 × 10¹⁷ | 4.343255 × 10¹⁷ | 1.00005× |
-
-These FLOP values are estimates from the repository's dense model-cost
-estimator, not hardware-counter measurements. The compute match does not remove
-the single-seed, assisted-protocol, or controlled-OOD limitations. See the
-[matched-compute plan](docs/compute-matched-continued-sft-plan.md) for budgets,
-stopping criteria, and the reporting protocol.
-
-The selected source modules lacked eligible official extrapolation rows at the
-pinned dataset revision. The OOD tests therefore use deterministic held-out
-pools with documented difficulty thresholds. See the
-[data and OOD protocol](docs/USAGE.md#data-and-ood-protocol-note).
-
-All displayed values and figure inputs are available in the versioned
-[result snapshot](docs/results/reasoning-v3-seed18.json), including per-module
-metrics, checkpoint hashes, evaluation run IDs, and question-population hashes.
-The SFT scaling plot is unchanged; the additional-training plot shows the
-GRPO-matched controls, and the snapshot records their measured update counts.
-The exact snapshot for the earlier historical unequal-budget comparison is
-preserved at
-[reasoning-v3-seed18-unequal-budget.json](docs/results/reasoning-v3-seed18-unequal-budget.json).
-
-## How it works
-
-### Five tasks, one character vocabulary
-
-The dataset is restricted to these five modules:
-
-| Task | DeepMind Mathematics module |
-|:---|:---|
-| Addition and subtraction | `arithmetic__add_or_sub` |
-| Multiplication | `arithmetic__mul` |
-| Division | `arithmetic__div` |
-| Mixed arithmetic | `arithmetic__mixed` |
-| Linear equations | `algebra__linear_1d` |
-
-Every ordinary Unicode code point—including each digit, space, operator, and
-reasoning delimiter—maps to exactly one token. The vocabulary is frozen across
-model sizes and training arms. The models use causal attention, RoPE, RMSNorm,
-SwiGLU, and tied embeddings. Their actual sizes with the reasoning-v3 vocabulary
-are **995,456**, **9,989,760**, and **99,177,216** trainable parameters.
-
-Data preparation deduplicates questions and creates disjoint SFT, validation,
-RLVR, and evaluation pools. The reasoning-v3 bundle contains 500,000 SFT parent
-questions plus generated arithmetic subtasks. Evaluation scores parent questions
-only, so standalone subtasks do not inflate reported accuracy.
-
-### Three training arms
-
-```mermaid
-flowchart LR
-    A[Random initialization] --> B[SFT on worked examples]
-    B --> C[Selected SFT checkpoint]
-    C --> D[SFT evaluation]
-    C --> E[GRPO on the disjoint RLVR pool]
-    C --> F[Continued SFT]
-    D --> G[Same fixed test and OOD questions]
-    E --> G
-    F --> G
-```
-
-**SFT** optimizes completion and EOS tokens; prompt and padding tokens are
-excluded from the loss. Both additional training arms initialize from the
-selected SFT checkpoint.
-
-**GRPO** samples 16 completions for each of 16 prompts per update, scores them
-with a deterministic verifier, and learns from reward differences within each
-prompt's group. The completed runs use temperature 1.0, 10,000 updates, and a
-512-token completion ceiling, further bounded by the remaining model context.
-Groups with identical rewards have zero relative advantage.
-
-Reasoning-v3 uses the shaped reward
-`0.1 × format_valid + 0.9 × full_success`, with hard-zero conditions for malformed,
-capped, executor-failed, or forbidden-call rollouts. Exact arithmetic calls are
-permitted for eligible compound tasks; atomic tasks must solve their operation
-locally. The executor inserts arithmetic results without executing generated
-code. Inserted tokens provide context but are excluded from the policy loss.
-The [reasoning-v3 guide](docs/REASONING_V3.md) specifies the full protocol.
+Single-seed results on 50,000 test, 5,000 number-length OOD, and 2,000
+expression-length OOD questions. Reasoning-v3 combines scratchpads, subtask
+examples, and exact arithmetic assistance on eligible compound tasks; these
+results do not isolate their effects. OOD pools use deterministic held-out
+questions with difficulty thresholds because the selected modules lacked eligible
+official extrapolation rows at the pinned revision.
+[Exact results and provenance](docs/results/reasoning-v3-seed18.json) ·
+[Protocol](docs/REASONING_V3.md) · [OOD construction](docs/USAGE.md#data-and-ood-protocol-note).
 
 ## Quick start
 
-Use **Python 3.11+**, **uv**, and a CUDA-compatible PyTorch environment. Commands
-below assume the checkout is mounted at `/workspace`.
-
-### Install
+Requires **Python 3.11+**, **uv**, and CUDA-compatible PyTorch. From a checkout
+mounted at `/workspace`:
 
 ```bash
 cd /workspace
 uv sync --locked
 export WANDB_ENTITY=your-wandb-entity
-```
-
-Experiment runs use W&B. Supply `WANDB_API_KEY` through the environment or an
-ignored `/workspace/.env` file; use [.env.example](.env.example) as a template.
-Experiment entry points load the file at runtime.
-Keep credentials out of Hydra overrides and version control. Documentation,
-figure rendering, and tests need no W&B connection.
-
-### Run a 1M pilot
-
-```bash
 uv run --locked python scripts/prepare_data.py experiment=02_pilot seed=17
 uv run --locked python scripts/train_sft.py \
   experiment=02_pilot model=1m trainer=sft seed=17
 ```
 
-The pilot uses 20,000 SFT examples. Preparation scans the selected source modules
-before building the pools, so a small training budget still requires the source
-data download. To run SFT, GRPO, continued SFT, evaluation, and reporting for one
-model through the orchestrator:
+Experiments require W&B credentials in the environment or ignored `/workspace/.env`
+([template](.env.example)). This pilot uses 20,000 answer-only SFT examples and
+requires the source dataset download. The results above use the
+[reasoning-v3 preset](configs/experiment/15_reasoning_v3_arithmetic_subtasks.yaml),
+which requires separately prepared data and checkpoints.
 
-```bash
-uv run --locked python scripts/run_all.py \
-  experiment=02_pilot seed=17 'orchestration.models=[1m]'
-```
+Runs save sanitized resolved Hydra configs, seeds, data/tokenizer hashes,
+checkpoint lineage, and optimizer/RNG state for resuming. Generated data,
+checkpoints, and full reports are excluded from Git.
 
-These pilot commands exercise the default answer-only protocol. The published
-results above use the separate reasoning-v3 bundle and training presets.
-
-### Inspect configurations and data
-
-Hydra composes every experiment configuration. Inspect effective values without
-starting a run:
-
-```bash
-uv run --locked python scripts/train_rlvr.py \
-  experiment=15_reasoning_v3_arithmetic_subtasks model=1m --cfg job --resolve
-```
-
-The completed comparison is defined by the
-[Experiment 15 preset](configs/experiment/15_reasoning_v3_arithmetic_subtasks.yaml).
-It references local data and checkpoints from earlier stages; a fresh checkout
-must prepare those artifacts before training or evaluation. The preset records
-their expected hashes and provenance.
-
-Browse prepared data locally:
-
-```bash
-uv run --locked streamlit run scripts/browse_data.py
-```
-
-Run the interactive checkpoint inference app:
-
-```bash
-uv run --locked streamlit run scripts/streamlit_app.py
-```
-
-See the [usage guide](docs/USAGE.md) for bundle preparation, training, checkpoint
-resume, evaluation, and explicit offline tracking when needed.
-
-## Reproducibility
-
-Dependencies are locked in `uv.lock`. Runs persist sanitized resolved Hydra
-configurations, seeds, dataset and tokenizer hashes, checkpoint lineage, and
-W&B identities. Resumable checkpoints preserve optimizer and RNG state;
-checkpoint selection uses validation rather than test accuracy. Main evaluation
-uses greedy decoding and records the output cap and context limit.
-
-| Location | Contents |
-|:---|:---|
-| `src/tiny_math_lm/` | Data pipeline, models, training, verification, evaluation, and tracking |
-| `configs/` | Model families, training settings, and composed experiment presets |
-| `scripts/` | Experiment entry points, local data browser, and inference app |
-| `tests/` | Tokenization, leakage, loss masks, verification, GRPO, and integration checks |
-| `docs/results/` | Small versioned result snapshots used by documentation figures |
-| `runs/`, `reports/`, `outputs/` | Local checkpoints, full reports, metrics, and Hydra outputs; excluded from Git |
-
-The completed local report is under
-`reports/exp15_reasoning_v3_arithmetic_subtasks/seed18/`: `comparison.json` and
-`comparison.csv` hold the detailed measurements, `intermediate_results.md` holds
-the written comparison, and `accuracy_comparison.svg` shows all arms. These
-generated artifacts and the model weights are not bundled with the repository.
-
-The README figures can be regenerated from the checked-in snapshot alone:
-
-```bash
-uv run --locked python docs/render_results.py
-```
-
-Run the regression suite locally:
+Local tests require no W&B connection:
 
 ```bash
 uv run --locked pytest -q
 ```
 
-## Outlook
+## Guides
 
-The next experiments should explain why additional training helps some model
-sizes and reduces accuracy at others:
-
-- **Repeat across seeds.** Measure variation before interpreting the small 10M
-  GRPO gains as a consistent advantage.
-- **Match additional compute.** Compare GRPO and continued SFT at common token
-  or FLOP budgets, with accuracy-versus-compute curves.
-- **Separate the ingredients.** Ablate scratchpads, subtask augmentation, and
-  arithmetic assistance while holding evaluation questions fixed.
-- **Study the learning signal.** Relate mixed-reward group frequency, entropy,
-  and format validity to learning progress and possible saturation.
-- **Map generalization failures.** Break down errors by module, operand width,
-  and expression depth, then evaluate on independently generated OOD sets.
-
-## Further reading
-
-| Guide | What it covers |
-|:---|:---|
-| [Usage](docs/USAGE.md) | Setup, data preparation, training, evaluation, resume, and tracking |
-| [Experiment guide](docs/EXPERIMENT_GUIDE.md) | Experiment presets and comparison workflows |
-| [Reasoning-v3 protocol](docs/REASONING_V3.md) | Scratchpads, arithmetic execution, rewards, and token accounting |
-| [Implementation plan](IMPLEMENTATION_PLAN.md) | Scientific scope and engineering requirements |
-| [Result snapshot](docs/results/reasoning-v3-seed18.json) | Exact values and provenance behind the README plots |
+- [Usage](docs/USAGE.md): data, training, evaluation, resume, and local apps.
+- [Experiments](docs/EXPERIMENT_GUIDE.md): presets and comparison workflows.
+- [Reasoning-v3](docs/REASONING_V3.md): scratchpads, arithmetic calls, and rewards.
+- [Results](docs/results/reasoning-v3-seed18.json): metrics and provenance;
+  [scaling figure](docs/assets/reasoning-v3-scaling.svg) and
+  [training gains](docs/assets/reasoning-v3-training-gains.svg).
