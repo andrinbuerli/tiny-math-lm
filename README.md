@@ -15,23 +15,14 @@ completion-only SFT loss, and deterministic answer verification.
 GRPO leads on number-length OOD at 1M and 10M. Both start from the same SFT
 checkpoint for each size.
 
-Reasoning-v3 final-answer accuracy, **seed 18**. Bold marks the best arm per row.
-OOD means out of distribution.
+[![Baseline and reasoning-v3 SFT accuracy at 1M, 10M, and 100M parameters across test and both OOD splits.](docs/assets/reasoning-v3-scaling.png)](docs/assets/reasoning-v3-scaling.svg)
 
-| Model | Split | SFT | GRPO | Continued SFT¹ |
-|:---|:---|---:|---:|---:|
-| 1M | Test | 65.76% | 69.02% | **69.49%** |
-| 1M | Number-length OOD | 51.60% | **57.08%** | 53.20% |
-| 1M | Expression-length OOD | 15.25% | 16.30% | **19.70%** |
-| 10M | Test | 86.98% | 87.20% | **88.41%** |
-| 10M | Number-length OOD | 68.34% | **71.28%** | 70.24% |
-| 10M | Expression-length OOD | 47.35% | 47.90% | **49.80%** |
-| 100M | Test | 91.88% | 91.10% | **92.98%** |
-| 100M | Number-length OOD | 76.88% | 76.72% | **78.92%** |
-| 100M | Expression-length OOD | 63.90% | 60.55% | **68.30%** |
+*Baseline vs. reasoning-v3 SFT. OOD means out of distribution.*
 
-¹ Additional training compute matches GRPO using estimated dense FLOPs, not
-hardware measurements. [Budgets and accounting](docs/compute-matched-continued-sft-plan.md).
+[![Accuracy gains over SFT for GRPO and compute-matched continued SFT across model sizes and evaluation splits.](docs/assets/reasoning-v3-training-gains.png)](docs/assets/reasoning-v3-training-gains.svg)
+
+*Additional training gains in percentage points. Continued SFT matches GRPO's
+estimated dense FLOPs; [budgets and accounting](docs/compute-matched-continued-sft-plan.md).*
 
 Single-seed results on 50,000 test, 5,000 number-length OOD, and 2,000
 expression-length OOD questions. Reasoning-v3 combines scratchpads, subtask
@@ -77,6 +68,4 @@ uv run --locked pytest -q
 - [Usage](docs/USAGE.md): data, training, evaluation, resume, and local apps.
 - [Experiments](docs/EXPERIMENT_GUIDE.md): presets and comparison workflows.
 - [Reasoning-v3](docs/REASONING_V3.md): scratchpads, arithmetic calls, and rewards.
-- [Results](docs/results/reasoning-v3-seed18.json): metrics and provenance;
-  [scaling figure](docs/assets/reasoning-v3-scaling.svg) and
-  [training gains](docs/assets/reasoning-v3-training-gains.svg).
+- [Results](docs/results/reasoning-v3-seed18.json): metrics and provenance.
