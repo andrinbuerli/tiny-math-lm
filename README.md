@@ -19,14 +19,14 @@ Baseline uses answer-only SFT. Reasoning-v3 adds scratchpads, subtask examples,
 and exact arithmetic assistance on eligible compound tasks.
 OOD means out of distribution.
 
+[![Baseline and reasoning-v3 SFT accuracy at 1M, 10M, and 100M parameters across test and both OOD splits.](docs/assets/reasoning-v3-scaling.png)](docs/assets/reasoning-v3-scaling.svg)
+
+*SFT accuracy across model sizes.*
+
 [![Accuracy gains over SFT for GRPO and compute-matched continued SFT across model sizes and evaluation splits.](docs/assets/reasoning-v3-training-gains.png)](docs/assets/reasoning-v3-training-gains.svg)
 
 *Additional training gains in percentage points. Continued SFT matches GRPO's
 estimated dense FLOPs; [budgets and accounting](docs/compute-matched-continued-sft-plan.md).*
-
-[![Baseline and reasoning-v3 SFT accuracy at 1M, 10M, and 100M parameters across test and both OOD splits.](docs/assets/reasoning-v3-scaling.png)](docs/assets/reasoning-v3-scaling.svg)
-
-*SFT accuracy across model sizes.*
 
 Single-seed results on 50,000 test, 5,000 number-length OOD, and 2,000
 expression-length OOD questions. These results do not isolate the effects of
