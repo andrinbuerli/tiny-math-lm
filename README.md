@@ -15,19 +15,22 @@ completion-only SFT loss, and deterministic answer verification.
 GRPO leads on number-length OOD at 1M and 10M. Both start from the same SFT
 checkpoint for each size.
 
-[![Baseline and reasoning-v3 SFT accuracy at 1M, 10M, and 100M parameters across test and both OOD splits.](docs/assets/reasoning-v3-scaling.png)](docs/assets/reasoning-v3-scaling.svg)
-
-*Baseline vs. reasoning-v3 SFT. OOD means out of distribution.*
+Baseline uses answer-only SFT. Reasoning-v3 adds scratchpads, subtask examples,
+and exact arithmetic assistance on eligible compound tasks.
+OOD means out of distribution.
 
 [![Accuracy gains over SFT for GRPO and compute-matched continued SFT across model sizes and evaluation splits.](docs/assets/reasoning-v3-training-gains.png)](docs/assets/reasoning-v3-training-gains.svg)
 
 *Additional training gains in percentage points. Continued SFT matches GRPO's
 estimated dense FLOPs; [budgets and accounting](docs/compute-matched-continued-sft-plan.md).*
 
+[![Baseline and reasoning-v3 SFT accuracy at 1M, 10M, and 100M parameters across test and both OOD splits.](docs/assets/reasoning-v3-scaling.png)](docs/assets/reasoning-v3-scaling.svg)
+
+*SFT accuracy across model sizes.*
+
 Single-seed results on 50,000 test, 5,000 number-length OOD, and 2,000
-expression-length OOD questions. Reasoning-v3 combines scratchpads, subtask
-examples, and exact arithmetic assistance on eligible compound tasks; these
-results do not isolate their effects. OOD pools use deterministic held-out
+expression-length OOD questions. These results do not isolate the effects of
+the reasoning-v3 additions. OOD pools use deterministic held-out
 questions with difficulty thresholds because the selected modules lacked eligible
 official extrapolation rows at the pinned revision.
 [Exact results and provenance](docs/results/reasoning-v3-seed18.json) ·
@@ -35,11 +38,11 @@ official extrapolation rows at the pinned revision.
 
 ## Quick start
 
-Requires **Python 3.11+**, **uv**, and CUDA-compatible PyTorch. From a checkout
-mounted at `/workspace`:
+Requires **Python 3.11+**, **uv**, and CUDA-compatible PyTorch. Run from the
+checkout root, at `/workspace` or elsewhere:
 
 ```bash
-cd /workspace
+export WORKSPACE_ROOT="$PWD"
 uv sync --locked
 export WANDB_ENTITY=your-wandb-entity
 uv run --locked python scripts/prepare_data.py experiment=02_pilot seed=17

@@ -203,8 +203,8 @@ def main() -> None:
                 )
         axis.set_xticks(x, ("1M", "10M", "100M"))
         axis.set_xlabel("Model size", labelpad=10)
-        axis.set_ylim(-9, 17)
-        axis.set_yticks((-5, 0, 5, 10, 15))
+        axis.set_ylim(-5, 7)
+        axis.set_yticks((-4, -2, 0, 2, 4, 6))
     axes[0].set_ylabel("Accuracy change (percentage points)", labelpad=10)
     fig.text(
         0.06,
