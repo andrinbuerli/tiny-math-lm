@@ -21,7 +21,9 @@ OOD means out of distribution.
 
 [![Baseline and reasoning-v3 SFT accuracy at 1M, 10M, and 100M parameters across test and both OOD splits.](docs/assets/reasoning-v3-scaling.png)](docs/assets/reasoning-v3-scaling.svg)
 
-*SFT accuracy across model sizes.*
+As expected, reasoning-v3 performance improves with model size across all three
+splits. **The gap to answer-only SFT is substantial**: at 100M, test accuracy
+is 91.88% versus 48.88%.
 
 [![Accuracy gains over SFT for GRPO and compute-matched continued SFT across model sizes and evaluation splits.](docs/assets/reasoning-v3-training-gains.png)](docs/assets/reasoning-v3-training-gains.svg)
 
