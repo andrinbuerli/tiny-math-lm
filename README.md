@@ -1,8 +1,10 @@
 # Tiny Math LM
 
 Character-level decoder-only Transformers trained from scratch at **1M, 10M, and 100M parameters**
-for a single **RTX 4090 (24 GB)**. Compares supervised fine-tuning (SFT), Group
-Relative Policy Optimization (GRPO), and continued SFT on fixed evaluation questions.
+for a single **RTX 4090 (24 GB)**. Two comparisons on fixed evaluation questions:
+
+- **No reasoning vs. reasoning:** answer-only supervised fine-tuning (SFT) vs. reasoning-v3 SFT.
+- **Continued SFT vs. GRPO:** further reasoning-v3 training using SFT or Group Relative Policy Optimization (GRPO).
 
 Five DeepMind Mathematics Dataset modules: `arithmetic__add_or_sub`,
 `arithmetic__mul`, `arithmetic__div`, `arithmetic__mixed`, and `algebra__linear_1d`.
@@ -10,10 +12,6 @@ One Unicode character per token, disjoint SFT/RLVR/evaluation pools,
 completion-only SFT loss, and deterministic answer verification.
 
 ## Results
-
-**Continued SFT leads in 7 of 9 comparisons at matched estimated training FLOPs.**
-GRPO leads on number-length OOD at 1M and 10M. Both start from the same SFT
-checkpoint for each size.
 
 Baseline uses answer-only SFT. Reasoning-v3 adds scratchpads, subtask examples,
 and exact arithmetic assistance on eligible compound tasks.
@@ -24,6 +22,10 @@ OOD means out of distribution.
 As expected, reasoning-v3 performance improves with model size across all three
 splits. **The gap to answer-only SFT is substantial**: at 100M, test accuracy
 is 91.88% versus 48.88%.
+
+**Continued SFT leads in 7 of 9 comparisons at matched estimated training FLOPs.**
+GRPO leads on number-length OOD at 1M and 10M. Both continue training with reasoning
+from the same reasoning-v3 SFT checkpoint for each size.
 
 [![Accuracy gains over SFT for GRPO and compute-matched continued SFT across model sizes and evaluation splits.](docs/assets/reasoning-v3-training-gains.png)](docs/assets/reasoning-v3-training-gains.svg)
 
